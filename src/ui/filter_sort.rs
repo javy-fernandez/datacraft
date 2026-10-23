@@ -192,47 +192,92 @@ pub enum Node {
 
 #[derive(Clone, Default)]
 pub struct Group {
-    pub any: bool,
-    pub children: Vec<Node>,
+    pub children: Vec<FilterRow>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Connector {
+    #[default]
+    And,
+    Or,
+}
+
+impl Connector {
+    fn keyword(self) -> &'static str {
+        match self {
+            Self::And => "AND",
+            Self::Or => "OR",
+        }
+    }
+
+    fn show(&mut self, ui: &mut Ui, has_next: bool) {
+        if has_next {
+            let response = ui.add_sized(
+                egui::vec2(48.0, 22.0),
+                egui::Button::new(self.keyword()).selected(*self == Self::Or),
+            );
+            if response
+                .on_hover_text(tr(
+                    "Joins the next enabled condition. Click to switch AND/OR.",
+                ))
+                .clicked()
+            {
+                *self = match self {
+                    Self::And => Self::Or,
+                    Self::Or => Self::And,
+                };
+            }
+        } else {
+            ui.allocate_space(egui::vec2(48.0, 22.0));
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct FilterRow {
+    pub node: Node,
+    /// Connects this row to the next enabled sibling, using SQL's AND-before-OR precedence.
+    pub connector: Connector,
+}
+
+impl From<Node> for FilterRow {
+    fn from(node: Node) -> Self {
+        Self {
+            node,
+            connector: Connector::And,
+        }
+    }
 }
 
 impl Group {
     fn sql(&self, driver: Driver, columns: &[ColumnInfo]) -> Result<Option<String>, &'static str> {
         let mut clauses = Vec::new();
-        for child in &self.children {
-            let sql = match child {
+        let mut previous = Connector::And;
+        for row in &self.children {
+            let sql = match &row.node {
                 Node::Condition(c) => c.sql(driver, columns)?,
                 Node::Group(g) => g.sql(driver, columns)?,
             };
             if let Some(sql) = sql {
+                if !clauses.is_empty() {
+                    clauses.push(previous.keyword().into());
+                }
                 clauses.push(sql);
+                previous = row.connector;
             }
         }
-        Ok((!clauses.is_empty()).then(|| {
-            format!(
-                "({})",
-                clauses.join(if self.any { " OR " } else { " AND " })
-            )
-        }))
+        Ok((!clauses.is_empty()).then(|| format!("({})", clauses.join(" "))))
     }
 
     fn show(&mut self, ui: &mut Ui, columns: &[ColumnInfo], depth: usize) {
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("condition_logic")
-                .width(110.0)
-                .selected_text(if self.any {
-                    tr("Any (OR)")
-                } else {
-                    tr("All (AND)")
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.any, false, tr("All (AND)"));
-                    ui.selectable_value(&mut self.any, true, tr("Any (OR)"));
-                });
             if theme::add_button(ui, Ico::Plus, tr("Add condition")).clicked() {
-                self.children.push(Node::Condition(Condition::new(
-                    columns.first().map(|c| c.name.clone()).unwrap_or_default(),
-                )));
+                self.children.push(
+                    Node::Condition(Condition::new(
+                        columns.first().map(|c| c.name.clone()).unwrap_or_default(),
+                    ))
+                    .into(),
+                );
             }
             if ui
                 .add_enabled_ui(depth < 8, |ui| {
@@ -241,26 +286,33 @@ impl Group {
                 .inner
                 .clicked()
             {
-                self.children.push(Node::Group(Group::default()));
+                self.children.push(Node::Group(Group::default()).into());
             }
         });
         let mut remove = None;
-        for (index, child) in self.children.iter_mut().enumerate() {
-            ui.push_id(index, |ui| match child {
+        let len = self.children.len();
+        for (index, row) in self.children.iter_mut().enumerate() {
+            ui.push_id(index, |ui| match &mut row.node {
                 Node::Group(group) => {
                     ui.horizontal(|ui| {
+                        ui.strong("(");
                         ui.label(tr("Condition group"));
+                    });
+                    ui.indent("nested", |ui| group.show(ui, columns, depth + 1));
+                    ui.horizontal(|ui| {
+                        ui.strong(")");
+                        row.connector.show(ui, index + 1 < len);
                         if ui.small_button("×").clicked() {
                             remove = Some(index);
                         }
                     });
-                    ui.indent("nested", |ui| group.show(ui, columns, depth + 1));
                 }
                 Node::Condition(c) => {
-                    ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| {
                         ui.checkbox(&mut c.enabled, "");
                         column_picker(ui, "column", &mut c.column, columns);
                         egui::ComboBox::from_id_salt("operator")
+                            .width(130.0)
                             .selected_text(c.operator.label())
                             .show_ui(ui, |ui| {
                                 for op in Operator::ALL {
@@ -288,11 +340,14 @@ impl Group {
                                         .hint_text(tr("Value")),
                                 );
                             }
+                        } else {
+                            ui.allocate_space(egui::vec2(160.0, 22.0));
                         }
                         if matches!(c.operator, Operator::Between | Operator::NotBetween) {
                             ui.label(tr("and"));
                             ui.add(egui::TextEdit::singleline(&mut c.second).desired_width(140.0));
                         }
+                        row.connector.show(ui, index + 1 < len);
                         if ui.small_button("×").clicked() {
                             remove = Some(index);
                         }
@@ -380,7 +435,7 @@ impl FilterSort {
                 ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
                 egui::ScrollArea::vertical()
                     .id_salt("filter_sort_builder")
-                    .max_height(230.0)
+                    .max_height((ui.available_height() * 0.5).clamp(200.0, 440.0))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.strong(tr("Filter"));
@@ -419,7 +474,10 @@ impl FilterSort {
                                     .hint_text("WHERE"),
                             );
                         } else {
-                            self.filter.show(ui, columns, 0);
+                            egui::ScrollArea::horizontal()
+                                .id_salt("filter_condition_rows")
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| self.filter.show(ui, columns, 0));
                         }
                         ui.separator();
                         ui.horizontal(|ui| {
@@ -568,8 +626,7 @@ mod tests {
         c.value = "50%".into();
         let builder = FilterSort {
             filter: Group {
-                any: false,
-                children: vec![Node::Condition(c)],
+                children: vec![Node::Condition(c).into()],
             },
             sort: vec![
                 SortRule {
@@ -609,22 +666,25 @@ mod tests {
         c.value = "O'Reilly_50%[".into();
         let filter = FilterSort {
             filter: Group {
-                any: false,
                 children: vec![
-                    Node::Condition(c.clone()),
+                    Node::Condition(c.clone()).into(),
                     Node::Group(Group {
-                        any: true,
                         children: vec![
-                            Node::Condition(Condition {
-                                operator: Operator::Null,
-                                ..c.clone()
-                            }),
+                            FilterRow {
+                                connector: Connector::Or,
+                                node: Node::Condition(Condition {
+                                    operator: Operator::Null,
+                                    ..c.clone()
+                                }),
+                            },
                             Node::Condition(Condition {
                                 enabled: false,
                                 ..c
-                            }),
+                            })
+                            .into(),
                         ],
-                    }),
+                    })
+                    .into(),
                 ],
             },
             sort: vec![SortRule {
@@ -641,6 +701,169 @@ mod tests {
         );
         assert_eq!(o, "[odd]]name] DESC");
     }
+    fn flag(name: &str, connector: Connector) -> FilterRow {
+        FilterRow {
+            node: Node::Condition(Condition {
+                value: "1".into(),
+                ..Condition::new(name.into())
+            }),
+            connector,
+        }
+    }
+
+    #[test]
+    fn mixed_row_connectors_obey_sql_precedence_and_explicit_groups() {
+        let columns: Vec<_> = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(|name| ColumnInfo {
+                name: name.into(),
+                data_type: "integer".into(),
+                nullable: true,
+                primary_key: false,
+            })
+            .collect();
+        let flat = Group {
+            children: vec![
+                flag("a", Connector::And),
+                flag("b", Connector::And),
+                flag("c", Connector::Or),
+                flag("d", Connector::And),
+                flag("e", Connector::Or),
+            ],
+        };
+        let grouped = Group {
+            children: vec![
+                FilterRow {
+                    connector: Connector::And,
+                    node: Node::Group(Group {
+                        children: vec![flag("a", Connector::Or), flag("b", Connector::And)],
+                    }),
+                },
+                flag("c", Connector::And),
+            ],
+        };
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE flags (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER)",
+        )
+        .unwrap();
+        for bits in 0..32 {
+            let values: Vec<_> = (0..5).map(|index| (bits >> index) & 1).collect();
+            db.execute("DELETE FROM flags", []).unwrap();
+            db.execute(
+                "INSERT INTO flags VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params_from_iter(&values),
+            )
+            .unwrap();
+            for (group, expected) in [
+                (
+                    &flat,
+                    (values[0] == 1 && values[1] == 1 && values[2] == 1)
+                        || (values[3] == 1 && values[4] == 1),
+                ),
+                (
+                    &grouped,
+                    (values[0] == 1 || values[1] == 1) && values[2] == 1,
+                ),
+            ] {
+                let predicate = group.sql(Driver::Sqlite, &columns).unwrap().unwrap();
+                let actual: bool = db
+                    .query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM flags WHERE {predicate})"),
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(actual, expected, "{predicate}, input {values:?}");
+            }
+        }
+        for driver in Driver::ALL.into_iter().filter(|d| !d.is_nosql()) {
+            let sql = flat.sql(driver, &columns).unwrap().unwrap();
+            assert!(sql.contains(" AND ") && sql.contains(" OR "));
+            assert!(!sql.ends_with("OR)"), "last connector must not be emitted");
+        }
+    }
+
+    #[test]
+    fn disabled_rows_and_empty_groups_do_not_supply_connectors() {
+        let columns: Vec<_> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| ColumnInfo {
+                name: name.into(),
+                data_type: "integer".into(),
+                nullable: true,
+                primary_key: false,
+            })
+            .collect();
+        let mut disabled = flag("b", Connector::And);
+        if let Node::Condition(condition) = &mut disabled.node {
+            condition.enabled = false;
+        }
+        let mut group = Group {
+            children: vec![
+                flag("a", Connector::Or),
+                disabled,
+                FilterRow {
+                    node: Node::Group(Group::default()),
+                    connector: Connector::And,
+                },
+                flag("c", Connector::Or),
+            ],
+        };
+        assert_eq!(
+            group.sql(Driver::Sqlite, &columns).unwrap().unwrap(),
+            "(\"a\" = '1' OR \"c\" = '1')"
+        );
+        group.children.remove(0);
+        assert_eq!(
+            group.sql(Driver::Sqlite, &columns).unwrap().unwrap(),
+            "(\"c\" = '1')"
+        );
+        group.children.pop();
+        assert_eq!(group.sql(Driver::Sqlite, &columns).unwrap(), None);
+    }
+
+    #[test]
+    fn inline_logic_stays_before_remove_and_applies_only_on_request() {
+        use egui_kittest::kittest::Queryable;
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 500.0))
+            .build_ui_state(
+                move |ui, state: &mut FilterSort| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    state.show(ui, Driver::Sqlite, &columns());
+                },
+                FilterSort {
+                    filter: Group {
+                        children: (0..5).map(|_| flag("odd]name", Connector::And)).collect(),
+                    },
+                    ..Default::default()
+                },
+            );
+        h.run_steps(3);
+        assert!(h.query_by_label("All (AND)").is_none());
+        assert!(h.query_by_label("Any (OR)").is_none());
+        let connector = h.get_all_by_label("AND").nth(2).unwrap();
+        let remove = h.get_all_by_label("×").nth(2).unwrap();
+        assert!(connector.rect().right() <= remove.rect().left());
+        assert!((connector.rect().center().y - remove.rect().center().y).abs() < 2.0);
+        connector.click();
+        h.run_steps(3);
+        assert_eq!(h.state().filter.children[2].connector, Connector::Or);
+        assert!(h.state().pending.is_none());
+        h.get_by_label("Apply").click();
+        h.run_steps(3);
+        let expected = "(\"odd]name\" = '1' AND \"odd]name\" = '1' AND \"odd]name\" = '1' OR \"odd]name\" = '1' AND \"odd]name\" = '1')";
+        assert_eq!(h.state().pending.as_ref().unwrap().0, expected);
+        h.get_by_label("Text").click();
+        h.run_steps(3);
+        assert_eq!(h.state().where_text, expected);
+    }
+
     #[test]
     fn lists_are_literals_and_unknown_columns_are_rejected() {
         let mut c = Condition::new("odd]name".into());

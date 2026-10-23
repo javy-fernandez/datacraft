@@ -1,5 +1,6 @@
 {
   "app": {
+    "Joins the next enabled condition. Click to switch AND/OR.": "连接下一个已启用的条件。点击切换 AND/OR。",
     "Select a database in the explorer to browse its objects.": "在资源管理器中选择数据库以浏览其对象。",
     "Another save is in progress; try again when it finishes": "另一个保存操作正在进行；请在其完成后重试",
     "Cancel": "取消",

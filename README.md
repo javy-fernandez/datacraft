@@ -97,12 +97,12 @@ The cell editor supports multiline text and a UTF-8 hex view. The inspector swit
 
 ## Build filters before applying them
 
-Combine enabled conditions in nested **AND/OR** groups, choose comparison or text operators, and add ordered sort columns. Switch to **Text** mode for custom <code>WHERE</code> and <code>ORDER BY</code> expressions. Editing the draft does not run a query; **Apply** reloads the data.
+Choose **AND/OR** on each condition row to mix operators, and use groups with visible parentheses to control precedence. Add comparison or text conditions and ordered sort columns. Switch to **Text** mode for custom <code>WHERE</code> and <code>ORDER BY</code> expressions. Editing the draft does not run a query; **Apply** reloads the data.
 
 <p align="center">
   <img src="docs/screenshots/readme/filter-sort.png" alt="Full DataCraft window with the structured filter and sort builder above the table" width="100%">
   <br>
-  <sub>A filter draft and sort rule, ready to apply.</sub>
+  <sub>Mixed AND/OR conditions and a sort rule, ready to apply.</sub>
 </p>
 
 Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Schema…** searches the database instead. See [search behavior and scope](docs/navigation-search.md).

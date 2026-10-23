@@ -1,7 +1,7 @@
 //! Full-window documentation captures, rendered from the real app UI with synthetic data.
 use super::*;
 use crate::db::object_info::ObjectInfo;
-use crate::ui::filter_sort::{Condition, Node, Operator, SortRule};
+use crate::ui::filter_sort::{Condition, Connector, FilterRow, Group, Node, Operator, SortRule};
 use crate::ui::object_browser::{ObjectLayout, ObjectScope};
 use egui_kittest::{Harness, kittest::Queryable};
 
@@ -196,14 +196,42 @@ fn fixture(dark: bool) -> DataCraftApp {
             operator: Operator::Equal,
             value: "paid".into(),
             second: String::new(),
-        }),
+        })
+        .into(),
         Node::Condition(Condition {
             enabled: true,
             column: "total".into(),
             operator: Operator::GreaterEqual,
             value: "100".into(),
             second: String::new(),
-        }),
+        })
+        .into(),
+        FilterRow {
+            connector: Connector::Or,
+            node: Node::Condition(Condition {
+                enabled: true,
+                column: "note".into(),
+                operator: Operator::NotNull,
+                value: String::new(),
+                second: String::new(),
+            }),
+        },
+        Node::Condition(Condition {
+            enabled: true,
+            column: "status".into(),
+            operator: Operator::Equal,
+            value: "pending".into(),
+            second: String::new(),
+        })
+        .into(),
+        Node::Condition(Condition {
+            enabled: true,
+            column: "total".into(),
+            operator: Operator::GreaterEqual,
+            value: "200".into(),
+            second: String::new(),
+        })
+        .into(),
     ];
     state.filter_sort.sort.push(SortRule {
         enabled: true,
@@ -301,6 +329,28 @@ fn render_readme_screenshots() {
     h.render()
         .unwrap()
         .save(dir.join("filter-sort.png"))
+        .unwrap();
+    let children = &mut h.state_mut().consoles[1]
+        .table
+        .as_mut()
+        .unwrap()
+        .filter_sort
+        .filter
+        .children;
+    let rows = std::mem::take(children);
+    let mut paid = rows[0].clone();
+    paid.connector = Connector::Or;
+    *children = vec![
+        Node::Group(Group {
+            children: vec![paid, rows[3].clone()],
+        })
+        .into(),
+        rows[1].clone(),
+    ];
+    h.run_steps(3);
+    h.render()
+        .unwrap()
+        .save(dir.join("filter-groups.png"))
         .unwrap();
     h.get_by_label("Filter & Sort").click();
     h.get_by_label("Cell Editor").click();

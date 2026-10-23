@@ -1,5 +1,6 @@
 {
   "app": {
+    "Joins the next enabled condition. Click to switch AND/OR.": "Liga à próxima condição ativada. Clique para alternar AND/OR.",
     "Select a database in the explorer to browse its objects.": "Selecione um banco de dados no explorador para ver seus objetos.",
     "Another save is in progress; try again when it finishes": "Outro salvamento está em andamento; tente novamente quando terminar",
     "Cancel": "Cancelar",

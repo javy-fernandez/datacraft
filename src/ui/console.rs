@@ -2340,7 +2340,7 @@ mod tests {
         let table = console.table.as_mut().unwrap();
         table.loaded = true; table.save_on_row_change = true;
         table.info = Some(Ok(crate::db::object_info::ObjectInfo { rows: Some(48), engine: Some("InnoDB".into()), auto_increment: Some(49), row_format: Some("Dynamic".into()), created: Some("2026-10-01 09:30:00".into()), modified: Some("2026-10-23 12:00:00".into()), data_bytes: Some(16384), index_bytes: Some(16384), collation: Some("utf8mb4_unicode_ci".into()), comment: Some("Customer orders".into()), ..Default::default() }));
-        table.filter_sort.filter.children = vec![Node::Condition(Condition { enabled: true, column: "status".into(), operator: Operator::Equal, value: "paid".into(), second: String::new() }), Node::Condition(Condition { enabled: true, column: "total".into(), operator: Operator::GreaterEqual, value: "100".into(), second: String::new() })];
+        table.filter_sort.filter.children = vec![Node::Condition(Condition { enabled: true, column: "status".into(), operator: Operator::Equal, value: "paid".into(), second: String::new() }).into(), Node::Condition(Condition { enabled: true, column: "total".into(), operator: Operator::GreaterEqual, value: "100".into(), second: String::new() }).into()];
         table.filter_sort.sort.push(SortRule { enabled: true, column: "total".into(), descending: true });
         let schemas = vec![SchemaInfo { name: "shop".into(), tables: ["customers", "orders", "products"].into_iter().map(|name| TableInfo { name: name.into(), kind: ObjectKind::Table, columns: columns.clone() }).collect() }];
         let mut cfg = ConnectionConfig::new(1, Driver::MariaDb); cfg.name = "Development".into(); cfg.database = "shop".into();

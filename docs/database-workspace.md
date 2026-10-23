@@ -24,6 +24,13 @@ Reset discards only the current panel draft. Hex is a viewer, not a binary edito
 Colored add buttons distinguish adding conditions, groups and sort columns.
 The filter builder supports enabled conditions, nested AND/OR groups, ranges,
 newline-separated value lists, NULL/empty values and literal text matching.
+Each row's AND/OR button, immediately before its remove button, joins it to the
+next enabled condition at the same level. Click it to switch operators; the last
+row has no trailing connector. Disabled conditions and empty groups are skipped.
+AND binds more tightly than OR: `X AND Y AND Z OR P AND Q` means
+`(X AND Y AND Z) OR (P AND Q)`. Use the visible group parentheses for a different
+order, such as `(X OR Y) AND Z`. Removing a row also removes its connector.
+[Grouped filter example](screenshots/readme/filter-groups.png).
 Pattern characters are escaped. Sort rules can be reordered independently. Text
 mode accepts custom WHERE and ORDER BY expressions. Apply reloads the first page;
 changing a draft alone does not query the database. Pending edits require the
