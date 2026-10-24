@@ -2223,6 +2223,7 @@ mod tests {
             key_cols: vec![0],
             binary_cols: vec![false, false],
             has_pk: true,
+            insert_only: false,
         }));
         view.begin_edit(0, 1);
         console.results.push(view);
@@ -2333,7 +2334,7 @@ mod tests {
         let mut console = Console::new_table(1, 1, Some("shop".into()), "shop".into(), "orders".into());
         let rows = (1..=48).map(|id| vec![Some(id.to_string()), Some(format!("Customer {id:02}")), Some(if id % 3 == 0 { "pending" } else { "paid" }.into()), Some(format!("{}.00", id * 25)), Some("2026-10-23 12:00:00".into()), Some("Delivery instructions\nLeave at reception.".into())]).collect();
         let mut view = ResultView::new(crate::db::ResultSet { columns: columns.iter().map(|c| c.name.clone()).collect(), rows, ..Default::default() }, 42);
-        view.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "shop".into(), table: "orders".into(), col_names: view.rs.columns.clone(), key_cols: vec![0], binary_cols: vec![false; 6], has_pk: true }));
+        view.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "shop".into(), table: "orders".into(), col_names: view.rs.columns.clone(), key_cols: vec![0], binary_cols: vec![false; 6], has_pk: true, insert_only: false }));
         view.begin_edit(0, 5); view.finish_inline_edit();
         console.results.push(view);
         console.last_statements.push("SELECT * FROM `shop`.`orders` ORDER BY `id` LIMIT 1000".into());

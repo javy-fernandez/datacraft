@@ -84,7 +84,7 @@ pub fn object_sql(driver: Driver, kind: DropKind, schema: &str, name: &str, new_
                     let old = format!("{}.{}", q(schema), q(name)).replace('\'', "''");
                     format!("exec sp_rename '{old}', '{}'", new_name.replace('\'', "''"))
                 }
-                Driver::MySql | Driver::MariaDb => format!("rename table {} to {}", object(schema, name), object(schema, new_name)),
+                Driver::MySql | Driver::MariaDb | Driver::ClickHouse => format!("rename table {} to {}", object(schema, name), object(schema, new_name)),
                 // Snowflake resolves an unqualified new name in the session's current schema.
                 Driver::Snowflake => format!("alter table {} rename to {}", object(schema, name), object(schema, new_name)),
                 // The new name can't be qualified on PostgreSQL, SQLite or Oracle.
@@ -234,6 +234,7 @@ mod tests {
         assert_eq!(t(Driver::Postgres, DropKind::Rename, " goods "), "alter table s.items rename to goods");
         assert_eq!(t(Driver::Sqlite, DropKind::Rename, "goods"), "alter table items rename to goods");
         assert_eq!(t(Driver::MySql, DropKind::Rename, "goods"), "rename table s.items to s.goods");
+        assert_eq!(t(Driver::ClickHouse, DropKind::Rename, "goods"), "rename table s.items to s.goods");
         assert_eq!(t(Driver::MsSql, DropKind::Rename, "it's"), "exec sp_rename 's.items', 'it''s'");
         assert_eq!(object_sql(Driver::Oracle, DropKind::Rename, "HR", "ITEMS", "GOODS"), "alter table HR.ITEMS rename to GOODS");
         assert_eq!(object_sql(Driver::Oracle, DropKind::Rename, "HR", "ITEMS", "goods"), "alter table HR.ITEMS rename to GOODS");

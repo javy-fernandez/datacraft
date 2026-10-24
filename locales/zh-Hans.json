@@ -485,7 +485,11 @@
     "Bring All to Front": "全部置于顶层",
     "DataCraft Help": "DataCraft 帮助",
     "Query cancelled": "查询已取消",
-    "Query cancelled; the connection was closed and will reopen on the next run": "查询已取消；连接已关闭，将在下次运行时重新打开"
+    "Query cancelled; the connection was closed and will reopen on the next run": "查询已取消；连接已关闭，将在下次运行时重新打开",
+    "Could not connect to {host}:{port}: {error}": "无法连接到 {host}:{port}：{error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse 以异步变更方式执行 UPDATE 和 DELETE，且不报告受影响行数；请在 SQL 控制台中运行它们",
+    "Code {code} ({name}): {message}": "代码 {code} ({name})：{message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse 在创建表时确定主键和索引；请在 SQL 控制台中修改它们"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "错误 {code}（SQLSTATE {state}）：{message}"

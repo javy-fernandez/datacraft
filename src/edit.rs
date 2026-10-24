@@ -29,8 +29,9 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
             let escaped = v.replace('\'', "''");
             match driver {
                 Driver::MsSql => format!("N'{escaped}'"),
-                // MySQL and Snowflake also treat a backslash as an escape inside strings.
-                Driver::MySql | Driver::MariaDb | Driver::Snowflake => format!("'{}'", escaped.replace('\\', "\\\\")),
+                // MySQL and Snowflake also treat a backslash as an escape inside strings; ClickHouse
+                // does the same inside '…' (its `"…"` stays an identifier).
+                Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => format!("'{}'", escaped.replace('\\', "\\\\")),
                 Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb => format!("'{escaped}'"),
             }
         }
@@ -143,6 +144,7 @@ mod tests {
     fn odd_identifiers() {
         assert_eq!(quote_ident(Driver::MsSql, "a]b"), "[a]]b]");
         assert_eq!(quote_ident(Driver::Postgres, "a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_ident(Driver::ClickHouse, r"a`b\"), r"`a\`b\\`");
         assert!(is_lossy_display(&Some("0xFF…".into())));
         assert!(!is_lossy_display(&Some("0xFF".into())));
     }

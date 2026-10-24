@@ -67,6 +67,11 @@ pub(crate) fn common_types(driver: Driver) -> &'static [&'static str] {
             "clob", "date", "timestamp", "blob", "raw(16)",
         ],
         Driver::Redis | Driver::MongoDb => &[],
+        Driver::ClickHouse => &[
+            "UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64", "Float32", "Float64",
+            "Decimal(18, 2)", "String", "UUID", "Date", "DateTime", "DateTime64(3)", "Bool", "LowCardinality(String)",
+            "Nullable(String)", "Array(String)",
+        ],
         Driver::Snowflake => &[
             "number(38,0)", "number(10,2)", "float", "boolean", "varchar", "varchar(255)", "date", "time",
             "timestamp_ntz", "timestamp_ltz", "timestamp_tz", "variant", "object", "array", "binary",
@@ -82,6 +87,8 @@ pub fn default_schema(driver: Driver) -> &'static str {
         Driver::Sqlite => "main",
         Driver::Snowflake => "PUBLIC",
         Driver::Redis | Driver::MongoDb => "",
+        // ClickHouse has no schemas: the (only) database is the schema shown.
+        Driver::ClickHouse => "default",
         // MySQL: the database itself; Oracle: the connected user (filled in by the caller).
         Driver::MySql | Driver::MariaDb | Driver::Oracle => "",
     }
@@ -95,6 +102,7 @@ fn id_column(driver: Driver) -> NewColumn {
         Driver::MySql | Driver::MariaDb => "int",
         Driver::Oracle => "number(10)",
         Driver::Snowflake => "number(38,0)",
+        Driver::ClickHouse => "UInt64",
         Driver::Redis | Driver::MongoDb => "string",
     };
     NewColumn { name: "id".into(), data_type: data_type.into(), not_null: true, primary_key: true, default: String::new() }
@@ -111,6 +119,13 @@ pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[Ne
     let mut lines: Vec<String> = columns
         .iter()
         .map(|c| {
+            if driver == Driver::ClickHouse {
+                let mut l = format!("    {} {}", q(&c.name), crate::db::clickhouse::column_type(&c.data_type, c.not_null || c.primary_key));
+                if !c.default.trim().is_empty() {
+                    l.push_str(&format!(" default {}", c.default.trim()));
+                }
+                return l;
+            }
             let mut l = format!("    {} {}", q(&c.name), c.data_type.trim());
             if c.not_null || c.primary_key {
                 l.push_str(" not null");
@@ -125,7 +140,14 @@ pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[Ne
     if !pk.is_empty() {
         lines.push(format!("    primary key ({})", pk.join(", ")));
     }
-    format!("create table {qualified}\n(\n{}\n)", lines.join(",\n"))
+    let mut sql = format!("create table {qualified}\n(\n{}\n)", lines.join(",\n"));
+    if driver == Driver::ClickHouse {
+        // Mandatory: without an ENGINE clause the server uses its `default_table_engine`
+        // (Memory: the data would vanish on restart). MergeTree with the PK as ORDER BY.
+        let order = if pk.is_empty() { "tuple()".to_string() } else { pk.join(", ") };
+        sql.push_str(&format!("\nengine = MergeTree\norder by ({order})"));
+    }
+    sql
 }
 
 /// Demo mode: sample columns for the "New Table" dialog.
@@ -565,6 +587,18 @@ mod tests {
         );
         assert!(create_table_sql(Driver::MsSql, "dbo", "Order", &cols).starts_with("create table dbo.[Order]\n"));
         assert!(create_table_sql(Driver::Sqlite, "main", "items", &cols).starts_with("create table items\n"));
+    }
+
+    #[test]
+    fn clickhouse_table_sql() {
+        // Nullability goes in the type; MergeTree with the PK as ORDER BY (or `tuple()`).
+        let cols = [col("id", "UInt64", false, true, ""), col("name", "String", true, false, "'n/a'"), col("note", "Nullable(String)", false, false, "")];
+        assert_eq!(
+            create_table_sql(Driver::ClickHouse, "default", "items", &cols),
+            "create table `default`.items\n(\n    id UInt64,\n    name String default 'n/a',\n    note Nullable(String),\n    primary key (id)\n)\nengine = MergeTree\norder by (id)"
+        );
+        let cols = [col("x", "String", false, false, "")];
+        assert!(create_table_sql(Driver::ClickHouse, "db", "t", &cols).ends_with("    x String null\n)\nengine = MergeTree\norder by (tuple())"));
     }
 
     #[test]

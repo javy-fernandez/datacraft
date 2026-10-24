@@ -133,6 +133,7 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
 | SQLite | Local database files, SQL console, data editor and online backups |
+| ClickHouse | Native TCP protocol (port 9000), SQL console and data editor for inserts only (updates and deletes are asynchronous mutations, run them from the console) |
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
 
@@ -176,6 +177,15 @@ cargo build --locked --release
 ~~~
 
 The output is <code>target/release/datacraft.exe</code>. Native MSVC builds require the Visual Studio C++ build tools and Windows SDK, including the resource compiler used to embed the application icon.
+
+On Linux, the same commands build a native Wayland/X11 app rendered with Vulkan. The build links the system SQLite and D-Bus libraries, so install their development packages first:
+
+~~~sh
+sudo dnf install gcc pkgconf-pkg-config sqlite-devel dbus-devel      # Fedora
+sudo apt install build-essential pkg-config libsqlite3-dev libdbus-1-dev  # Debian / Ubuntu
+~~~
+
+At runtime it needs a Vulkan driver and a Secret Service provider, such as GNOME Keyring or KWallet, to store saved passwords.
 
 On macOS:
 

@@ -336,9 +336,13 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
         (Kind::Bool, MsSql) => "bit".into(),
         (Kind::Bool, Oracle) => "number(1)".into(),
         (Kind::Bool, _) => "boolean".into(),
+        (Kind::Date, ClickHouse) => "Date".into(),
         (Kind::Date, _) => "date".into(),
+        // ClickHouse: Time exists only on recent servers; text is the portable choice.
+        (Kind::Time, ClickHouse) => "String".into(),
         (Kind::Time, Oracle) => "varchar2(32)".into(),
         (Kind::Time, _) => "time".into(),
+        (Kind::Timestamp | Kind::TimestampTz, ClickHouse) => "DateTime".into(),
         (Kind::Timestamp, MsSql) => "datetime2".into(),
         (Kind::Timestamp, MySql | MariaDb) => "datetime(6)".into(),
         (Kind::Timestamp, Snowflake) => "timestamp_ntz".into(),
@@ -352,6 +356,8 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
         (Kind::Varchar(n), MySql | MariaDb) if n <= 16_000 => format!("varchar({n})"),
         (Kind::Varchar(n), Oracle) if n <= 4000 => format!("varchar2({n} char)"),
         (Kind::Varchar(n), Postgres | Snowflake) => format!("varchar({n})"),
+        // ClickHouse has no sized strings and no separate text/blob types.
+        (Kind::Varchar(_) | Kind::Text | Kind::Binary, ClickHouse) => "String".into(),
         (Kind::Text, Postgres) => "text".into(),
         (Kind::Varchar(_) | Kind::Text, MsSql) => "nvarchar(max)".into(),
         (Kind::Varchar(_) | Kind::Text, MySql | MariaDb) => "longtext".into(),

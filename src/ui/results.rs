@@ -1660,7 +1660,9 @@ pub fn show_result(
                                     actions.push(GridAction::Revert(rref, c));
                                     ui.close();
                                 }
-                                if ui.add_enabled(!deleted, egui::Button::new(tr("Delete row"))).clicked() {
+                                // Insert-only targets (ClickHouse) can't delete rows already stored.
+                                let insert_only = edit.is_some_and(|e| e.target.insert_only) && matches!(rref, RowRef::Existing(_));
+                                if ui.add_enabled(!deleted && !insert_only, egui::Button::new(tr("Delete row"))).clicked() {
                                     actions.push(GridAction::DeleteRows);
                                     ui.close();
                                 }
@@ -2442,6 +2444,7 @@ mod keyboard_tests {
             key_cols: vec![0],
             binary_cols: vec![false, false],
             has_pk: true,
+            insert_only: false,
         }));
         view.selected = Some((0, 1));
         view.selected_rows = BTreeSet::from([0]);
@@ -2529,6 +2532,7 @@ mod keyboard_tests {
             key_cols: vec![0],
             binary_cols: vec![false; 7],
             has_pk: true,
+            insert_only: false,
         }));
         v.select_cell(0, 2, Modifiers::NONE);
         v.select_cell(9, 2, Modifiers::SHIFT);

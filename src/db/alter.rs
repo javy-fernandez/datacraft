@@ -279,6 +279,38 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
                 rs.rows.iter().filter(|r| text(&r[0]) != "PRIMARY").map(|r| (text(&r[0]), text(&r[1]) == "0", r[2].clone(), false)),
             );
         }
+        Driver::ClickHouse => {
+            let rs = query(
+                s,
+                &format!(
+                    "select name, type, startsWith(type, 'Nullable('), default_kind, default_expression, comment, is_in_primary_key \
+                     from system.columns where database = {sch} and table = {tab} order by position"
+                ),
+            )
+            .await?;
+            d.columns = rs
+                .rows
+                .iter()
+                .map(|r| {
+                    // ALIAS and MATERIALIZED are computed columns (not stored); DEFAULT is a
+                    // stored default.
+                    let kind = text(&r[3]);
+                    let generated = matches!(kind.as_str(), "ALIAS" | "MATERIALIZED");
+                    ColumnDef {
+                        name: text(&r[0]),
+                        data_type: text(&r[1]),
+                        nullable: text(&r[2]) == "1",
+                        default: if kind == "DEFAULT" && !text(&r[4]).is_empty() { Some(text(&r[4])) } else { None },
+                        extra: if generated { kind } else { String::new() },
+                        comment: text(&r[5]),
+                        generated,
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            // Data-skipping indexes are not part of this view (they can't be changed here).
+            d.primary_key = rs.rows.iter().filter(|r| text(&r[6]) == "1").map(|r| text(&r[0])).collect();
+        }
         Driver::MsSql => {
             let obj = lit(&format!("{}.{}", Driver::MsSql.quote_ident(schema), Driver::MsSql.quote_ident(table)));
             let rs = query(
@@ -733,6 +765,9 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
     let mut out = vec![];
     let alter = |s: String| format!("alter table {t} {s}");
 
+    if driver == Driver::ClickHouse && (diff.pk_changed || !diff.added_indexes.is_empty() || !diff.dropped_indexes.is_empty()) {
+        return Err(tr("ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console").into());
+    }
     if driver == Driver::MySql || driver == Driver::MariaDb {
         // One ALTER TABLE: MySQL applies its clauses together (an auto_increment key can move).
         let mut clauses = vec![];
@@ -865,6 +900,20 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                         out.push(alter(format!("alter column {col} drop default")));
                     }
                 }
+                // Nullability is part of the type (`Nullable(T)`), so it changes with it; the
+                // DEFAULT goes in the same MODIFY (the server needs it to fill NULLs when the
+                // column becomes NOT NULL).
+                Driver::ClickHouse => {
+                    let default_clause = if default.is_empty() { String::new() } else { format!(" default {default}") };
+                    if c.ty || c.null {
+                        out.push(alter(format!("modify column {col} {}{default_clause}", crate::db::clickhouse::column_type(&c.new.data_type, not_null))));
+                    } else if c.default && !default.is_empty() {
+                        out.push(alter(format!("modify column {col}{default_clause}")));
+                    }
+                    if c.default && default.is_empty() {
+                        out.push(alter(format!("modify column {col} remove default")));
+                    }
+                }
                 // SQLite: only renames get here (the rest rebuilds the table).
                 _ => {}
             }
@@ -874,6 +923,11 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
             out.push(match driver {
                 Driver::Oracle => alter(format!("add ({} {})", q(name), column_def(c))),
                 Driver::MsSql => alter(format!("add {} {}", q(name), column_def(c))),
+                Driver::ClickHouse => {
+                    let ty = crate::db::clickhouse::column_type(&c.data_type, c.not_null || c.primary_key);
+                    let default = c.default.trim();
+                    alter(format!("add column {} {ty}{}", q(name), if default.is_empty() { String::new() } else { format!(" default {default}") }))
+                }
                 _ => alter(format!("add column {} {}", q(name), column_def(c))),
             });
         }
@@ -1164,6 +1218,43 @@ mod tests {
             .map(|s| s.replace("HR.items_name", "HR.\"items_name\""))
         );
         assert!(!p.transaction);
+    }
+
+    #[test]
+    fn clickhouse() {
+        let mut d = details("UInt64", "String");
+        d.indexes.clear();
+        // The primary key and indexes are fixed when the table is created.
+        let (cols, indexes) = edit_all(&d);
+        assert!(plan(Driver::ClickHouse, &d, &TableEdit { schema: "db", table: "items", new_name: "goods", columns: &cols, indexes: &indexes }).is_err());
+        let mut cols = initial_columns(&d);
+        cols[1].column.name = "title".into();
+        cols[1].column.data_type = "LowCardinality(String)".into();
+        cols[2].column.not_null = true;
+        cols[2].column.default = "1".into();
+        cols.remove(3);
+        cols.push(EditColumn {
+            original: None,
+            column: NewColumn { name: "email".into(), data_type: "String".into(), not_null: false, primary_key: false, default: String::new() },
+        });
+        let p = plan(Driver::ClickHouse, &d, &TableEdit { schema: "db", table: "items", new_name: "goods", columns: &cols, indexes: &[] }).unwrap();
+        assert_eq!(
+            p.statements,
+            [
+                "alter table db.items drop column note",
+                "alter table db.items rename column name to title",
+                "alter table db.items modify column title LowCardinality(String)",
+                "alter table db.items modify column price UInt64 default 1",
+                "alter table db.items add column email String null",
+                "rename table db.items to db.goods",
+            ]
+        );
+        assert!(!p.transaction);
+        // Removing a default alone.
+        let mut cols = initial_columns(&d);
+        cols[2].column.default = String::new();
+        let p = plan(Driver::ClickHouse, &d, &TableEdit { schema: "db", table: "items", new_name: "items", columns: &cols, indexes: &[] }).unwrap();
+        assert_eq!(p.statements, ["alter table db.items modify column price remove default"]);
     }
 
     #[test]

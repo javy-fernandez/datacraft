@@ -396,6 +396,8 @@ pub fn driver_color(driver: Driver, p: &Palette) -> Color32 {
         Driver::MariaDb => Color32::from_rgb(0xC0, 0x76, 0x5A),
         Driver::Oracle => Color32::from_rgb(0xC7, 0x46, 0x34),
         Driver::Snowflake => Color32::from_rgb(0x29, 0xB5, 0xE8),
+        // ClickHouse yellow.
+        Driver::ClickHouse => Color32::from_rgb(0xFC, 0xCC, 0x01),
         Driver::Redis => Color32::from_rgb(0xD8, 0x2C, 0x20),
         Driver::MongoDb => Color32::from_rgb(0x13, 0xAA, 0x52),
     }

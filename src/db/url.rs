@@ -22,6 +22,7 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::Snowflake => snowflake::jdbc_url(cfg),
         Driver::Redis => format!("redis://{authority}{slash_db}{extra}"),
         Driver::MongoDb => format!("mongodb://{authority}{slash_db}{extra}"),
+        Driver::ClickHouse => format!("clickhouse://{authority}{slash_db}{extra}"),
     }
 }
 
@@ -44,6 +45,7 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
         Driver::Snowflake => return snowflake::apply_jdbc_url(cfg, url),
         Driver::Redis => "redis://",
         Driver::MongoDb => "mongodb://",
+        Driver::ClickHouse => "clickhouse://",
     };
     let Some(rest) = url.strip_prefix(prefix) else { return false };
     let default_port = cfg.driver.default_port();

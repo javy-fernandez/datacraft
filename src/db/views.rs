@@ -271,6 +271,12 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             lit(view)
         ),
         Driver::MySql | Driver::MariaDb => format!("SHOW CREATE VIEW {}", Session::quote_table(driver, schema, view)),
+        // The CREATE VIEW statement (same shape MySQL's SHOW returns).
+        Driver::ClickHouse => format!(
+            "SELECT create_table_query FROM system.tables WHERE database = {} AND name = {} AND engine = 'View'",
+            lit(schema),
+            lit(view)
+        ),
         Driver::MsSql => format!("SELECT OBJECT_DEFINITION(OBJECT_ID({}))", lit(&Session::quote_table(driver, schema, view))),
         // TEXT is a LONG: fetched as text, one row.
         Driver::Oracle => format!("SELECT text FROM all_views WHERE owner = {} AND view_name = {}", lit(schema), lit(view)),
