@@ -52,6 +52,14 @@ wgpu = { version = "30", default-features = false, features = ["std", "parking_l
 keyring = { version = "3", features = ["windows-native"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
+# Linux: ventanas Wayland + X11, Vulkan para la GPU y el Secret Service (GNOME Keyring / KWallet)
+# para las contraseñas. SQLite enlaza contra la libsqlite3 del sistema, como en macOS (necesita
+# sqlite-devel). Nada de esto entra en las compilaciones de macOS ni de Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

@@ -650,6 +650,8 @@ pub fn tab(ui: &mut Ui, selected: bool, ico: Option<Ico>, text: &str, closable: 
 
 #[cfg(test)]
 mod tests {
+    // Its only test is macOS/Windows: unused on Linux.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::*;
 
     /// Issue #4: CJK, Hangul and Thai in the grid and the UI used to show as boxes.
