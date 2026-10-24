@@ -890,6 +890,8 @@ impl DataCraftApp {
             }
             let read_only = c.conn.and_then(|id| self.conn(id)).is_some_and(|cs| cs.cfg.read_only);
             let driver = c.conn.and_then(|id| self.conn(id)).map(|cs| cs.cfg.driver);
+            // ClickHouse: existing rows are read-only (mutations), but inserts still work.
+            let insert_only = driver == Some(Driver::ClickHouse);
             let nosql = driver.is_some_and(|d| d.is_nosql());
             let target = match (c.conn, &c.table) {
                 (None, _) => Err(tr("No connection").to_string()),
@@ -908,7 +910,7 @@ impl DataCraftApp {
                     None => Err(tr("Database schema not loaded yet").to_string()),
                 },
             };
-            targets.push((i, target));
+            targets.push((i, target.map(|t| crate::ui::editing::EditTarget { insert_only, ..t })));
         }
         let c = &mut self.consoles[idx];
         for (i, t) in targets {
@@ -3971,7 +3973,7 @@ mod tests {
         let index = app.active;
         let id = app.consoles[index].id;
         let mut result = ResultView::new(crate::db::ResultSet { columns: vec!["id".into()], rows: vec![vec![Some("1".into())]], ..Default::default() }, 991);
-        result.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true }));
+        result.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true, insert_only: false }));
         result.edit.as_mut().unwrap().state.set_value(&result.rs, crate::ui::editing::RowRef::Existing(0), 0, Some("2".into()));
         app.consoles[index].results.push(result);
         app.consoles[index].table.as_mut().unwrap().filter_sort.pending = Some(("id > 10".into(), "id DESC".into()));
@@ -4025,7 +4027,7 @@ mod tests {
         use crate::ui::editing::{EditTarget, RowRef};
         let mut app = tabs_app();
         let mut view = ResultView::new(ResultSet { columns: vec!["note".into()], rows: vec![vec![Some("before".into())]], ..Default::default() }, 1);
-        view.set_edit_target(Ok(EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["note".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: false }));
+        view.set_edit_target(Ok(EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["note".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: false, insert_only: false }));
         view.edit.as_mut().unwrap().state.set_value(&view.rs, RowRef::Existing(0), 0, Some("after".into()));
         app.consoles[3].results.push(view);
         let action = Discard::CloseTabs(2, CloseResults::Right(1));

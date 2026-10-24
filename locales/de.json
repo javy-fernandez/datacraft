@@ -485,7 +485,11 @@
     "Bring All to Front": "Alle nach vorne bringen",
     "DataCraft Help": "DataCraft-Hilfe",
     "Query cancelled": "Abfrage abgebrochen",
-    "Query cancelled; the connection was closed and will reopen on the next run": "Abfrage abgebrochen; die Verbindung wurde geschlossen und wird bei der nächsten Ausführung neu geöffnet"
+    "Query cancelled; the connection was closed and will reopen on the next run": "Abfrage abgebrochen; die Verbindung wurde geschlossen und wird bei der nächsten Ausführung neu geöffnet",
+    "Could not connect to {host}:{port}: {error}": "Verbindung zu {host}:{port} fehlgeschlagen: {error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse wendet UPDATE und DELETE als asynchrone Mutationen an, die keine betroffenen Zeilen melden; führen Sie sie in einer SQL-Konsole aus",
+    "Code {code} ({name}): {message}": "Code {code} ({name}): {message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse legt Primärschlüssel und Indizes beim Erstellen der Tabelle fest; ändern Sie sie in einer SQL-Konsole"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Fehler {code} (SQLSTATE {state}): {message}"

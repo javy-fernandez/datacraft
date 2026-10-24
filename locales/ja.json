@@ -485,7 +485,11 @@
     "Bring All to Front": "すべてを手前に移動",
     "DataCraft Help": "DataCraft ヘルプ",
     "Query cancelled": "クエリをキャンセルしました",
-    "Query cancelled; the connection was closed and will reopen on the next run": "クエリをキャンセルしました。接続は閉じられ、次回の実行時に再接続されます"
+    "Query cancelled; the connection was closed and will reopen on the next run": "クエリをキャンセルしました。接続は閉じられ、次回の実行時に再接続されます",
+    "Could not connect to {host}:{port}: {error}": "{host}:{port} に接続できませんでした: {error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse の UPDATE と DELETE は非同期ミューテーションであり、影響行数を報告しません。SQL コンソールで実行してください",
+    "Code {code} ({name}): {message}": "コード {code} ({name}): {message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse では主キーとインデックスはテーブル作成時に固定されます。SQL コンソールで変更してください"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "エラー {code} (SQLSTATE {state}): {message}"

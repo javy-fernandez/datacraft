@@ -37,7 +37,7 @@ impl UserModel {
             Driver::MySql | Driver::MariaDb => Some(UserModel::MySql),
             Driver::Postgres => Some(UserModel::Postgres),
             // Extension points: SQL Server logins, Oracle users, Snowflake users and roles…
-            Driver::Sqlite | Driver::MsSql | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => None,
+            Driver::Sqlite | Driver::MsSql | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb => None,
         }
     }
 }

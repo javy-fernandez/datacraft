@@ -292,7 +292,7 @@ pub fn statement_at(script: &str, cursor: usize, driver: Driver) -> Option<State
 /// function bodies and Snowflake's `$$…$$` procedure bodies).
 pub fn split_batches(script: &str, driver: Driver) -> Vec<Statement> {
     match driver {
-        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
+        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb => {
             split_statements(script, driver)
         }
         Driver::MsSql | Driver::Sqlite => {
@@ -686,7 +686,7 @@ pub fn explain_statements(stmt: &str, driver: Driver) -> Vec<String> {
         return Vec::new();
     }
     match driver {
-        Driver::Postgres | Driver::MySql | Driver::MariaDb => vec![format!("EXPLAIN {s}")],
+        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::ClickHouse => vec![format!("EXPLAIN {s}")],
         Driver::Sqlite => vec![format!("EXPLAIN QUERY PLAN {s}")],
         Driver::Snowflake => vec![format!("EXPLAIN USING TEXT {s}")],
         Driver::Redis | Driver::MongoDb => Vec::new(),
@@ -1278,6 +1278,22 @@ impl Dialect {
                 tsql_names: false,
                 go_separator: false,
                 hash_comments: false,
+                backslash_escapes: false,
+                q_quotes: false,
+                slash_separator: false,
+                single_quote_backslash: true,
+                slash_comments: true,
+            },
+            // Backtick identifiers; `#` and `//` are also line comments; `\` escapes only in
+            // '…' (its "…" is an identifier, not a string).
+            Driver::ClickHouse => Dialect {
+                brackets: false,
+                backticks: true,
+                dollar_quotes: false,
+                nested_comments: false,
+                tsql_names: false,
+                go_separator: false,
+                hash_comments: true,
                 backslash_escapes: false,
                 q_quotes: false,
                 slash_separator: false,

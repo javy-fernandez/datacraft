@@ -105,6 +105,7 @@ fn search_sql(
                 Driver::Snowflake => format!("TO_VARCHAR({column})"),
                 Driver::Redis | Driver::MongoDb => column.clone(),
                 Driver::Postgres | Driver::Sqlite => format!("CAST({column} AS TEXT)"),
+                Driver::ClickHouse => format!("CAST({column} AS String)"),
             };
             let text = if request.case_sensitive {
                 text

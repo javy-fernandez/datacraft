@@ -7,6 +7,7 @@ pub mod alter;
 pub mod copy;
 pub mod create_db;
 pub mod backup;
+pub mod clickhouse;
 pub mod mongo;
 pub mod mssql;
 pub mod object_info;
@@ -34,19 +35,21 @@ pub enum Driver {
     MariaDb,
     Oracle,
     Snowflake,
+    ClickHouse,
     /// Redis and Valkey (same protocol).
     Redis,
     MongoDb,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 9] = [
+    pub const ALL: [Driver; 10] = [
         Driver::Postgres,
         Driver::MySql,
         Driver::MariaDb,
         Driver::MsSql,
         Driver::Oracle,
         Driver::Snowflake,
+        Driver::ClickHouse,
         Driver::Sqlite,
         Driver::MongoDb,
         Driver::Redis,
@@ -67,6 +70,7 @@ impl Driver {
             Driver::MariaDb => "MariaDB",
             Driver::Oracle => "Oracle",
             Driver::Snowflake => "Snowflake",
+            Driver::ClickHouse => "ClickHouse",
             Driver::Redis => "Redis / Valkey",
             Driver::MongoDb => "MongoDB",
         }
@@ -79,6 +83,7 @@ impl Driver {
             Driver::MySql | Driver::MariaDb => 3306,
             Driver::Oracle => 1521,
             Driver::Snowflake => 443,
+            Driver::ClickHouse => 9000,
             Driver::Redis => 6379,
             Driver::MongoDb => 27017,
             Driver::Sqlite => 0,
@@ -88,7 +93,7 @@ impl Driver {
     /// Engines where each database has a single schema with its own name (SQLite: "main"),
     /// shown flattened in the explorer.
     pub fn flat_schema(self) -> bool {
-        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Redis | Driver::MongoDb)
+        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb)
     }
 
     /// Engines whose server has several databases that can be created and dropped from the app.
@@ -101,6 +106,9 @@ impl Driver {
         match self {
             Driver::MsSql => format!("[{}]", name.replace(']', "]]")),
             Driver::MySql | Driver::MariaDb => format!("`{}`", name.replace('`', "``")),
+            // ClickHouse also quotes with backticks, but escapes with a backslash (so a backslash
+            // in the name is escaped too).
+            Driver::ClickHouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
             Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
@@ -190,6 +198,7 @@ impl ConnectionConfig {
                 Driver::Oracle => "FREEPDB1".into(),
                 Driver::MongoDb => "test".into(),
                 Driver::Redis => "0".into(),
+                Driver::ClickHouse => "default".into(),
                 Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Snowflake => String::new(),
             },
             user: match driver {
@@ -197,6 +206,7 @@ impl ConnectionConfig {
                 Driver::MsSql => "sa".into(),
                 Driver::MySql | Driver::MariaDb => "root".into(),
                 Driver::Oracle => "system".into(),
+                Driver::ClickHouse => "default".into(),
                 Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb => String::new(),
             },
             password: String::new(),
@@ -372,6 +382,7 @@ pub enum Session {
     MySql(Box<mysql::MySession>),
     Oracle(Box<oracle::OraSession>),
     Snowflake(Box<snowflake::SfSession>),
+    ClickHouse(Box<clickhouse::ChSession>),
     Redis(Box<redis_db::RedisSession>),
     MongoDb(Box<mongo::MongoSession>),
 }
@@ -410,6 +421,7 @@ impl Session {
             Driver::MySql | Driver::MariaDb => Session::MySql(Box::new(mysql::MySession::connect(cfg).await?)),
             Driver::Oracle => Session::Oracle(Box::new(oracle::OraSession::connect(cfg).await?)),
             Driver::Snowflake => Session::Snowflake(Box::new(snowflake::SfSession::connect(cfg).await?)),
+            Driver::ClickHouse => Session::ClickHouse(Box::new(clickhouse::ChSession::connect(cfg).await?)),
             Driver::Redis => Session::Redis(Box::new(redis_db::RedisSession::connect(cfg).await?)),
             Driver::MongoDb => Session::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
         })
@@ -425,6 +437,7 @@ impl Session {
             Session::MySql(s) => s.execute(sql, max_rows).await,
             Session::Oracle(s) => s.execute(sql, max_rows).await,
             Session::Snowflake(s) => s.execute(sql, max_rows).await,
+            Session::ClickHouse(s) => s.execute(sql, max_rows).await,
             Session::Redis(s) => s.execute(sql, max_rows).await,
             Session::MongoDb(s) => s.execute(sql, max_rows).await,
         }
@@ -439,6 +452,7 @@ impl Session {
             Session::MySql(s) => s.current_database().await,
             Session::Oracle(s) => s.current_database().await,
             Session::Snowflake(s) => s.current_database().await,
+            Session::ClickHouse(s) => s.current_database().await,
             Session::Redis(s) => s.current_database().await,
             Session::MongoDb(s) => s.current_database().await,
         }
@@ -453,6 +467,7 @@ impl Session {
             Session::MySql(s) => s.list_databases().await,
             Session::Oracle(s) => s.list_databases().await,
             Session::Snowflake(s) => s.list_databases().await,
+            Session::ClickHouse(s) => s.list_databases().await,
             Session::Redis(s) => s.list_databases().await,
             Session::MongoDb(s) => s.list_databases().await,
         }
@@ -470,6 +485,7 @@ impl Session {
             Session::MsSql(s) if !db.is_empty() => s.use_database(db).await,
             Session::MySql(s) if !db.is_empty() => s.use_database(db).await,
             Session::Snowflake(s) if !db.is_empty() => s.use_database(db).await,
+            Session::ClickHouse(s) if !db.is_empty() => s.use_database(db).await,
             Session::Redis(s) if !db.is_empty() => s.use_database(db).await,
             Session::MongoDb(s) if !db.is_empty() => s.use_database(db).await,
             _ => Ok(()),
@@ -488,6 +504,8 @@ impl Session {
             Session::MySql(s) => s.apply_changes(statements).await,
             Session::Oracle(s) => s.apply_changes(statements).await,
             Session::Snowflake(s) => s.apply_changes(statements).await,
+            // ClickHouse: only the editor's INSERTs (see `ChSession::apply_changes`).
+            Session::ClickHouse(s) => s.apply_changes(statements).await,
             // Their commands (not SQL) come from `redis_db::change_commands` / `mongo::change_command`.
             Session::Redis(s) => s.apply_changes(statements).await,
             Session::MongoDb(s) => s.apply_changes(statements).await,
@@ -515,6 +533,11 @@ impl Session {
     pub async fn run_transaction(&mut self, statements: &[String]) -> anyhow::Result<u64> {
         if matches!(self, Session::Redis(_) | Session::MongoDb(_)) {
             anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"));
+        }
+        if let Session::ClickHouse(s) = self {
+            // No transactions in ClickHouse: run the statements directly (each INSERT is
+            // atomic on its own; there is no rollback to offer).
+            return s.run_statements(statements).await;
         }
         if let Session::Oracle(s) = self {
             return s.run_transaction(statements).await;
@@ -551,6 +574,7 @@ impl Session {
             Session::MySql(s) => s.is_closed(),
             Session::Oracle(s) => s.is_closed(),
             Session::Snowflake(s) => s.is_closed(),
+            Session::ClickHouse(s) => s.is_closed(),
             Session::Redis(s) => s.is_closed(),
             Session::MongoDb(s) => s.is_closed(),
         }
@@ -565,6 +589,7 @@ impl Session {
             Session::MySql(s) => s.introspect().await,
             Session::Oracle(s) => s.introspect().await,
             Session::Snowflake(s) => s.introspect().await,
+            Session::ClickHouse(s) => s.introspect().await,
             Session::Redis(s) => s.introspect().await,
             Session::MongoDb(s) => s.introspect().await,
         }
@@ -585,6 +610,7 @@ impl Session {
             Driver::Oracle => "SELECT version FROM product_component_version WHERE product LIKE 'Oracle%'",
             Driver::Sqlite => "SELECT sqlite_version()",
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
+            Driver::ClickHouse => "SELECT version()",
             Driver::Redis | Driver::MongoDb => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
@@ -610,6 +636,8 @@ impl Session {
             Driver::MsSql => format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]")),
             // MySQL: the schema is the database.
             Driver::MySql | Driver::MariaDb | Driver::Oracle => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
+            // ClickHouse: the schema is the database.
+            Driver::ClickHouse => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
         }
     }
 }

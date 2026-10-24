@@ -57,7 +57,15 @@ fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>
         Driver::Redis | Driver::MongoDb => (String::new(), "", "", ""),
         Driver::Snowflake => (
             "SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, ROW_COUNT AS row_count, BYTES AS data_bytes, CREATED AS created, LAST_ALTERED AS modified, COMMENT AS object_comment \
-             FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA'".to_string(), "TABLE_SCHEMA", "TABLE_NAME", ""),
+             FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA'".to_string(), "TABLE_SCHEMA", "TABLE_NAME", ""
+        ),
+        // ClickHouse keeps sizes and comments in system.tables.
+        Driver::ClickHouse => (
+            "SELECT database AS schema_name, name AS object_name, total_rows AS row_count, total_bytes AS data_bytes, \
+             metadata_modification_time AS modified, engine AS engine, comment AS object_comment \
+             FROM system.tables WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema')".to_string(),
+            "database", "name", " AND database = currentDatabase()",
+        ),
         Driver::Sqlite => {
             let schema = schema.unwrap_or("main");
             (format!("SELECT {} AS schema_name, name AS object_name, NULL AS row_count FROM {}.sqlite_schema WHERE type IN ('table','view')",

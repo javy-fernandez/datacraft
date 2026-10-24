@@ -133,6 +133,7 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
 | SQLite | Local database files, SQL console, data editor and online backups |
+| ClickHouse | Native TCP protocol (port 9000), SQL console and data editor for inserts only (updates and deletes are asynchronous mutations, run them from the console) |
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
 

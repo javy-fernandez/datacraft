@@ -18,6 +18,9 @@ pub struct EditTarget {
     /// Binary columns: not editable (the grid shows them in hex).
     pub binary_cols: Vec<bool>,
     pub has_pk: bool,
+    /// Existing rows can't be edited or deleted, only new rows added (ClickHouse: UPDATE and
+    /// DELETE are asynchronous mutations that don't report affected rows).
+    pub insert_only: bool,
 }
 
 /// Grid row: original from the result set or new (index into `EditState::inserted`).
@@ -161,6 +164,7 @@ impl EditState {
     pub fn row_identifiable(&self, rs: &ResultSet, target: &EditTarget, row: RowRef) -> bool {
         match row {
             RowRef::New(_) => true,
+            RowRef::Existing(_) if target.insert_only => false,
             RowRef::Existing(r) => rs
                 .rows
                 .get(r)
@@ -636,7 +640,7 @@ pub fn target_for(result_cols: &[String], schema: &str, kind: ObjectKind, table:
     if key_cols.is_empty() {
         return Err(tr("There are no columns to identify the rows").into());
     }
-    Ok(EditTarget { schema: schema.to_string(), table: table.to_string(), col_names, key_cols, binary_cols, has_pk })
+    Ok(EditTarget { schema: schema.to_string(), table: table.to_string(), col_names, key_cols, binary_cols, has_pk, insert_only: false })
 }
 
 /// Edit target of a MongoDB collection opened in the data editor: documents are identified by
@@ -657,6 +661,7 @@ pub fn document_target(result_cols: &[String], schema: &str, kind: ObjectKind, c
         key_cols: vec![id],
         binary_cols,
         has_pk: true,
+        insert_only: false,
     })
 }
 
@@ -740,6 +745,17 @@ mod tests {
 
     fn target(pk: bool) -> EditTarget {
         target_for(&["id".into(), "name".into()], "main", ObjectKind::Table, "users", &[col("id", pk), col("name", false)]).unwrap()
+    }
+
+    #[test]
+    fn insert_only_allows_new_rows_only() {
+        let rs = rs(vec![vec![Some("1"), Some("a")]]);
+        let t = EditTarget { insert_only: true, ..target(true) };
+        let mut st = EditState::default();
+        assert!(!st.cell_editable(&rs, &t, RowRef::Existing(0), 1));
+        assert!(!st.delete_rows(&rs, &t, &[RowRef::Existing(0)]));
+        let new = st.add_row(2);
+        assert!(st.cell_editable(&rs, &t, RowRef::New(new), 1));
     }
 
     #[test]
