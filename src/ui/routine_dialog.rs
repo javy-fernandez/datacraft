@@ -177,22 +177,12 @@ impl RoutineDialog {
     pub fn show(&mut self, ctx: &egui::Context, schemas: &[String]) -> Option<RoutineResult> {
         let mut result = None;
         let p = palette(ctx.global_style().visuals.dark_mode);
-        let frame = egui::Frame::popup(&ctx.global_style())
-            .fill(p.popup_bg)
-            .corner_radius(12)
-            .inner_margin(Margin::same(20))
-            .stroke(egui::Stroke::new(1.0, p.popup_border));
         let edit = self.is_edit();
-        egui::Modal::new(egui::Id::new("routine_dialog")).frame(frame).show(ctx, |ui| {
-            ui.set_width(780.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(self.title()).font(theme::bold(15.0)).color(p.text));
-                ui.add_space(6.0);
-                ui.label(RichText::new(trf("in {db}", &[("db", &self.db)])).color(p.muted));
-            });
-            ui.add_space(12.0);
+        let subtitle = trf("in {db}", &[("db", &self.db)]);
+        super::workflow_dialog::show(ctx, egui::Id::new("routine_dialog"), self.title(), &subtitle, vec2(820.0, 740.0), |root, regions| {
+            let mut body = regions.body_ui(root);
             let busy = self.running || self.loading.is_some();
-            egui::ScrollArea::vertical().id_salt("routine_dialog_scroll").max_height(ctx.content_rect().height() * 0.72).show(ui, |ui| {
+            egui::ScrollArea::both().id_salt("routine_dialog_scroll").auto_shrink([false, false]).show(&mut body, |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
                     if let Some(raw) = self.raw.as_mut() {
                         ui.label(RichText::new(tr("The definition couldn't be split into fields: edit the statement directly.")).color(p.muted));
@@ -224,15 +214,15 @@ impl RoutineDialog {
                     }
                     sql_preview(ui, "routine", &self.preview_text());
                 }
+                if let Some(e) = &self.error {
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical().id_salt("routine_error").max_height(110.0).show(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(e).monospace().color(p.error)).wrap());
+                    });
+                }
             });
-            if let Some(e) = &self.error {
-                ui.add_space(8.0);
-                egui::ScrollArea::vertical().id_salt("routine_error").max_height(110.0).show(ui, |ui| {
-                    ui.add(egui::Label::new(RichText::new(e).monospace().color(p.error)).wrap());
-                });
-            }
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
+            let mut footer = regions.footer_ui(root);
+            footer.horizontal(|ui| {
                 if theme::secondary_button(ui, tr("Copy SQL")).clicked() {
                     ui.ctx().copy_text(self.preview_text());
                 }
@@ -241,21 +231,21 @@ impl RoutineDialog {
                     ui.add(egui::Spinner::new().size(14.0).color(p.muted));
                     ui.label(RichText::new(if edit { tr("Saving…") } else { tr("Creating…") }).color(p.muted));
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.add_enabled_ui(!busy, |ui| {
-                        if theme::primary_button(ui, if edit { tr("Save") } else { tr("Create") }).clicked() {
-                            match self.validate() {
-                                Ok(statements) => result = Some(RoutineResult::Run(statements)),
-                                Err(e) => self.error = Some(e),
-                            }
+            });
+            footer.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.add_enabled_ui(!busy, |ui| {
+                    if theme::primary_button(ui, if edit { tr("Save") } else { tr("Create") }).clicked() {
+                        match self.validate() {
+                            Ok(statements) => result = Some(RoutineResult::Run(statements)),
+                            Err(e) => self.error = Some(e),
                         }
-                    });
-                    ui.add_enabled_ui(!self.running, |ui| {
-                        if theme::secondary_button(ui, tr("Cancel")).clicked() {
-                            result = Some(RoutineResult::Cancel);
-                        }
-                    });
+                    }
+                });
+                ui.add_enabled_ui(!self.running, |ui| {
+                    if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                        result = Some(RoutineResult::Cancel);
+                    }
                 });
             });
         });
@@ -694,6 +684,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn footer_actions_stay_visible_with_long_definition_errors() {
+        use egui_kittest::kittest::Queryable;
+        for size in [vec2(780.0, 560.0), vec2(400.0, 300.0)] {
+            for dark in [false, true] {
+                let mut dialog = RoutineDialog::new_routine(1, Driver::Postgres, "shop_".repeat(50), "public".into(), RoutineKind::Function);
+                dialog.error = Some("Definition failed with additional diagnostic context.\n".repeat(80));
+                let mut first = true;
+                let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+                    move |ui, dialog: &mut RoutineDialog| {
+                        if std::mem::take(&mut first) {
+                            theme::install_fonts(ui.ctx());
+                            theme::apply(ui.ctx(), dark);
+                        } else {
+                            dialog.show(ui.ctx(), &[]);
+                        }
+                    },
+                    dialog,
+                );
+                h.run_steps(3);
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                for label in ["Copy SQL", "Create", "Cancel"] {
+                    assert!(screen.contains_rect(h.get_by_label(label).rect()), "{label}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn validation() {
         let mut d = RoutineDialog::new_routine(1, Driver::Postgres, "db".into(), "public".into(), RoutineKind::Function);
         assert_eq!(d.validate().unwrap_err(), tr("Name is required"));
@@ -722,13 +740,17 @@ mod tests {
     }
 
     fn harness(dialog: RoutineDialog) -> egui_kittest::Harness<'static, State> {
+        harness_with_size(dialog, vec2(1100.0, 900.0), true)
+    }
+
+    fn harness_with_size(dialog: RoutineDialog, size: egui::Vec2, dark: bool) -> egui_kittest::Harness<'static, State> {
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(1100.0, 900.0)).build_ui_state(
+        let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
             move |ui, s: &mut State| {
                 let ctx = ui.ctx().clone();
                 if std::mem::take(&mut first) {
                     theme::install_fonts(&ctx);
-                    theme::apply(&ctx, true);
+                    theme::apply(&ctx, dark);
                 } else if let Some(RoutineResult::Run(st)) = s.dialog.show(&ctx, &["public".into(), "app".into()]) {
                     s.created = Some(st);
                 }
@@ -801,23 +823,25 @@ mod tests {
             d.spec.body = "begin\n    return (select sum(price * qty) from order_lines l where l.order_id = order_total.order_id)\n         * (1 + tax_rate);\nend;".into();
             d
         };
-        for (tab, name) in [(Tab::Parameters, "new-function"), (Tab::Returns, "new-function-returns"), (Tab::Options, "new-function-options")] {
-            let mut h = harness(RoutineDialog { tab, ..function() });
-            h.run_steps(3);
-            h.render().unwrap().save(directory.join(format!("{name}.png"))).unwrap();
-        }
-        let ms = crate::db::routines::parse_definition(
+        for dark in [false, true] {
+            for (tab, name) in [(Tab::Parameters, "new-function"), (Tab::Returns, "new-function-returns"), (Tab::Options, "new-function-options")] {
+                let mut h = harness_with_size(RoutineDialog { tab, ..function() }, vec2(780.0, 560.0), dark);
+                h.run_steps(3);
+                h.render().unwrap().save(directory.join(format!("{name}-{}.png", if dark { "dark" } else { "light" }))).unwrap();
+            }
+            let ms = crate::db::routines::parse_definition(
             Driver::MsSql,
             "create procedure app.add_order\n    @user_id int,\n    @note nvarchar(20) = N'none',\n    @new_id bigint output\nwith recompile\nas\nbegin\n    set nocount on;\n    insert orders (user_id, note) values (@user_id, @note);\n    set @new_id = scope_identity();\nend",
         )
         .unwrap();
-        let mut edit = RoutineDialog::edit_routine(1, Driver::MsSql, "shop".into(), ms.clone(), 1);
-        let mut loaded = ms;
-        loaded.mark_original("");
-        edit.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(loaded) }));
-        let mut h = harness(edit);
-        h.run_steps(3);
-        h.render().unwrap().save(directory.join("edit-procedure.png")).unwrap();
+            let mut edit = RoutineDialog::edit_routine(1, Driver::MsSql, "shop".into(), ms.clone(), 1);
+            let mut loaded = ms;
+            loaded.mark_original("");
+            edit.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(loaded) }));
+            let mut h = harness_with_size(edit, vec2(780.0, 560.0), dark);
+            h.run_steps(3);
+            h.render().unwrap().save(directory.join(format!("edit-procedure-{}.png", if dark { "dark" } else { "light" }))).unwrap();
+        }
     }
 
     #[test]
