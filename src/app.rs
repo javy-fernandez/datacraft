@@ -3607,6 +3607,7 @@ impl DataCraftApp {
                 ui.label(RichText::new(tr("Keyboard shortcuts")).font(theme::bold(17.0)));
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
+                    ui.set_width(430.0);
                     for (section, rows) in [
                         (tr("General"), &[
                             (tr("New console"), "⇧⌘N"), (tr("Quit"), "⌘Q"),
