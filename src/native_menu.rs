@@ -66,10 +66,11 @@ pub enum MenuCommand {
     Reload,
     // Help
     Help,
+    Shortcuts,
 }
 
 impl MenuCommand {
-    const ALL: [MenuCommand; 31] = [
+    const ALL: [MenuCommand; 32] = [
         Self::About,
         Self::CheckUpdates,
         Self::Settings,
@@ -101,6 +102,7 @@ impl MenuCommand {
         Self::SaveChanges,
         Self::Reload,
         Self::Help,
+        Self::Shortcuts,
     ];
 
     /// muda item id (the variant's `Debug`, unique by construction).
@@ -395,7 +397,7 @@ fn build() -> muda::Result<Built> {
     #[cfg(target_os = "macos")]
     window_menu.set_as_windows_menu_for_nsapp();
 
-    let help_menu = submenu(|| tr("Help"), &[&item(MenuCommand::Help, || tr("DataCraft Help"), None)])?;
+    let help_menu = submenu(|| tr("Help"), &[&item(MenuCommand::Shortcuts, || tr("Keyboard shortcuts…"), None), &item(MenuCommand::Help, || tr("DataCraft Help"), None)])?;
     #[cfg(target_os = "macos")]
     help_menu.set_as_help_menu_for_nsapp();
 

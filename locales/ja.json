@@ -1,5 +1,13 @@
 {
   "app": {
+    "Show completions": "補完候補を表示",
+    "Keyboard shortcuts…": "キーボードショートカット…",
+    "Keyboard shortcuts": "キーボードショートカット",
+    "SQL editor": "SQL エディター",
+    "Next match": "次の一致",
+    "Previous match": "前の一致",
+    "Submit changes": "変更を送信",
+    "Edit cell": "セルを編集",
     "Explain Analyze runs the statement to measure it, and this one changes data or structure. Run it anyway?": "Explain Analyze は計測のためにステートメントを実行します。このステートメントはデータまたは構造を変更します。それでも実行しますか?",
     "Explain Analyze": "Explain Analyze",
     "Actual rows": "実際の行数",

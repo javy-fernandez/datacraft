@@ -7,6 +7,7 @@ mod edit;
 mod i18n;
 mod native_menu;
 mod scheduler;
+mod shortcuts;
 mod sql;
 mod update;
 mod ui;

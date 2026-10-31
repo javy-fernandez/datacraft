@@ -732,7 +732,7 @@ impl Console {
         }
         row(ui, &mut |ui| {
             let chevron = if f.show_replace { Ico::ChevronDown } else { Ico::ChevronRight };
-            if theme::icon_button_sized(ui, chevron, true, tr("Show or hide replace (⌘R)"), 22.0).clicked() {
+            if theme::icon_button_sized(ui, chevron, true, &crate::shortcuts::format(tr("Show or hide replace (⌘R)")), 22.0).clicked() {
                 f.show_replace = !f.show_replace;
             }
             let resp = ui.add(field(&mut f.query, find_id, tr("Text to find"), p.disabled));
@@ -743,13 +743,13 @@ impl Console {
             changed = resp.changed();
             let has_matches = !matches.is_empty();
             if theme::flat_button(ui, None, "↑", FontId::proportional(14.0), false, has_matches)
-                .on_hover_text(tr("Previous match (⇧⌘G)"))
+                .on_hover_text(crate::shortcuts::format(tr("Previous match (⇧⌘G)")))
                 .clicked()
             {
                 cmds.push(EditCmd::FindPrev);
             }
             if theme::flat_button(ui, None, "↓", FontId::proportional(14.0), false, has_matches)
-                .on_hover_text(tr("Next match (⌘G)"))
+                .on_hover_text(crate::shortcuts::format(tr("Next match (⌘G)")))
                 .clicked()
             {
                 cmds.push(EditCmd::FindNext);
@@ -1046,22 +1046,22 @@ impl Console {
         toolbar_row(ui, |ui| {
             theme::split_row(ui, |ui, side| match side {
                 theme::Side::Left => {
-            if theme::icon_button(ui, Ico::Play, !busy, tr("Run current statement or selection (⌘↩)")).clicked() {
+            if theme::icon_button(ui, Ico::Play, !busy, &crate::shortcuts::format(tr("Run current statement or selection (⌘↩)"))).clicked() {
                 actions.push(ConsoleAction::Run);
             }
-            if theme::icon_button(ui, Ico::PlayAll, !busy, tr("Run all (⌘⇧↩)")).clicked() {
+            if theme::icon_button(ui, Ico::PlayAll, !busy, &crate::shortcuts::format(tr("Run all (⌘⇧↩)"))).clicked() {
                 actions.push(ConsoleAction::RunAll);
             }
-            if theme::icon_button(ui, Ico::Structure, !busy, tr("Explain plan of the current statement (⇧⌘E)")).clicked() {
+            if theme::icon_button(ui, Ico::Structure, !busy, &crate::shortcuts::format(tr("Explain plan of the current statement (⇧⌘E)"))).clicked() {
                 cmds.push(EditCmd::Explain);
             }
             theme::toolbar_separator(ui);
-            let hist = theme::icon_button(ui, Ico::History, true, tr("Query history (⌥⌘E)"));
+            let hist = theme::icon_button(ui, Ico::History, true, &crate::shortcuts::format(tr("Query history (⌥⌘E)")));
             self.history_anchor = Some(hist.rect.left_bottom() + vec2(0.0, 4.0));
             if hist.clicked() {
                 cmds.push(EditCmd::History);
             }
-            if theme::icon_button(ui, Ico::Search, true, tr("Find and replace (⌘F)")).clicked() {
+            if theme::icon_button(ui, Ico::Search, true, &crate::shortcuts::format(tr("Find and replace (⌘F)"))).clicked() {
                 cmds.push(EditCmd::Find);
             }
             self.tx_dropdown(ui);
@@ -1167,7 +1167,7 @@ impl Console {
             theme::split_row(ui, |ui, side| match side {
                 theme::Side::Left => {
                     if let Some(a) = results::edit_buttons(ui, self.results.last_mut(), !busy) && let Some(i) = self.results.len().checked_sub(1) { actions.push(edit_action(a, i)); }
-                    if theme::icon_button(ui, Ico::Refresh, !busy, tr("Reload page (⌘R)")).clicked() { actions.push(ConsoleAction::Reload); }
+                    if theme::icon_button(ui, Ico::Refresh, !busy, &crate::shortcuts::format(tr("Reload page (⌘R)"))).clicked() { actions.push(ConsoleAction::Reload); }
                     if theme::icon_button(ui, Ico::Stop, self.running, tr("Cancel the running query")).clicked() { actions.push(ConsoleAction::Cancel); }
                     if let Some(view) = self.results.last() { edit_status_icon(ui, view); }
                 }
@@ -1841,7 +1841,7 @@ fn editor_menu(ui: &mut Ui, busy: bool, analyze: bool, cmds: &mut Vec<EditCmd>) 
                 ui.separator();
             }
             Some(c) => {
-                if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut)).clicked() {
+                if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(crate::shortcuts::format(shortcut))).clicked() {
                     cmds.push(c);
                     ui.close();
                 }

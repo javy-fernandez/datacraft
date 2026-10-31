@@ -1706,7 +1706,7 @@ pub fn show_result(
                                     actions.push(GridAction::DeleteRows);
                                     ui.close();
                                 }
-                                if ui.add(egui::Button::new(tr("Clone Row")).shortcut_text("⌘D")).clicked() {
+                                if ui.add(egui::Button::new(tr("Clone Row")).shortcut_text(crate::shortcuts::format("⌘D"))).clicked() {
                                     actions.push(GridAction::Select { vr, col: Some(c), mods: Modifiers::NONE });
                                     actions.push(GridAction::CloneRow);
                                     ui.close();
@@ -1718,7 +1718,7 @@ pub fn show_result(
                                 actions.push(GridAction::ViewValue(vr, c, cell_rect.left_bottom()));
                                 ui.close();
                             }
-                            if ui.add(egui::Button::new(tr("Record View")).shortcut_text("⇧↩")).clicked() {
+                            if ui.add(egui::Button::new(tr("Record View")).shortcut_text(crate::shortcuts::format("⇧↩"))).clicked() {
                                 actions.push(GridAction::RecordView(vr));
                                 ui.close();
                             }
@@ -2169,9 +2169,9 @@ pub fn edit_buttons(ui: &mut Ui, view: Option<&mut ResultView>, enabled: bool) -
     let has_sel = editable && view.as_ref().is_some_and(|v| v.has_selection());
     let add = theme::icon_button(ui, Ico::Plus, editable, tr("Add row"));
     let del = theme::icon_button(ui, Ico::Minus, has_sel, tr("Delete selected rows"));
-    let undo = theme::icon_button(ui, Ico::Undo, can_undo, tr("Undo (⌘Z)"));
+    let undo = theme::icon_button(ui, Ico::Undo, can_undo, &crate::shortcuts::format(tr("Undo (⌘Z)")));
     let revert = theme::icon_button(ui, Ico::Revert, dirty, tr("Revert all changes"));
-    let submit = theme::icon_button(ui, Ico::Submit, dirty, tr("Submit changes (⌘S)"));
+    let submit = theme::icon_button(ui, Ico::Submit, dirty, &crate::shortcuts::format(tr("Submit changes (⌘S)")));
     let pv = theme::flat_button(ui, Some(Ico::Eye), tr("Preview"), FontId::proportional(13.0), false, dirty)
         .on_hover_text(tr("Preview the SQL of the pending changes"));
     if let Some(v) = view {

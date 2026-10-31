@@ -1,5 +1,13 @@
 {
   "app": {
+    "Show completions": "Mostrar sugerencias",
+    "Keyboard shortcuts…": "Atajos de teclado…",
+    "Keyboard shortcuts": "Atajos de teclado",
+    "SQL editor": "Editor SQL",
+    "Next match": "Siguiente coincidencia",
+    "Previous match": "Coincidencia anterior",
+    "Submit changes": "Enviar cambios",
+    "Edit cell": "Editar celda",
     "Explain Analyze runs the statement to measure it, and this one changes data or structure. Run it anyway?": "Explain Analyze ejecuta la sentencia para medirla, y esta modifica datos o estructura. ¿Ejecutarla igualmente?",
     "Explain Analyze": "Explain Analyze",
     "Actual rows": "Filas reales",

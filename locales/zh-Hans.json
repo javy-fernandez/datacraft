@@ -1,5 +1,13 @@
 {
   "app": {
+    "Show completions": "显示补全建议",
+    "Keyboard shortcuts…": "键盘快捷键…",
+    "Keyboard shortcuts": "键盘快捷键",
+    "SQL editor": "SQL 编辑器",
+    "Next match": "下一个匹配项",
+    "Previous match": "上一个匹配项",
+    "Submit changes": "提交更改",
+    "Edit cell": "编辑单元格",
     "Explain Analyze runs the statement to measure it, and this one changes data or structure. Run it anyway?": "Explain Analyze 会执行该语句以进行测量，而此语句会修改数据或结构。仍要执行吗？",
     "Explain Analyze": "Explain Analyze",
     "Actual rows": "实际行数",
