@@ -3634,7 +3634,15 @@ impl DataCraftApp {
                             (tr("Submit changes"), "⌘S"), (tr("Undo"), "⌘Z"),
                             (tr("Clone Row"), "⌘D"), (tr("Add row"), "⌘N / Insert"),
                             (tr("Delete row"), "⌘Delete"), (tr("Record View"), "⇧↩"),
-                            (tr("Edit cell"), "Enter / F2"), (tr("View Value"), "⌥Click"),
+                            (tr("Edit cell"), "Enter / F2 / ⌘↩"), (tr("View Value"), "⌥Click"),
+                            (tr("Select all"), "⌘A"), (tr("Set NULL"), "Delete"),
+                            (tr("Move between cells"), "Arrows / Tab / ⇧Tab"),
+                            (tr("Extend selection"), "⇧Arrows"),
+                            (tr("First or last column"), "⌘Left / ⌘Right / Home / End"),
+                            (tr("First or last row"), "⌘Up / ⌘Down / ⌘Home / ⌘End"),
+                            (tr("First or last row"), "⌘Page Up / ⌘Page Down"),
+                            (tr("Move by page"), "Page Up / Page Down"),
+                            (tr("Discard current record changes"), "Esc"),
                         ][..]),
                     ] {
                         ui.add_space(8.0);

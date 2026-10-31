@@ -1,5 +1,11 @@
 {
   "app": {
+    "Move between cells": "Se déplacer entre les cellules",
+    "Extend selection": "Étendre la sélection",
+    "First or last column": "Première ou dernière colonne",
+    "First or last row": "Première ou dernière ligne",
+    "Move by page": "Déplacer par page",
+    "Discard current record changes": "Annuler les modifications de la ligne active",
     "Show completions": "Afficher les suggestions",
     "Keyboard shortcuts…": "Raccourcis clavier…",
     "Keyboard shortcuts": "Raccourcis clavier",
