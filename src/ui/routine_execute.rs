@@ -194,7 +194,7 @@ mod tests {
                 let mut dialog = ExecuteDialog::new(routine(), Driver::Postgres, 4, Vec::new());
                 dialog.routine.name = "long_routine_name_".repeat(20);
                 dialog.definition_loaded(Ok(RoutineDefinition {
-                    ddl: String::new(),
+                    comment: String::new(), ddl: String::new(),
                     spec: Some(RoutineSpec { kind: RoutineKind::Function, name: "f".into(), ..Default::default() }),
                 }));
                 dialog.error = Some("Execution failed with additional diagnostic context.\n".repeat(80));
@@ -237,14 +237,14 @@ mod tests {
             ],
             ..Default::default()
         };
-        d.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(spec.clone()) }));
+        d.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: String::new(), spec: Some(spec.clone()) }));
         assert!(!d.values[0].use_default && d.values[1].use_default);
         d.values[0].value = "7".into();
         assert_eq!(d.script().as_deref(), Some("select public.f(7);"));
 
         let kept = vec![ArgValue { value: "1".into(), ..Default::default() }, ArgValue { value: "5".into(), ..Default::default() }];
         let mut again = ExecuteDialog::new(routine(), Driver::Postgres, 5, kept);
-        again.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(spec) }));
+        again.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: String::new(), spec: Some(spec) }));
         assert_eq!(again.script().as_deref(), Some("select public.f(1, 5);"));
     }
 
@@ -257,7 +257,7 @@ mod tests {
         )
         .unwrap();
         let mut d = ExecuteDialog::new(routine(), Driver::MsSql, 4, Vec::new());
-        d.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(spec) }));
+        d.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: String::new(), spec: Some(spec) }));
         let mut first = true;
         let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
             move |ui, s: &mut (ExecuteDialog, Option<(String, bool)>)| {
@@ -296,7 +296,7 @@ mod tests {
             let mut r = routine();
             r.name = "archive_orders".into();
             let mut d = ExecuteDialog::new(r, Driver::Postgres, 4, Vec::new());
-            d.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(spec) }));
+            d.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: String::new(), spec: Some(spec) }));
             d.values[0].value = "2026-01-01".into();
             let mut first = true;
             let mut h = egui_kittest::Harness::builder().with_size(vec2(780.0, 560.0)).build_ui_state(
@@ -319,12 +319,12 @@ mod tests {
     #[test]
     fn unreadable_definitions_and_triggers_are_not_called() {
         let mut d = ExecuteDialog::new(routine(), Driver::Postgres, 4, Vec::new());
-        d.definition_loaded(Ok(RoutineDefinition { ddl: "x".into(), spec: None }));
+        d.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: "x".into(), spec: None }));
         assert!(d.error.is_some() && d.script().is_none());
         let mut t = ExecuteDialog::new(routine(), Driver::Postgres, 4, Vec::new());
         let mut spec = RoutineSpec { kind: RoutineKind::Function, name: "t".into(), ..Default::default() };
         spec.returns.data_type = "trigger".into();
-        t.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(spec) }));
+        t.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: String::new(), spec: Some(spec) }));
         assert!(t.error.is_some() && t.script().is_none());
     }
 }

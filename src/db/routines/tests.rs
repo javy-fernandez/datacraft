@@ -1,5 +1,37 @@
 use super::*;
 
+#[tokio::test]
+async fn failed_identity_resolution_rolls_back_the_definition_change() {
+    let mut config = crate::db::ConnectionConfig::new(1, Driver::Sqlite);
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("datacraft-routine-rollback-{}-{stamp}.db", std::process::id()));
+    drop(rusqlite::Connection::open(&path).unwrap());
+    config.file_path = path.display().to_string();
+    let mut session = Session::connect(&config).await.unwrap();
+    let identity = RoutineRef { conn: 1, db: "main".into(), schema: "public".into(), name: "pending_routine".into(), kind: RoutineKind::Function, signature: String::new() };
+    // SQLite's missing PostgreSQL resolver forces a failure after the transactional DDL.
+    assert!(session.save_postgres_routine(&["CREATE TABLE pending_routine (id INTEGER)".into()], identity).await.is_err());
+    let rows = session.execute("SELECT name FROM sqlite_master WHERE name = 'pending_routine'", 10).await.unwrap();
+    assert!(rows.iter().all(|rs| rs.rows.is_empty()));
+    drop(session);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn parsed_object_identifiers_follow_the_engines_case_rules() {
+    for (driver, sql, schema, name) in [
+        (Driver::Postgres, "CREATE FUNCTION Public.Total() RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$", "public", "total"),
+        (Driver::Oracle, "CREATE FUNCTION shop.total RETURN number AS BEGIN RETURN 1; END;", "SHOP", "TOTAL"),
+        (Driver::Snowflake, "CREATE FUNCTION shop.total() RETURNS NUMBER LANGUAGE SQL AS $$ 1 $$", "SHOP", "TOTAL"),
+    ] {
+        let spec = parse_definition(driver, sql).unwrap();
+        assert_eq!((spec.schema.as_str(), spec.name.as_str()), (schema, name));
+        let quoted = sql.replace("Public.Total", "\"shop\".\"total\"").replace("shop.total", "\"shop\".\"total\"");
+        let spec = parse_definition(driver, &quoted).unwrap();
+        assert_eq!((spec.schema.as_str(), spec.name.as_str()), ("shop", "total"));
+    }
+}
+
 fn param(name: &str, mode: ParamMode, data_type: &str, default: &str) -> Param {
     Param { name: name.into(), mode, data_type: data_type.into(), default: default.into() }
 }

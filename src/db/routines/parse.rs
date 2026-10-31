@@ -373,6 +373,19 @@ impl<'a> Parser<'a> {
         Some(unquote_ident(&self.text[t.start..t.end]))
     }
 
+    fn object_ident(&mut self) -> Option<String> {
+        let quoted = self.tok(self.i)?.kind == Tok::Quoted;
+        let mut name = self.ident()?;
+        if !quoted {
+            match self.driver {
+                Driver::Oracle | Driver::Snowflake => name.make_ascii_uppercase(),
+                Driver::Postgres => name.make_ascii_lowercase(),
+                _ => {}
+            }
+        }
+        Some(name)
+    }
+
     fn string(&mut self) -> Option<String> {
         let t = self.tok(self.i).filter(|t| t.kind == Tok::Str)?;
         self.i += 1;
@@ -417,9 +430,9 @@ impl<'a> Parser<'a> {
         } else {
             return None;
         };
-        let mut parts = vec![self.ident()?];
+        let mut parts = vec![self.object_ident()?];
         while self.eat_punct(b'.') {
-            parts.push(self.ident()?);
+            parts.push(self.object_ident()?);
         }
         spec.name = parts.pop()?;
         spec.schema = parts.pop().unwrap_or_default();

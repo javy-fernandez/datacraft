@@ -80,6 +80,7 @@ pub enum ExplorerAction {
     /// Load a database's schema when it is expanded.
     LoadDatabase(ConnId, String),
     BrowseObjects(ObjectScope),
+    BrowseRoutines(ObjectScope, RoutineKind),
     InspectObject(TableRef, ObjectKind),
     OpenTable(TableRef),
     GenerateSelect(TableRef),
@@ -660,8 +661,11 @@ fn database_rows(
     let open = state.expanded.contains(&dkey) || (filtering && has_match);
     let loading = c.loading.contains(&d.name);
     let multi_db = c.cfg.driver.has_databases();
-    // SQLite ("main") and MySQL (the database itself): a single schema; its tables are shown directly.
-    let flat = c.cfg.driver.flat_schema() && d.schemas.as_ref().is_some_and(|ss| ss.len() == 1);
+    // Show the default schema directly when it is the only one.
+    let flat = d.schemas.as_ref().is_some_and(|schemas| match schemas.as_slice() {
+        [schema] => c.cfg.driver.flat_schema() || (c.cfg.driver == Driver::MsSql && schema.name == "dbo"),
+        _ => false,
+    });
     let badge = d.schemas.as_ref().map(|ss| {
         if flat { ss.iter().map(|s| s.tables.len()).sum::<usize>().to_string() } else { ss.len().to_string() }
     });
@@ -1013,6 +1017,9 @@ fn routine_group(
     );
     if row.resp.clicked() {
         state.selected_table = None;
+        actions.push(ExplorerAction::BrowseRoutines(ObjectScope {
+            conn, db: db.to_string(), schema: Some(schema.to_string()), kind: None,
+        }, kind));
     }
     row.resp.context_menu(|ui| {
         let text = if kind == RoutineKind::Procedure { tr("New Procedure…") } else { tr("New Function…") };
@@ -1278,6 +1285,23 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn single_dbo_schema_shows_object_folders_directly() {
+        let mut connection = ConnState::new(ConnectionConfig::new(1, Driver::MsSql));
+        connection.status = ConnStatus::Connected;
+        connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: Some(vec![SchemaInfo { name: "dbo".into(), tables: Vec::new() }]) });
+        let mut explorer = ExplorerState::default();
+        for key in ["c:1", "d:1:shop"] { explorer.expanded.insert(key.into()); }
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut ExplorerState| {
+            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+            show(ui, state, std::slice::from_ref(&connection));
+        }, explorer);
+        h.run_steps(3);
+        assert!(h.query_by_label("Tables").is_some());
+        assert!(h.query_by_label("dbo").is_none());
+    }
+
+    #[test]
     fn database_folders_start_collapsed_and_backup_targets_the_context_database() {
         let mut connection = ConnState::new(ConnectionConfig::new(1, Driver::MariaDb));
         connection.status = ConnStatus::Connected;
@@ -1325,6 +1349,7 @@ mod tests {
                     ExplorerAction::EditRoutine(r) => format!("edit {}", r.name),
                     ExplorerAction::DropRoutine(r) => format!("drop {:?} {}", r.kind, r.name),
                     ExplorerAction::NewRoutine { schema, kind, .. } => format!("new {kind:?} in {schema:?}"),
+                    ExplorerAction::BrowseRoutines(scope, kind) => format!("browse {kind:?} in {:?}", scope.schema),
                     _ => continue,
                 };
                 state.1.push(text);
@@ -1332,6 +1357,10 @@ mod tests {
         }, (explorer, Vec::new()));
         h.run_steps(3);
         assert!(h.query_by_label("Procedures").is_some() && h.query_by_label("Functions").is_some());
+        h.get_by_label("Procedures").click(); h.run_steps(2);
+        h.get_by_label("Functions").click(); h.run_steps(2);
+        assert_eq!(h.state().1, ["browse Procedure in Some(\"public\")", "browse Function in Some(\"public\")"]);
+        h.state_mut().1.clear();
         assert!(h.query_by_label("add_tax").is_none(), "folders start collapsed");
         h.get_by_label("Functions").click_secondary();
         h.run_steps(2);
