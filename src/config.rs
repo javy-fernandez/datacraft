@@ -8,6 +8,10 @@ use std::path::PathBuf;
 const KEYCHAIN_SERVICE: &str = "DataCraft";
 
 pub(crate) fn data_dir() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("DATACRAFT_TEST_DATA_DIR") {
+        return PathBuf::from(path);
+    }
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("DataCraft")
 }
 
@@ -91,6 +95,52 @@ fn fill_secret_properties(c: &mut ConnectionConfig, secrets: &std::collections::
     }
 }
 
+/// Keep this process-wide guard alive only in the separate scheduler process.
+#[cfg(target_os = "macos")]
+pub fn disable_background_keychain_interaction() -> anyhow::Result<security_framework::os::macos::keychain::KeychainUserInteractionLock> {
+    use anyhow::Context;
+    security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+        .context(crate::i18n::tr("Could not disable Keychain prompts for the background scheduler"))
+}
+
+fn read_background_secret(entry: Option<keyring::Entry>) -> anyhow::Result<Option<String>> {
+    use anyhow::Context;
+    match entry.context("open credential store entry")?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error).context(crate::i18n::tr("Could not read saved credentials. Open DataCraft and authorize access to this data source's credentials before retrying the task")),
+    }
+}
+
+/// Loads only the requested data source for a background job without reading other
+/// connections' credentials or rewriting their configuration.
+pub fn load_background_connection(id: u64) -> anyhow::Result<ConnectionConfig> {
+    use anyhow::Context;
+    let text = std::fs::read_to_string(connections_file()).context("read saved data sources")?;
+    let list: Vec<ConnectionConfig> = serde_json::from_str(&text).context("parse saved data sources")?;
+    let mut cfg = list.into_iter().find(|cfg| cfg.id == id).context("The data source no longer exists")?;
+    cfg.migrate();
+    if !cfg.secret_properties().is_empty() {
+        anyhow::bail!("Open DataCraft to migrate this data source's credentials before scheduling it");
+    }
+    if cfg.driver != crate::db::Driver::Sqlite && cfg.auth != crate::db::AuthMode::NoAuth
+        && let Some(password) = read_background_secret(keychain_entry(id))?
+    {
+        cfg.password = password;
+    }
+    if cfg.properties.iter().any(|(name, _)| crate::db::is_secret_property(name))
+        && let Some(json) = read_background_secret(properties_entry(id))?
+    {
+        let secrets = serde_json::from_str(&json).context("parse saved secret properties")?;
+        fill_secret_properties(&mut cfg, &secrets);
+    }
+    if (cfg.ssh.enabled || !cfg.tls.key_file.trim().is_empty()) && let Some(json) = read_background_secret(ssh_entry(id))? {
+        let secrets: SshSecrets = serde_json::from_str(&json).context("parse saved SSH credentials")?;
+        (cfg.ssh.password, cfg.ssh.passphrase, cfg.tls.key_passphrase) = (secrets.password, secrets.passphrase, secrets.tls_key_passphrase);
+    }
+    Ok(cfg)
+}
+
 pub fn save_connections(list: &[ConnectionConfig]) -> anyhow::Result<()> {
     std::fs::create_dir_all(data_dir())?;
     // Atomic write: quitting halfway doesn't leave a truncated file.
@@ -155,6 +205,65 @@ pub fn delete_secrets(id: u64) {
 mod tests {
     use super::*;
     use crate::db::Driver;
+
+    #[test]
+    fn background_credential_reads_preserve_missing_values_and_access_errors() {
+        let missing = keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
+        assert!(read_background_secret(Some(missing)).unwrap().is_none());
+
+        let saved = keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
+        saved.set_password("test-password").unwrap();
+        assert_eq!(read_background_secret(Some(saved)).unwrap().as_deref(), Some("test-password"));
+
+        let denied = keyring::mock::MockCredential::default();
+        denied.set_error(keyring::Error::PlatformFailure(Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "test access denied",
+        ))));
+        let entry = keyring::Entry::new_with_credential(Box::new(denied));
+        let error = read_background_secret(Some(entry)).unwrap_err();
+        assert!(matches!(error.downcast_ref::<keyring::Error>(), Some(keyring::Error::PlatformFailure(_))));
+        assert!(error.to_string().contains("DataCraft"));
+        assert!(format!("{error:#}").contains("test access denied"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn background_keychain_interaction_is_process_local() {
+        use security_framework::os::macos::keychain::SecKeychain;
+        use std::io::{BufRead, Write};
+        use std::process::Stdio;
+        const PROBE: &str = "DATACRAFT_TEST_KEYCHAIN_INTERACTION";
+        if std::env::var_os(PROBE).is_some() {
+            assert!(SecKeychain::user_interaction_allowed().unwrap());
+            let guard = disable_background_keychain_interaction().unwrap();
+            assert!(!SecKeychain::user_interaction_allowed().unwrap());
+            assert!(!std::thread::spawn(SecKeychain::user_interaction_allowed).join().unwrap().unwrap());
+            println!("keychain-interaction-disabled");
+            std::io::stdout().flush().unwrap();
+            std::io::stdin().read_line(&mut String::new()).unwrap();
+            drop(guard);
+            assert!(SecKeychain::user_interaction_allowed().unwrap());
+            return;
+        }
+        // Inspect interaction metadata only; never read or modify the user's credentials.
+        let before = SecKeychain::user_interaction_allowed().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "config::tests::background_keychain_interaction_is_process_local", "--nocapture"])
+            .env(PROBE, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let ready = (&mut output).lines().any(|line| line.unwrap().ends_with("keychain-interaction-disabled"));
+        let during = SecKeychain::user_interaction_allowed().unwrap();
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+        assert!(ready);
+        assert_eq!(during, before);
+        assert_eq!(SecKeychain::user_interaction_allowed().unwrap(), before);
+    }
 
     #[test]
     fn secret_properties_never_reach_the_file() {

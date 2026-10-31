@@ -303,6 +303,7 @@ pub struct DataCraftApp {
     result_salt: u64,
     explorer: ExplorerState,
     backup: Option<crate::ui::backup_dialog::BackupDialog>,
+    scheduler: Option<crate::scheduler::dialog::Dialog>,
     object_browser: crate::ui::object_browser::ObjectBrowser,
     save_on_row_change: bool,
     dialog: Option<ConnectionDialog>,
@@ -402,6 +403,7 @@ impl DataCraftApp {
             result_salt: 0,
             explorer: { let mut explorer = ExplorerState::default(); explorer.backups = persisted.backups; explorer },
             backup: None,
+            scheduler: None,
             object_browser: {
                 let mut browser = crate::ui::object_browser::ObjectBrowser::default();
                 browser.organizations = persisted.object_organizations;
@@ -2435,7 +2437,7 @@ impl DataCraftApp {
 
     /// A modal dialog is open: shortcuts and run commands are ignored.
     fn modal_open(&self) -> bool {
-        self.backup.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
+        self.backup.is_some() || self.scheduler.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_analyze.is_some()
             || self.create.is_some()
@@ -2548,6 +2550,12 @@ impl DataCraftApp {
             if ui.button(tr("Open .sql…")).clicked() {
                 ui.close();
                 self.open_sql_file();
+            }
+            let demo = std::env::var("DATACRAFT_DEMO").is_ok_and(|v| !v.is_empty());
+            if ui.add_enabled(!demo, egui::Button::new(tr("Task scheduler…"))).clicked() {
+                let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
+                self.scheduler = Some(crate::scheduler::dialog::Dialog::new(ui.ctx(), &configs));
+                ui.close();
             }
             let can_save = !self.object_browser.active && self.consoles.get(self.active).is_some_and(|c| c.table.is_none());
             if ui.add_enabled(can_save, egui::Button::new(tr("Save console as .sql…"))).clicked() {
@@ -3299,6 +3307,10 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(dialog) = self.scheduler.as_mut() {
+            let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
+            if dialog.show(ctx, &configs) { self.scheduler = None; }
+        }
         if let Some(d) = self.script.as_mut()
             && let Some(ran) = d.show(ctx)
         {
@@ -3843,7 +3855,7 @@ fn demo_server_config(id: u64, url: &str) -> Option<ConnectionConfig> {
 
 /// true if a statement only reads, in the engine's own language (SQL, Redis, `mongosh`, Flux,
 /// InfluxQL or KQL).
-fn is_read_statement(driver: Driver, statement: &str) -> bool {
+pub(crate) fn is_read_statement(driver: Driver, statement: &str) -> bool {
     match driver {
         Driver::Redis => crate::db::redis_db::is_read_command(statement),
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
@@ -4210,7 +4222,7 @@ mod tests {
             worker: Worker::start(egui::Context::default()), conns: Vec::new(),
             consoles: (1..=4).map(|id| Console::new(id, format!("Query {id}"), String::new(), None)).collect(),
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
-            explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
+            explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,

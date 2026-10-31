@@ -110,7 +110,10 @@ fn run_batch(conn: &Connection, sql: &str, max_rows: usize) -> anyhow::Result<Ve
             while let Some(row) = rows.next()? {
                 if rs.rows.len() >= max_rows {
                     rs.truncated = true;
-                    break;
+                    if max_rows != 0 {
+                        break;
+                    }
+                    continue;
                 }
                 let cells = (0..ncols).map(|i| row.get_ref(i).map(value_to_cell)).collect::<Result<_, _>>()?;
                 rs.rows.push(cells);
@@ -350,6 +353,22 @@ mod tests {
 
         // An error halfway through the batch is propagated.
         assert!(s.execute("SELECT 1; SELECT * FROM missing", 10).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn zero_row_limit_discards_successful_results() {
+        let db = TempDb::new("discard");
+        let mut s = db.open().await;
+        let rs = s
+            .execute(
+                "WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v + 1 FROM n WHERE v < 10000) SELECT v FROM n",
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rs.len(), 1);
+        assert_eq!(rs[0].columns, ["v"]);
+        assert!(rs[0].rows.is_empty() && rs[0].truncated);
     }
 
     #[tokio::test]

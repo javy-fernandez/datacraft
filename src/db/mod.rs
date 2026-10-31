@@ -610,6 +610,7 @@ pub enum Engine {
 impl Engine {
     /// Runs ONE statement (or a T-SQL batch) and returns one or more result sets.
     /// Each result set keeps at most `max_rows` rows.
+    /// For SQL engines, zero discards rows without stopping execution.
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         match self {
             Engine::Postgres(s) => s.execute(sql, max_rows).await,

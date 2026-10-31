@@ -411,7 +411,11 @@ fn cell(row: &Row, i: usize, kind: &CellKind) -> Cell {
 
 fn run(conn: &Connection, sql: &str, display: String, max_rows: usize) -> Result<ResultSet, oracle::Error> {
     let start = Instant::now();
-    let fetch = max_rows.saturating_add(1).clamp(1, 1000) as u32;
+    let fetch = if max_rows == 0 {
+        1000
+    } else {
+        max_rows.saturating_add(1).min(1000) as u32
+    };
     let mut stmt = conn.statement(sql).fetch_array_size(fetch).build()?;
     let mut rs = ResultSet { statement: display, ..Default::default() };
     if stmt.is_query() {
@@ -421,7 +425,11 @@ fn run(conn: &Connection, sql: &str, display: String, max_rows: usize) -> Result
         for row in rows {
             if rs.rows.len() >= max_rows {
                 rs.truncated = true;
-                break;
+                if max_rows != 0 {
+                    break;
+                }
+                row?;
+                continue;
             }
             let row = row?;
             rs.rows.push(kinds.iter().enumerate().map(|(i, k)| cell(&row, i, k)).collect());

@@ -6,12 +6,20 @@ mod db;
 mod edit;
 mod i18n;
 mod native_menu;
+mod scheduler;
 mod sql;
 mod update;
 mod ui;
 mod worker;
 
 fn main() -> eframe::Result {
+    if std::env::args_os().nth(1).is_some_and(|arg| arg == "--scheduler") {
+        if let Err(error) = scheduler::run_background() {
+            eprintln!("SQL scheduler: {error:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let mut options = eframe::NativeOptions {
         viewport: ui::window_chrome::viewport(),
         ..Default::default()

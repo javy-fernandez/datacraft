@@ -71,6 +71,8 @@ Groups and colors are local preferences; they do not change the database. See [o
 
 SQL consoles provide syntax highlighting, completion, formatting, find and replace, query history, execution plans and cancellation. Run the current statement, a selection or the entire script. SQL Server scripts support <code>GO</code> batches.
 
+Schedule SQL or full database backups at a fixed interval, including after closing the window, with the per-user [task scheduler](docs/sql-scheduler.md).
+
 On PostgreSQL, MySQL and MariaDB, **Explain Plan** (⇧⌘E) shows the plan as a tree with each step's object, estimated rows and cost; **Explain Analyze** in the editor's menu also runs the statement and adds actual rows and time, asking first when the statement writes. The steps that take most of the cost or time are highlighted, and **Show as Text** gives the server's own output. Other engines show their text plans.
 
 <p align="center">

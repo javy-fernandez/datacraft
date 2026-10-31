@@ -194,9 +194,12 @@ impl ChSession {
             let Some(rs) = results.last_mut() else { continue };
             for row in block.take_iter_rows() {
                 if rs.rows.len() >= max_rows {
-                    // Dropping the stream cancels the query: the rest isn't downloaded.
                     truncated = true;
-                    break 'blocks;
+                    if max_rows != 0 {
+                        // Dropping the stream cancels the query: the rest isn't downloaded.
+                        break 'blocks;
+                    }
+                    continue;
                 }
                 rs.rows.push(row.iter().map(|(_, type_, value)| cell(type_, value)).collect());
             }

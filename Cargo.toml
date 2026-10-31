@@ -53,6 +53,10 @@ rustls-platform-verifier = "0.7"
 redis = { version = "1.8.0", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 mongodb = { version = "3.9.1", default-features = false, features = ["compat-3-0-0", "rustls-tls-aws-lc", "dns-resolver"] }
 
+# Keep the background scheduler's Keychain reads non-interactive.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
+
 # Windows: DirectX 12 for the GPU, the Credential Manager for passwords and a bundled SQLite
 # (there is no system libsqlite3 to link against).
 [target.'cfg(windows)'.dependencies]

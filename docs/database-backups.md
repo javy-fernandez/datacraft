@@ -1,5 +1,9 @@
 # Database backups
 
+For recurring full backups, use **File → Task scheduler… → Backup**. Choose the
+database, destination and interval without writing SQL. See [scheduled backups](sql-scheduler.md#recurring-backups-without-sql)
+for destination differences and native utility requirements.
+
 Right-click a connected SQL database in Database Explorer and choose **Back up
 database…**. Review the destination and engine-specific options, then select
 **Start backup**. Jobs run in the background and can be cancelled from the dialog.

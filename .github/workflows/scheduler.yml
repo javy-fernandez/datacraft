@@ -1,0 +1,81 @@
+name: Scheduled SQL and backups
+
+on:
+  push:
+    paths:
+      - "src/scheduler.rs"
+      - "src/scheduler/**"
+      - "tests/scheduler-background.py"
+      - "tests/scheduler-diagnostics.py"
+      - ".github/workflows/scheduler.yml"
+  pull_request:
+    paths:
+      - "src/scheduler.rs"
+      - "src/scheduler/**"
+      - "tests/scheduler-background.py"
+      - "tests/scheduler-diagnostics.py"
+      - ".github/workflows/scheduler.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  background:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libsqlite3-dev libdbus-1-dev desktop-file-utils
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - run: "cargo test --locked scheduler::"
+      - run: cargo test --locked config::tests::background_
+      - run: cargo test --locked footer_actions_stay_visible
+      - if: runner.os != 'Windows'
+        run: python3 tests/scheduler-background.py target/debug/datacraft
+      - name: Exercise the Linux user service
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          export DATACRAFT_TEST_DATA_DIR="$RUNNER_TEMP/datacraft-service"
+          export DATACRAFT_TEST_NATIVE_SERVICE=1
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -u)"
+          sudo systemctl start "user@$(id -u).service"
+          systemctl --user set-environment "DATACRAFT_TEST_DATA_DIR=$DATACRAFT_TEST_DATA_DIR" "DATACRAFT_TEST_NATIVE_SERVICE=1" "GITHUB_ACTIONS=true"
+          trap 'systemctl --user unset-environment DATACRAFT_TEST_DATA_DIR DATACRAFT_TEST_NATIVE_SERVICE GITHUB_ACTIONS' EXIT
+          cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
+      - name: Exercise the macOS LaunchAgent
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          export DATACRAFT_TEST_DATA_DIR="$RUNNER_TEMP/datacraft-service"
+          export DATACRAFT_TEST_NATIVE_SERVICE=1
+          launchctl setenv DATACRAFT_TEST_DATA_DIR "$DATACRAFT_TEST_DATA_DIR"
+          launchctl setenv DATACRAFT_TEST_NATIVE_SERVICE 1
+          launchctl setenv GITHUB_ACTIONS true
+          trap 'launchctl unsetenv DATACRAFT_TEST_DATA_DIR; launchctl unsetenv DATACRAFT_TEST_NATIVE_SERVICE; launchctl unsetenv GITHUB_ACTIONS' EXIT
+          cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
+      - name: Exercise Linux XDG autostart fallback
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export DATACRAFT_TEST_DATA_DIR="$RUNNER_TEMP/datacraft-xdg"
+          export DATACRAFT_TEST_XDG=1
+          export DATACRAFT_TEST_NATIVE_SERVICE=1
+          cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
+      - if: runner.os == 'Windows'
+        run: python tests/scheduler-background.py target/debug/datacraft.exe
+      - name: Diagnose disposable scheduler fixtures
+        if: failure() && runner.os != 'Windows'
+        run: python3 tests/scheduler-diagnostics.py
