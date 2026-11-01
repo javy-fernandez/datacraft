@@ -12,6 +12,12 @@ pub(super) struct ExportState {
     dialog: Option<Dialog>,
 }
 
+impl ExportState {
+    pub(super) fn is_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+}
+
 struct Dialog {
     id: u64,
     table: TableRef,
@@ -298,6 +304,65 @@ mod tests {
         let d = app.table_export.dialog.as_ref().unwrap();
         assert!(!d.pending);
         assert!(d.error.is_some());
+    }
+
+    #[test]
+    fn export_modals_block_console_run_and_save_shortcuts_until_closed() {
+        fn press(app: &mut DataCraftApp, key: Key, modifiers: Modifiers) {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput { events: vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }], ..Default::default() },
+                |ui| app.shortcuts(ui.ctx()),
+            );
+            // This headless input test has no renderer to apply texture deltas.
+            output.textures_delta.clear();
+        }
+        for kind in [ExportKind::Csv, ExportKind::Sql { structure: true, data: true }, ExportKind::Print { data: false }] {
+            for pending in [false, true] {
+                for (key, modifiers) in [(Key::Enter, Modifiers::COMMAND), (Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT), (Key::S, Modifiers::COMMAND)] {
+                    let (mut app, table) = app_and_table();
+                    let active = app.active;
+                    app.object_browser.active = false;
+                    app.consoles[active].conn = Some(table.conn);
+                    app.consoles[active].db = Some(table.db.clone());
+                    app.consoles[active].text = "SELECT 42".into();
+                    if key == Key::S {
+                        let mut view = ResultView::new(
+                            crate::db::ResultSet {
+                                columns: vec!["id".into(), "note".into()],
+                                rows: vec![vec![Some("1".into()), Some("before".into())]],
+                                ..Default::default()
+                            },
+                            901,
+                        );
+                        view.set_edit_target(Ok(editing::EditTarget {
+                            schema: "main".into(),
+                            table: "notes".into(),
+                            col_names: vec!["id".into(), "note".into()],
+                            key_cols: vec![0],
+                            binary_cols: vec![false, false],
+                            has_pk: true,
+                            insert_only: false,
+                        }));
+                        view.edit.as_mut().unwrap().state.set_value(&view.rs, RowRef::Existing(0), 1, Some("after".into()));
+                        app.consoles[active].results.push(view);
+                        app.consoles[active].result_tab = ResultTab::Result(0);
+                    }
+                    app.open_table_export(table, kind);
+                    app.table_export.dialog.as_mut().unwrap().pending = pending;
+                    press(&mut app, key, modifiers);
+                    assert!(!app.consoles[active].running, "{kind:?}, pending={pending}, key={key:?}");
+                    assert!(app.preview.is_none());
+                    assert!(app.modal_open(), "native-menu commands must use the same gate");
+                    app.table_export.dialog = None;
+                    press(&mut app, key, modifiers);
+                    assert!(app.consoles[active].running, "the same shortcut must work after closing the dialog: {key:?}");
+                    if key == Key::S {
+                        assert!(app.preview.as_ref().unwrap().applying);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
