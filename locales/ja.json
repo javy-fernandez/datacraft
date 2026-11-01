@@ -1294,6 +1294,18 @@
     "table compression": "テーブル圧縮",
     "table rules": "テーブルルール",
     "table triggers": "テーブルトリガー",
-    "temporal, memory-optimized or FILESTREAM table": "テンポラルテーブル、メモリ最適化テーブル、または FILESTREAM テーブル"
+    "temporal, memory-optimized or FILESTREAM table": "テンポラルテーブル、メモリ最適化テーブル、または FILESTREAM テーブル",
+    "Cross-database table definitions require a dedicated backup": "データベースをまたぐテーブル定義には専用のバックアップが必要です",
+    "Expected CREATE {object}": "CREATE {object} が必要です",
+    "Incomplete SQL escape in table definition": "テーブル定義の SQL エスケープが不完全です",
+    "Incomplete qualified table name": "テーブルの修飾名が不完全です",
+    "Invalid CREATE condition": "CREATE の条件が無効です",
+    "Invalid numeric table catalog value": "テーブルカタログの数値が無効です",
+    "Missing constraint name": "制約名がありません",
+    "Missing index table": "インデックスの対象テーブルがありません",
+    "Missing object name in table definition": "テーブル定義にオブジェクト名がありません",
+    "Missing table catalog field {index}": "テーブルカタログのフィールド {index} がありません",
+    "Overlapping table definition edits": "テーブル定義の編集範囲が重複しています",
+    "Unterminated SQL quote in table definition": "テーブル定義の SQL 引用符が閉じられていません"
   }
 }

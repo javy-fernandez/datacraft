@@ -1294,6 +1294,18 @@
     "table compression": "Tabellenkomprimierung",
     "table rules": "Tabellenregeln",
     "table triggers": "Tabellentrigger",
-    "temporal, memory-optimized or FILESTREAM table": "temporale, speicheroptimierte oder FILESTREAM-Tabelle"
+    "temporal, memory-optimized or FILESTREAM table": "temporale, speicheroptimierte oder FILESTREAM-Tabelle",
+    "Cross-database table definitions require a dedicated backup": "Datenbankübergreifende Tabellendefinitionen erfordern eine separate Sicherung",
+    "Expected CREATE {object}": "CREATE {object} erwartet",
+    "Incomplete SQL escape in table definition": "Unvollständige SQL-Escape-Sequenz in der Tabellendefinition",
+    "Incomplete qualified table name": "Unvollständiger qualifizierter Tabellenname",
+    "Invalid CREATE condition": "Ungültige CREATE-Bedingung",
+    "Invalid numeric table catalog value": "Ungültiger numerischer Wert im Tabellenkatalog",
+    "Missing constraint name": "Der Name der Einschränkung fehlt",
+    "Missing index table": "Die Tabelle des Index fehlt",
+    "Missing object name in table definition": "Der Objektname in der Tabellendefinition fehlt",
+    "Missing table catalog field {index}": "Feld {index} im Tabellenkatalog fehlt",
+    "Overlapping table definition edits": "Überlappende Änderungen an der Tabellendefinition",
+    "Unterminated SQL quote in table definition": "Nicht abgeschlossenes SQL-Anführungszeichen in der Tabellendefinition"
   }
 }

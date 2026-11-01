@@ -1294,6 +1294,18 @@
     "table compression": "表压缩",
     "table rules": "表规则",
     "table triggers": "表触发器",
-    "temporal, memory-optimized or FILESTREAM table": "时态表、内存优化表或 FILESTREAM 表"
+    "temporal, memory-optimized or FILESTREAM table": "时态表、内存优化表或 FILESTREAM 表",
+    "Cross-database table definitions require a dedicated backup": "跨数据库的表定义需要专用备份",
+    "Expected CREATE {object}": "应为 CREATE {object}",
+    "Incomplete SQL escape in table definition": "表定义中的 SQL 转义序列不完整",
+    "Incomplete qualified table name": "表的限定名称不完整",
+    "Invalid CREATE condition": "CREATE 条件无效",
+    "Invalid numeric table catalog value": "表目录中的数值无效",
+    "Missing constraint name": "缺少约束名称",
+    "Missing index table": "缺少索引所属表",
+    "Missing object name in table definition": "表定义中缺少对象名称",
+    "Missing table catalog field {index}": "缺少表目录字段 {index}",
+    "Overlapping table definition edits": "表定义编辑存在重叠",
+    "Unterminated SQL quote in table definition": "表定义中的 SQL 引号未闭合"
   }
 }
