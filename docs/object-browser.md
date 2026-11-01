@@ -41,6 +41,28 @@ catalog readers and offline connections. It generates the existing local definit
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
 
+**Export Table** writes CSV, TSV or JSON from the complete table on a separate
+background connection, independently of the data editor's page and filters. It
+supports read-only sources, row progress and cancellation. **Replace file?** is
+explicit: an existing destination is replaced only after the export succeeds.
+Errors and cancellation preserve the previous file.
+
+**Dump SQL File** offers structure and data, structure only, or data only. Data
+exports support SQLite, PostgreSQL, SQL Server, MySQL and MariaDB; structure-only
+dumps also support Snowflake. Dumps retain full binary/long values and omit
+generated columns from INSERTs. Data-only dumps require an existing target schema
+and any external parent tables. Non-SQLite self-referencing foreign keys require
+Structure and Data so constraints can be added after the rows. Unsupported
+definition features return an error instead of producing incomplete DDL.
+SQL Server uses snapshot isolation when enabled, otherwise READ COMMITTED, where
+concurrent changes can be visible during the export.
+
+**Print Table** creates escaped HTML with schema details. Including all table data
+is an explicit choice and follows the data-export engine support above. Submit
+**Create report** to write the file and open it in the system browser; use the
+browser's Print command to select a printer or PDF. Schema-only reports are
+available for every SQL engine.
+
 ## Row counts and timestamps
 
 Browsing reads catalog statistics and **never automatically scans a table**.

@@ -64,6 +64,7 @@ use std::time::Instant;
 
 mod routines;
 mod views;
+mod table_export;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -322,6 +323,7 @@ pub struct DataCraftApp {
     drop: Option<DropDialog>,
     /// "New View" / "Edit View" dialog and pending view definitions.
     views: views::ViewState,
+    table_export: table_export::ExportState,
     /// Procedure and function dialogs and pending definitions.
     routines: routines::RoutineState,
     import: Option<ImportDialog>,
@@ -423,6 +425,7 @@ impl DataCraftApp {
             create: None,
             drop: None,
             views: Default::default(),
+            table_export: Default::default(),
             routines: Default::default(),
             import: None,
             copy: None,
@@ -671,6 +674,10 @@ impl DataCraftApp {
     fn handle_responses(&mut self) {
         for resp in self.worker.poll() {
             match resp {
+                Response::TableExported { conn, request_id, result } => {
+                    if let Some(path) = self.table_export_received(conn, request_id, result) { self.worker.send(Request::OpenTableReport { request_id, path }); }
+                }
+                Response::TableReportOpened { request_id, result } => self.table_report_opened(request_id, result),
                 Response::Connected { conn, databases } => {
                     // Stale response: the connection was disconnected, edited or deleted while connecting.
                     if !self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connecting) {
@@ -1517,6 +1524,9 @@ impl DataCraftApp {
                 | ExplorerAction::TruncateTable(t)
                 | ExplorerAction::EmptyTable(t)
                 | ExplorerAction::ImportData(t)
+                | ExplorerAction::ExportTable(t)
+                | ExplorerAction::DumpTable(t, _, _)
+                | ExplorerAction::PrintTable(t)
                 | ExplorerAction::RenameTable(t)
                 | ExplorerAction::ModifyTable(t)
                 | ExplorerAction::GenerateSelect(t)
@@ -1607,6 +1617,9 @@ impl DataCraftApp {
                     self.object_browser.active = true;
                 }
                 ExplorerAction::ImportData(t) => self.open_import(t),
+                ExplorerAction::ExportTable(t) => self.open_table_export(t, crate::db::table_export::ExportKind::Csv),
+                ExplorerAction::DumpTable(t, structure, data) => self.open_table_export(t, crate::db::table_export::ExportKind::Sql { structure, data }),
+                ExplorerAction::PrintTable(t) => self.open_table_export(t, crate::db::table_export::ExportKind::Print { data: false }),
                 ExplorerAction::CopyTable(t) => self.open_copy(t),
                 ExplorerAction::RenameTable(t) => self.open_object_dialog(t, DropKind::Rename),
                 ExplorerAction::ModifyTable(t) => self.open_modify_table(t),
@@ -2497,6 +2510,7 @@ impl DataCraftApp {
             || self.confirm_analyze.is_some()
             || self.create.is_some()
             || self.views.dialog.is_some()
+            || self.table_export.is_open()
             || self.routines.is_open()
             || self.drop.is_some()
             || self.import.is_some()
@@ -3373,6 +3387,7 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.show_table_export(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4372,7 +4387,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), table_export: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
