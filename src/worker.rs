@@ -17,6 +17,8 @@ pub type ConnId = u64;
 pub type ConsoleId = u64;
 
 pub enum Request {
+    TableModel { conn: ConnId, db: String, request_id: u64, tables: Vec<(String, String)>, cancel: Arc<std::sync::atomic::AtomicBool> },
+    SaveModel { path: std::path::PathBuf, contents: String },
     /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
@@ -101,6 +103,8 @@ pub enum Request {
 }
 
 pub enum Response {
+    TableModel { request_id: u64, result: Result<crate::db::table_model::Model, String> },
+    ModelSaved { result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
@@ -504,8 +508,34 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
     result
 }
 
+fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write;
+    let parent = path.parent().filter(|p| p.is_dir()).ok_or_else(|| anyhow::anyhow!(tr("Choose an existing destination directory")))?;
+    let temporary = parent.join(format!(".datacraft-model-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+        file.write_all(contents.as_bytes())?; file.sync_all()?; drop(file);
+        std::fs::rename(&temporary, &path)?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result?; Ok(path)
+}
+
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
+        Request::TableModel { conn, db, request_id, tables, cancel } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let result = match cfg {
+                Some(cfg) => Box::pin(crate::db::table_model::read(cfg, &db, &tables, &cancel)).await.map_err(|e| format!("{e:#}")),
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::TableModel { request_id, result }]
+        }
+        Request::SaveModel { path, contents } => {
+            let result = tokio::task::spawn_blocking(move || save_model_file(path, &contents)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::ModelSaved { result }]
+        }
         Request::DatabaseChoices { conn } => {
             let result = async {
                 let driver = state.live.lock().await.get(&conn).map(|l| l.cfg.driver).ok_or_else(|| anyhow::anyhow!(tr("Connection lost")))?;
@@ -946,6 +976,32 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for the worker");
+    }
+
+    #[test]
+    fn table_model_uses_a_background_session_and_saves_atomically() {
+        let directory = std::env::temp_dir().join(format!("datacraft-model-worker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("source.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE parent(a INTEGER,b INTEGER,computed TEXT GENERATED ALWAYS AS (a||':'||b),PRIMARY KEY(b,a)); CREATE TABLE child(x INTEGER,y INTEGER,FOREIGN KEY(x,y) REFERENCES parent);").unwrap();
+        drop(db);
+        let worker = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(73, Driver::Sqlite); cfg.file_path = path.to_string_lossy().into_owned(); cfg.read_only = true;
+        worker.send(Request::Connect(cfg));
+        wait_for(&worker, |r| matches!(r, Response::Connected { conn: 73, .. }));
+        worker.send(Request::TableModel { conn: 73, db: "main".into(), request_id: 1, tables: vec![("main".into(),"child".into())], cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)) });
+        let Response::TableModel { result, .. } = wait_for(&worker, |r| matches!(r, Response::TableModel { request_id: 1, .. })) else { unreachable!() };
+        let model = result.unwrap(); assert_eq!(model.relations[0].ref_columns, ["b","a"]); assert!(model.tables.iter().any(|t| t.columns.iter().any(|c| c.name=="computed")));
+        let output = directory.join("model.json"); let contents = serde_json::to_string(&model).unwrap();
+        worker.send(Request::SaveModel { path: output.clone(), contents: contents.clone() });
+        assert!(matches!(wait_for(&worker, |r| matches!(r, Response::ModelSaved { .. })), Response::ModelSaved { result: Ok(_) }));
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), contents);
+        let preserved = directory.join("preserved"); std::fs::create_dir(&preserved).unwrap(); let keep=preserved.join("keep"); std::fs::write(&keep,"unchanged").unwrap();
+        assert!(save_model_file(preserved.clone(),"replacement").is_err()); assert_eq!(std::fs::read_to_string(&keep).unwrap(),"unchanged");
+        assert!(!std::fs::read_dir(&directory).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with(".datacraft-model-")));
+        worker.send(Request::Disconnect(73)); wait_for(&worker, |r| matches!(r, Response::Disconnected(73)));
+        std::fs::remove_file(keep).unwrap(); std::fs::remove_dir(preserved).unwrap(); std::fs::remove_file(output).unwrap(); std::fs::remove_file(path).unwrap(); std::fs::remove_dir(directory).unwrap();
     }
 
     /// SQLite has no stored routines: the request answers with an empty list.

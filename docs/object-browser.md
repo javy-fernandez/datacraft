@@ -41,6 +41,22 @@ catalog readers and offline connections. It generates the existing local definit
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
 
+## Model declared relationships
+
+Choose **Reverse Tables to Model…** for one or more SQL tables. The model includes
+selected tables, directly related accessible catalog tables, columns, primary keys
+and declared foreign-key column mappings. No relationships are inferred from names.
+Drag tables to arrange them; **Save model…** writes JSON and **Export SVG…** writes a
+standalone vector image. These files contain schema metadata, not credentials or row data.
+
+Catalog reads run in the background with cancellation and stale-response protection.
+Read-only connections are supported. The existing FK readers cover SQLite, PostgreSQL,
+SQL Server, MySQL/MariaDB, Oracle and Snowflake; ClickHouse and NoSQL actions are gated
+because this workflow has no complete relationship reader for them. Missing permissions
+can limit the accessible catalog. Oracle/Snowflake reads follow the selected schema
+scopes, so incoming links owned by other schemas may be absent. SQLite generated columns and implicit composite-key
+references retain their catalog definition and declared key order.
+
 ## Row counts and timestamps
 
 Browsing reads catalog statistics and **never automatically scans a table**.

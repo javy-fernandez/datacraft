@@ -1239,5 +1239,23 @@
     "Select one supported table": "选择一个支持的表",
     "Select only tables for table actions": "表操作只能选择表",
     "Table “{name}” emptied": "已清空表“{name}”"
+  },
+  "table_actions": {
+    "A selected table was not found in the catalog": "在目录中找不到所选表",
+    "Choose an existing destination directory": "选择现有的目标目录",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "拖动表以排列模型。连线表示已声明的外键。",
+    "Executable path is not valid Unicode": "可执行文件路径不是有效的 Unicode",
+    "Export SVG…": "导出 SVG…",
+    "Incomplete SQLite column metadata": "SQLite 列元数据不完整",
+    "No declared foreign keys were found for these tables.": "未找到这些表已声明的外键。",
+    "Nullable": "允许 NULL",
+    "Reverse Tables to Model…": "从表生成模型…",
+    "Save model…": "保存模型…",
+    "Select tables in one database": "选择同一数据库中的表",
+    "Select tables to model": "选择要建模的表",
+    "Table Model": "表模型",
+    "Table operation timed out": "表操作超时",
+    "The foreign key catalog is too large to model completely": "外键目录过大，无法完整建模",
+    "The table catalog is too large to model completely": "表目录过大，无法完整建模"
   }
 }

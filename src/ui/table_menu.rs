@@ -64,6 +64,18 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         button!(cx.connected && table, "Generate INSERT", &|t: &TableRef| ExplorerAction::GenerateInsert(t.clone()));
     }
     button!(single, "Show DDL", &|t: &TableRef| ExplorerAction::GenerateDdl(t.clone()));
+    if sql
+        && ui
+            .add_enabled(
+                cx.connected && kind == Some(ObjectKind::Table) && crate::db::table_model::supported(cx.driver),
+                egui::Button::new(tr("Reverse Tables to Model…")),
+            )
+            .on_disabled_hover_text(tr("Not available for this engine"))
+            .clicked()
+    {
+        actions.push(ExplorerAction::TableModel(tables.to_vec()));
+        ui.close();
+    }
     if cx.driver.can_copy() {
         button!(cx.connected && single, "Copy Table To…", &|t: &TableRef| ExplorerAction::CopyTable(t.clone()));
     }

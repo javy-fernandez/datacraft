@@ -63,6 +63,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 mod routines;
+mod table_model;
 mod views;
 
 #[cfg(all(test, target_os = "windows"))]
@@ -309,6 +310,7 @@ pub struct DataCraftApp {
     backup: Option<crate::ui::backup_dialog::BackupDialog>,
     scheduler: Option<crate::scheduler::dialog::Dialog>,
     object_browser: crate::ui::object_browser::ObjectBrowser,
+    table_model: Option<table_model::Dialog>,
     save_on_row_change: bool,
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<ConnId>,
@@ -415,6 +417,7 @@ impl DataCraftApp {
                 browser.layout = persisted.object_layout;
                 browser
             },
+            table_model: None,
             save_on_row_change: persisted.save_on_row_change,
             dialog: None,
             confirm_delete: None,
@@ -859,6 +862,8 @@ impl DataCraftApp {
                     self.attach_edit_targets(console);
                     self.apply_demo_edit(console);
                 }
+                Response::TableModel { request_id, result } => self.table_model_received(request_id, result),
+                Response::ModelSaved { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
@@ -1645,6 +1650,7 @@ impl DataCraftApp {
                 ExplorerAction::GenerateSelect(t) => self.generate(ctx, &t, Generate::Select),
                 ExplorerAction::GenerateInsert(t) => self.generate(ctx, &t, Generate::Insert),
                 ExplorerAction::GenerateDdl(t) => self.generate(ctx, &t, Generate::Ddl),
+                ExplorerAction::TableModel(tables) => self.open_table_model(tables),
                 ExplorerAction::LoadUsers(id) => self.load_users(id),
                 ExplorerAction::NewUser(id) => self.open_user_dialog(id, None, false),
                 ExplorerAction::EditUser(id, account) => self.open_user_dialog(id, Some(account), false),
@@ -2498,6 +2504,7 @@ impl DataCraftApp {
             || self.create.is_some()
             || self.views.dialog.is_some()
             || self.routines.is_open()
+            || self.table_model.is_some()
             || self.drop.is_some()
             || self.import.is_some()
             || self.copy.is_some()
@@ -3372,6 +3379,7 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.show_table_model(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4369,7 +4377,7 @@ mod tests {
             worker: Worker::start(egui::Context::default()), conns: Vec::new(),
             consoles: (1..=4).map(|id| Console::new(id, format!("Query {id}"), String::new(), None)).collect(),
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
-            explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
+            explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(), table_model: None,
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,

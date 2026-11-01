@@ -1239,5 +1239,23 @@
     "Select one supported table": "Selecione uma tabela compatível",
     "Select only tables for table actions": "Selecione somente tabelas para as ações de tabela",
     "Table “{name}” emptied": "Tabela “{name}” esvaziada"
+  },
+  "table_actions": {
+    "A selected table was not found in the catalog": "Uma tabela selecionada não foi encontrada no catálogo",
+    "Choose an existing destination directory": "Escolha uma pasta de destino existente",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "Arraste as tabelas para organizar o modelo. As linhas representam as chaves estrangeiras declaradas.",
+    "Executable path is not valid Unicode": "O caminho do executável não é Unicode válido",
+    "Export SVG…": "Exportar SVG…",
+    "Incomplete SQLite column metadata": "Metadados de colunas do SQLite incompletos",
+    "No declared foreign keys were found for these tables.": "Nenhuma chave estrangeira declarada foi encontrada para essas tabelas.",
+    "Nullable": "Aceita NULL",
+    "Reverse Tables to Model…": "Criar modelo a partir das tabelas…",
+    "Save model…": "Salvar modelo…",
+    "Select tables in one database": "Selecione tabelas de um único banco de dados",
+    "Select tables to model": "Selecione as tabelas para o modelo",
+    "Table Model": "Modelo de tabelas",
+    "Table operation timed out": "O tempo limite da operação de tabela foi excedido",
+    "The foreign key catalog is too large to model completely": "O catálogo de chaves estrangeiras é muito grande para gerar um modelo completo",
+    "The table catalog is too large to model completely": "O catálogo de tabelas é muito grande para gerar um modelo completo"
   }
 }
