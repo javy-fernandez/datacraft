@@ -19,6 +19,8 @@ pub type ConsoleId = u64;
 pub enum Request {
     TableModel { conn: ConnId, db: String, request_id: u64, tables: Vec<(String, String)>, cancel: Arc<std::sync::atomic::AtomicBool> },
     SaveModel { path: std::path::PathBuf, contents: String },
+    ExportTable { conn: ConnId, db: String, request_id: u64, request: Box<crate::db::table_export::ExportRequest>, progress: Arc<crate::db::table_export::ExportProgress> },
+    OpenTableReport { request_id: u64, path: std::path::PathBuf },
     /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
@@ -105,6 +107,8 @@ pub enum Request {
 pub enum Response {
     TableModel { request_id: u64, result: Result<crate::db::table_model::Model, String> },
     ModelSaved { result: Result<std::path::PathBuf, String> },
+    TableExported { conn: ConnId, request_id: u64, result: Result<(std::path::PathBuf, u64), String> },
+    TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
@@ -536,6 +540,36 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             let result = tokio::task::spawn_blocking(move || save_model_file(path, &contents)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
             vec![Response::ModelSaved { result }]
         }
+        Request::ExportTable { conn, db, request_id, request, progress } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let path = request.path.clone();
+            let result = match cfg {
+                Some(cfg) => {
+                    let password = cfg.password.clone();
+                    // Composed native driver futures otherwise exhaust the Tokio worker's stack.
+                    let mut operation = Box::pin(crate::db::table_export::export(cfg, &db, *request, Arc::clone(&progress)));
+                    let result = match tokio::time::timeout(std::time::Duration::from_secs(1800), &mut operation).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), &mut operation).await;
+                            Err(anyhow::anyhow!(tr("Table operation timed out")))
+                        }
+                    };
+                    result.map(|rows| (path, rows)).map_err(|error| {
+                        let message = format!("{error:#}");
+                        if password.is_empty() { message } else { message.replace(&password, "[redacted]") }
+                    })
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::TableExported { conn, request_id, result }]
+        }
+        Request::OpenTableReport { request_id, path } => {
+            let result =
+                tokio::task::spawn_blocking(move || open_table_report(&path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::TableReportOpened { request_id, result }]
+        }
         Request::DatabaseChoices { conn } => {
             let result = async {
                 let driver = state.live.lock().await.get(&conn).map(|l| l.cfg.driver).ok_or_else(|| anyhow::anyhow!(tr("Connection lost")))?;
@@ -935,6 +969,28 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     }
 }
 
+fn report_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    anyhow::ensure!(
+        path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")),
+        tr("Choose an HTML file for the print report")
+    );
+    let path = path.canonicalize()?;
+    anyhow::ensure!(path.is_file(), tr("Choose an HTML file for the print report"));
+    Ok(path)
+}
+
+fn open_table_report(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let path = report_path(path)?;
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(&path).spawn()?;
+    Ok(path)
+}
+
 async fn connect_and_load(cfg: &ConnectionConfig) -> anyhow::Result<(Session, String, Vec<DatabaseInfo>)> {
     let mut session = Session::connect(cfg).await?;
     let default_db = session.current_database().await?;
@@ -965,6 +1021,108 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn report_paths_are_validated_without_launching_an_application() {
+        let dir = std::env::temp_dir().join(format!("dc-report-path-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("sample & report.HTML");
+        std::fs::write(&file, "<!doctype html><p>sample</p>").unwrap();
+        assert_eq!(report_path(&file).unwrap(), file.canonicalize().unwrap());
+        assert!(report_path(&dir.join("bad.exe")).is_err());
+        assert!(report_path(&dir.join("missing.html")).is_err());
+        let directory = dir.join("folder.html");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(report_path(&directory).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn export_worker_reads_complete_1200_row_table_and_restores_sql_without_opening_apps() {
+        use crate::db::table_export::{ExportKind, ExportProgress, ExportRequest};
+        let dir = std::env::temp_dir().join(format!("dc-export-worker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let source = dir.join("source.db");
+        let db = rusqlite::Connection::open(&source).unwrap();
+        db.execute_batch("CREATE TABLE notes(id INTEGER PRIMARY KEY,note TEXT,bytes BLOB,computed TEXT GENERATED ALWAYS AS (note||'!') VIRTUAL);").unwrap();
+        for id in 1..=1200 {
+            db.execute(
+                "INSERT INTO notes(id,note,bytes) VALUES(?1,?2,?3)",
+                rusqlite::params![id, format!("<sample> {id} {}", "long text".repeat(1000)), vec![0xFFu8; 256]],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(171, Driver::Sqlite);
+        cfg.file_path = source.display().to_string();
+        cfg.read_only = true;
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 171, .. }));
+        for (id, kind, filename) in [
+            (1, ExportKind::Json, "notes.json"),
+            (2, ExportKind::Sql { structure: true, data: true }, "notes.sql"),
+            (3, ExportKind::Print { data: true }, "notes.html"),
+        ] {
+            let path = dir.join(filename);
+            let progress = Arc::new(ExportProgress::default());
+            w.send(Request::ExportTable {
+                conn: 171,
+                db: "main".into(),
+                request_id: id,
+                request: Box::new(ExportRequest { schema: "main".into(), table: "notes".into(), path: path.clone(), kind, overwrite: false }),
+                progress: progress.clone(),
+            });
+            let Response::TableExported { conn, request_id, result } = wait_for(&w, |r| matches!(r,Response::TableExported{request_id,..} if *request_id==id))
+            else {
+                panic!("expected export result")
+            };
+            assert_eq!((conn, request_id), (171, id));
+            assert_eq!(result.unwrap(), (path.clone(), 1200));
+            assert_eq!(progress.rows.load(std::sync::atomic::Ordering::Relaxed), 1200);
+            match kind {
+                ExportKind::Json => {
+                    let rows: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(rows.as_array().unwrap().len(), 1200);
+                    assert_eq!(rows[1199]["id"], 1200);
+                    assert_eq!(rows[0]["bytes"].as_str().unwrap().len(), 514);
+                }
+                ExportKind::Sql { .. } => {
+                    let target = rusqlite::Connection::open_in_memory().unwrap();
+                    target.execute_batch(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                    assert_eq!(
+                        target.query_row("SELECT count(*) FROM notes WHERE length(bytes)=256 AND computed=note||'!'", [], |r| r.get::<_, i64>(0)).unwrap(),
+                        1200
+                    );
+                }
+                ExportKind::Print { .. } => {
+                    let html = std::fs::read_to_string(&path).unwrap();
+                    assert!(html.contains("&lt;sample&gt; 1200"));
+                    assert!(!html.contains("<sample>"));
+                }
+                _ => unreachable!(),
+            }
+        }
+        let keep = dir.join("keep.json");
+        std::fs::write(&keep, b"existing output").unwrap();
+        let progress = Arc::new(ExportProgress::default());
+        progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        w.send(Request::ExportTable {
+            conn: 171,
+            db: "main".into(),
+            request_id: 4,
+            request: Box::new(ExportRequest { schema: "main".into(), table: "notes".into(), path: keep.clone(), kind: ExportKind::Json, overwrite: true }),
+            progress,
+        });
+        let Response::TableExported { result, .. } = wait_for(&w, |r| matches!(r, Response::TableExported { request_id: 4, .. })) else {
+            panic!("expected cancellation result")
+        };
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&keep).unwrap(), b"existing output");
+        w.send(Request::Disconnect(171));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(171)));
+        drop(w);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     fn wait_for(w: &Worker, pred: impl Fn(&Response) -> bool) -> Response {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
