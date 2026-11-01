@@ -476,7 +476,6 @@ impl ObjectBrowser {
         let connection = connections.iter().find(|c| c.cfg.id == scope.conn);
         let connected = connection.is_some_and(|c| c.status == ConnStatus::Connected);
         let writable = connected && connection.is_some_and(|c| !c.cfg.read_only);
-        let copyable = connection.is_some_and(|c| c.cfg.driver.can_copy());
         // New / Edit View: SQL engines only.
         let views = writable && connection.is_some_and(|c| !c.cfg.driver.is_nosql());
         ui.add_space(8.0);
@@ -847,7 +846,7 @@ impl ObjectBrowser {
             .map(|(item, r)| (item.key.clone(), r.rect.intersect(background)))
             .collect();
         for (item, response) in responses {
-            self.item_response(response, item, &keys, org_index, (writable, views, copyable), &mut actions);
+            self.item_response(response, item, &keys, org_index, &items, crate::ui::table_menu::TableContext { driver: connection.map_or(crate::db::Driver::Sqlite, |c| c.cfg.driver), connected, read_only: !writable }, &mut actions);
         }
         if items.is_empty() {
             ui.label(RichText::new(tr("No matching objects")).color(p.muted));
@@ -881,7 +880,8 @@ impl ObjectBrowser {
         item: &Item<'_>,
         keys: &[ItemKey],
         org_index: usize,
-        (writable, views, copyable): (bool, bool, bool),
+        items: &[Item<'_>],
+        table_context: crate::ui::table_menu::TableContext,
         actions: &mut Vec<BrowserAction>,
     ) {
         let mods = response.ctx.input(|i| i.modifiers);
@@ -942,65 +942,12 @@ impl ObjectBrowser {
                     self.new_group_dialog(None, tables.clone());
                 }
                 ui.separator();
-                if ui.button(tr("Open data")).clicked() {
-                    for t in &tables {
-                        actions.push(BrowserAction::Explorer(ExplorerAction::OpenTable(
-                            t.clone(),
-                        )));
-                    }
-                    ui.close();
-                }
-                if ui.button(tr("Copy Name")).clicked() {
-                    ui.ctx().copy_text(
-                        tables
-                            .iter()
-                            .map(|t| t.table.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    );
-                    ui.close();
-                }
-                if ui.button(tr("Show DDL")).clicked() {
-                    for t in &tables {
-                        actions.push(BrowserAction::Explorer(ExplorerAction::GenerateDdl(
-                            t.clone(),
-                        )));
-                    }
-                    ui.close();
-                }
-                let view = self.selection.len() == 1 && item.table.is_some_and(|t| t.kind == ObjectKind::View);
-                if views && view && ui.button(tr("Edit View…")).clicked() {
-                    if let Some(table) = tables.first() {
-                        actions.push(BrowserAction::Explorer(ExplorerAction::EditView(table.clone())));
-                    }
-                    ui.close();
-                }
-                if copyable && ui.add_enabled(tables.len() == 1, egui::Button::new(tr("Copy Table To…"))).clicked() {
-                    if let Some(table) = tables.first() {
-                        actions.push(BrowserAction::Explorer(ExplorerAction::CopyTable(table.clone())));
-                    }
-                    ui.close();
-                }
-                let truncate = writable
-                    && self.selection.len() == 1
-                    && item.table.is_some_and(|t| t.kind == ObjectKind::Table);
-                if ui.add_enabled(truncate, egui::Button::new(tr("Modify Table…"))).clicked() {
-                    if let Some(table) = tables.first() {
-                        actions.push(BrowserAction::Explorer(ExplorerAction::ModifyTable(table.clone())));
-                    }
-                    ui.close();
-                }
-                if ui
-                    .add_enabled(truncate, egui::Button::new(tr("Truncate…")))
-                    .clicked()
-                {
-                    if let Some(table) = tables.first() {
-                        actions.push(BrowserAction::Explorer(ExplorerAction::TruncateTable(
-                            table.clone(),
-                        )));
-                    }
-                    ui.close();
-                }
+                if !groups.is_empty() { ui.label(tr("Select only tables for table actions")); return; }
+                let mut kinds = items.iter().filter(|item| self.selection.contains(&item.key)).filter_map(|item| item.table.map(|t| t.kind));
+                let kind = kinds.next().filter(|first| kinds.all(|kind| kind == *first));
+                let mut selected_actions = Vec::new();
+                crate::ui::table_menu::show(ui, &tables, kind, table_context, &mut selected_actions);
+                actions.extend(selected_actions.into_iter().map(BrowserAction::Explorer));
             }
         });
     }
@@ -1912,6 +1859,33 @@ mod tests {
                     .color("public", "customers")
                     .is_none()
             );
+        }
+    }
+
+    #[test]
+    fn table_context_menu_exposes_existing_workflows_in_list_and_grid() {
+        for layout in [ObjectLayout::List, ObjectLayout::Grid] {
+            let mut h = harness(layout, true);
+            h.get_by_label("customers").click_secondary(); h.run_steps(2);
+            for label in ["New Table…", "New View…", "Import Data from File…", "Rename…", "Empty Table…", "Truncate…", "Copy Table To…", "Show DDL", "Refresh", "Object Information", "Drop…"] {
+                assert!(h.query_all_by_label(label).next().is_some(), "missing {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn review_show_ddl_works_with_cached_metadata_for_every_engine() {
+        for layout in [ObjectLayout::List, ObjectLayout::Grid] {
+            for driver in [crate::db::Driver::Oracle, crate::db::Driver::ClickHouse, crate::db::Driver::Kusto, crate::db::Driver::Sqlite] {
+                for connected in [true, false] {
+                    let mut h = harness(layout, true);
+                    h.state_mut().connections[0].cfg.driver = driver;
+                    if !connected { h.state_mut().connections[0].status = ConnStatus::Disconnected; }
+                    h.run_steps(2);
+                    h.get_by_label("customers").click_secondary(); h.run_steps(2);
+                    assert!(!h.get_by_label("Show DDL").accesskit_node().is_disabled(), "{driver:?}, connected={connected}");
+                }
+            }
         }
     }
 

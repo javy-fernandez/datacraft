@@ -71,6 +71,9 @@ pub enum ExplorerAction {
     /// Confirm and drop a table or view.
     DropObject(TableRef, ObjectKind),
     TruncateTable(TableRef),
+    EmptyTable(TableRef),
+    RefreshObject(TableRef),
+    ObjectInformation(TableRef),
     ImportData(TableRef),
     /// "Copy Table To…" another connection, database or schema.
     CopyTable(TableRef),
@@ -778,13 +781,13 @@ fn database_rows(
     };
     if flat {
         if let Some(s) = schemas.first() {
-            object_groups(ui, state, actions, id, &d.name, s, routines, filter, 2, c.cfg.driver);
+            object_groups(ui, state, actions, id, &d.name, s, routines, filter, 2, crate::ui::table_menu::TableContext { driver: c.cfg.driver, connected: c.status == ConnStatus::Connected, read_only: c.cfg.read_only });
         }
         if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2); }
         return;
     }
     for s in schemas {
-        schema_rows(ui, state, actions, id, &d.name, schemas, s, routines, filter, name_match);
+        schema_rows(ui, state, actions, id, &d.name, schemas, s, routines, filter, name_match, crate::ui::table_menu::TableContext { driver: c.cfg.driver, connected: c.status == ConnStatus::Connected, read_only: c.cfg.read_only });
     }
     if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2); }
 
@@ -802,6 +805,7 @@ fn schema_rows(
     routines: Option<&RoutineList>,
     filter: &str,
     name_match: bool,
+    table_context: crate::ui::table_menu::TableContext,
 ) {
     let filtering = !filter.is_empty();
     let skey = format!("s:{conn}:{db}:{}", s.name);
@@ -857,7 +861,7 @@ fn schema_rows(
         toggle(state, &skey, s_open);
     }
     if s_open {
-        object_groups(ui, state, actions, conn, db, s, routines, filter, 3, Driver::Postgres);
+        object_groups(ui, state, actions, conn, db, s, routines, filter, 3, table_context);
     }
 }
 
@@ -896,8 +900,9 @@ fn object_groups(
     depth: usize,
     // Redis and MongoDB: their own folder names, and no DDL or import (MongoDB can copy). Schema-level
     // callers (only SQL engines get there) pass any SQL driver.
-    driver: Driver,
+    table_context: crate::ui::table_menu::TableContext,
 ) {
+    let driver = table_context.driver;
     let p = pal(ui);
     let filtering = !filter.is_empty();
     let sql = !driver.is_nosql();
@@ -964,7 +969,7 @@ fn object_groups(
         }
         for t in tables {
             let tref = TableRef { conn, db: db.to_string(), schema: s.name.clone(), table: t.name.clone() };
-            table_rows(ui, state, actions, tref, t, depth + 1, sql, driver.can_copy());
+            table_rows(ui, state, actions, tref, t, depth + 1, table_context);
         }
     }
     if let Some(list) = routines {
@@ -1117,7 +1122,7 @@ fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
 }
 
 #[allow(clippy::too_many_arguments)]
-fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, tref: TableRef, t: &TableInfo, depth: usize, sql: bool, copyable: bool) {
+fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, tref: TableRef, t: &TableInfo, depth: usize, table_context: crate::ui::table_menu::TableContext) {
     let p = pal(ui);
     let tkey = table_key(&tref);
     let open = state.expanded.contains(&tkey);
@@ -1148,77 +1153,7 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
         toggle(state, &tkey, open);
     }
     row.resp.context_menu(|ui| {
-        if ui.button(tr("Edit Data")).clicked() {
-            actions.push(ExplorerAction::OpenTable(tref.clone()));
-            ui.close();
-        }
-        if ui.button(tr("Copy Name")).clicked() {
-            ui.ctx().copy_text(t.name.clone());
-            ui.close();
-        }
-        // Redis and MongoDB: no SQL generation, DDL or import; MongoDB collections can be copied.
-        if !sql {
-            if copyable {
-                ui.separator();
-                if ui.button(tr("Copy Table To…")).clicked() {
-                    actions.push(ExplorerAction::CopyTable(tref.clone()));
-                    ui.close();
-                }
-            }
-            return;
-        }
-        ui.separator();
-        if ui.button(tr("Generate SELECT")).clicked() {
-            actions.push(ExplorerAction::GenerateSelect(tref.clone()));
-            ui.close();
-        }
-        if ui.button(tr("Generate INSERT")).clicked() {
-            actions.push(ExplorerAction::GenerateInsert(tref.clone()));
-            ui.close();
-        }
-        if ui.button(tr("Generate DDL")).clicked() {
-            actions.push(ExplorerAction::GenerateDdl(tref.clone()));
-            ui.close();
-        }
-        ui.separator();
-        if t.kind == ObjectKind::View && ui.button(tr("Edit View…")).clicked() {
-            actions.push(ExplorerAction::EditView(tref.clone()));
-            ui.close();
-        }
-        if ui.button(tr("New Table…")).clicked() {
-            actions.push(ExplorerAction::NewTable { conn: tref.conn, db: tref.db.clone(), schema: Some(tref.schema.clone()) });
-            ui.close();
-        }
-        if ui.button(tr("New View…")).clicked() {
-            actions.push(ExplorerAction::NewView { conn: tref.conn, db: tref.db.clone(), schema: Some(tref.schema.clone()) });
-            ui.close();
-        }
-        if ui.button(tr("Copy Table To…")).clicked() {
-            actions.push(ExplorerAction::CopyTable(tref.clone()));
-            ui.close();
-        }
-        if t.kind == ObjectKind::Table {
-            if ui.button(tr("Import Data from File…")).clicked() {
-                actions.push(ExplorerAction::ImportData(tref.clone()));
-                ui.close();
-            }
-            if ui.button(tr("Modify Table…")).clicked() {
-                actions.push(ExplorerAction::ModifyTable(tref.clone()));
-                ui.close();
-            }
-            if ui.button(tr("Rename…")).clicked() {
-                actions.push(ExplorerAction::RenameTable(tref.clone()));
-                ui.close();
-            }
-            if ui.button(tr("Truncate…")).clicked() {
-                actions.push(ExplorerAction::TruncateTable(tref.clone()));
-                ui.close();
-            }
-        }
-        if ui.button(RichText::new(tr("Drop…")).color(p.error)).clicked() {
-            actions.push(ExplorerAction::DropObject(tref.clone(), t.kind));
-            ui.close();
-        }
+        crate::ui::table_menu::show(ui, std::slice::from_ref(&tref), Some(t.kind), table_context, actions);
     });
     if !open {
         return;

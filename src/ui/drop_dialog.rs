@@ -16,6 +16,7 @@ pub enum DropKind {
     View,
     /// Delete every row of the table (TRUNCATE).
     Truncate,
+    Empty,
     /// Rename the table to `new_name`.
     Rename,
     Procedure,
@@ -81,6 +82,8 @@ pub fn object_sql(driver: Driver, kind: DropKind, schema: &str, name: &str, new_
         // SQLite has no TRUNCATE.
         DropKind::Truncate if driver == Driver::Sqlite => format!("delete from {}", object(schema, name)),
         DropKind::Truncate => format!("truncate table {}", object(schema, name)),
+        DropKind::Empty if driver == Driver::ClickHouse => format!("alter table {} delete where 1 settings mutations_sync = 1", object(schema, name)),
+        DropKind::Empty => format!("delete from {}", object(schema, name)),
         DropKind::Procedure | DropKind::Function => {
             let kind = if kind == DropKind::Procedure { crate::db::routines::RoutineKind::Procedure } else { crate::db::routines::RoutineKind::Function };
             crate::db::routines::drop_sql(driver, kind, schema, name, "")
@@ -162,6 +165,7 @@ impl DropDialog {
             DropKind::Table => (tr("Drop Table"), trf("Drop table “{name}” and all its data?", &[("name", &self.name)])),
             DropKind::View => (tr("Drop View"), trf("Drop view “{name}”?", &[("name", &self.name)])),
             DropKind::Truncate => (tr("Truncate Table"), trf("Delete every row of table “{name}”?", &[("name", &self.name)])),
+            DropKind::Empty => (tr("Empty Table"), trf("Delete every row of table “{name}”?", &[("name", &self.name)])),
             DropKind::Rename => (tr("Rename Table"), trf("Rename table “{name}” to:", &[("name", &self.name)])),
             DropKind::Procedure => (tr("Drop Procedure"), trf("Drop procedure “{name}”?", &[("name", &self.name)])),
             DropKind::Function => (tr("Drop Function"), trf("Drop function “{name}”?", &[("name", &self.name)])),
@@ -184,6 +188,9 @@ impl DropDialog {
                 }
             } else {
                 ui.label(RichText::new(tr("This action cannot be undone.")).color(p.error));
+                if self.kind == DropKind::Truncate && self.driver == Driver::Sqlite {
+                    ui.label(tr("SQLite uses DELETE and preserves the sequence."));
+                }
             }
             ui.add_space(10.0);
             egui::Frame::NONE
@@ -217,6 +224,7 @@ impl DropDialog {
                     let busy = match self.kind {
                         DropKind::Rename => tr("Renaming…"),
                         DropKind::Truncate => tr("Truncating…"),
+                        DropKind::Empty => tr("Deleting rows…"),
                         _ => tr("Dropping…"),
                     };
                     ui.label(RichText::new(busy).color(p.muted));
@@ -227,6 +235,7 @@ impl DropDialog {
                     let confirmed = if rename { !new_name.is_empty() && new_name != self.name } else { !needs_typing || self.confirm == self.name };
                     let label = match self.kind {
                         DropKind::Truncate => tr("Truncate"),
+                        DropKind::Empty => tr("Empty Table"),
                         DropKind::Rename => tr("Rename"),
                         _ => tr("Drop"),
                     };
