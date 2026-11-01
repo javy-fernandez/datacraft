@@ -1,13 +1,14 @@
 //! Draggable catalog model and a standalone vector export of the same layout.
 
-use crate::db::table_model::{Model, Relation};
+use crate::db::table_model::Model;
 use crate::i18n::tr;
 use crate::ui::theme::pal;
 use egui::{FontId, Pos2, Rect, Sense, Stroke, Vec2, pos2, vec2};
 
 pub struct ModelView {
-    pub model: Model,
+    model: Model,
     positions: Vec<Pos2>,
+    endpoints: Vec<Option<(usize, usize)>>,
 }
 
 const WIDTH: f32 = 280.0;
@@ -25,7 +26,17 @@ impl ModelView {
             }
             y += row.iter().map(|t| height(t.columns.len())).fold(0.0, f32::max) + 70.0;
         }
-        Self { model, positions }
+        let indices: std::collections::HashMap<_, _> = model.tables.iter().enumerate().map(|(i, t)| ((t.schema.as_str(), t.name.as_str()), i)).collect();
+        let endpoints = model
+            .relations
+            .iter()
+            .map(|r| Some((*indices.get(&(r.schema.as_str(), r.table.as_str()))?, *indices.get(&(r.ref_schema.as_str(), r.ref_table.as_str()))?)))
+            .collect();
+        Self { model, positions, endpoints }
+    }
+
+    pub fn model(&self) -> &Model {
+        &self.model
     }
 
     fn size(&self) -> Vec2 {
@@ -36,19 +47,13 @@ impl ModelView {
             .fold(vec2(900.0, 420.0), |size, (t, p)| size.max(p.to_vec2() + vec2(WIDTH + 30.0, height(t.columns.len()) + 30.0)))
     }
 
-    fn endpoints(&self, schema: &str, table: &str, parent_schema: &str, parent_table: &str) -> Option<(Pos2, Pos2)> {
-        let child = self.model.tables.iter().position(|t| t.schema == schema && t.name == table)?;
-        let parent = self.model.tables.iter().position(|t| t.schema == parent_schema && t.name == parent_table)?;
+    fn relationship_points(&self, index: usize) -> Option<Vec<Pos2>> {
+        let (child, parent) = self.endpoints.get(index).copied().flatten()?;
         let start = self.positions.get(child)?;
         let end = self.positions.get(parent)?;
-        Some((*start + vec2(WIDTH, 21.0), *end + vec2(0.0, 21.0)))
-    }
-
-    fn relationship_points(&self, relation: &Relation) -> Option<Vec<Pos2>> {
-        let (a, b) = self.endpoints(&relation.schema, &relation.table, &relation.ref_schema, &relation.ref_table)?;
-        if relation.schema == relation.ref_schema && relation.table == relation.ref_table {
-            let index = self.model.tables.iter().position(|t| t.schema == relation.schema && t.name == relation.table)?;
-            let top = self.positions.get(index)?.y;
+        let (a, b) = (*start + vec2(WIDTH, 21.0), *end + vec2(0.0, 21.0));
+        if child == parent {
+            let top = start.y;
             let y = (top - 14.0).max(2.0);
             let left = (b.x - 14.0).max(2.0);
             return Some(vec![a, pos2(a.x + 24.0, a.y), pos2(a.x + 24.0, y), pos2(left, y), pos2(left, b.y), b]);
@@ -63,8 +68,8 @@ impl ModelView {
         egui::ScrollArea::both().id_salt("table_model_canvas").max_height(460.0).show(ui, |ui| {
             let (canvas, _) = ui.allocate_exact_size(self.size(), Sense::hover());
             let origin = canvas.min.to_vec2();
-            for relation in &self.model.relations {
-                if let Some(points) = self.relationship_points(relation) {
+            for index in 0..self.model.relations.len() {
+                if let Some(points) = self.relationship_points(index) {
                     let points: Vec<_> = points.into_iter().map(|p| p + origin).collect();
                     if let Some(&parent) = points.last() {
                         ui.painter().circle_filled(parent, 3.5, p.accent);
@@ -130,8 +135,8 @@ impl ModelView {
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\"><rect width=\"100%\" height=\"100%\" fill=\"#f6f8fa\"/>",
             size.x, size.y, size.x, size.y
         );
-        for relation in &self.model.relations {
-            if let Some(points) = self.relationship_points(relation) {
+        for index in 0..self.model.relations.len() {
+            if let Some(points) = self.relationship_points(index) {
                 let mut path = String::new();
                 for (i, point) in points.iter().enumerate() {
                     let _ = write!(path, "{}{} {} ", if i == 0 { "M" } else { "L" }, point.x, point.y);
@@ -175,6 +180,27 @@ fn escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::db::table_model::{ModelColumn, ModelTable};
+
+    #[test]
+    fn cached_endpoints_distinguish_schemas_and_follow_dragged_positions() {
+        let tables = ["one", "two"].into_iter().map(|schema| ModelTable { schema: schema.into(), name: "nodes".into(), columns: vec![] }).collect();
+        let relation = crate::db::table_model::Relation {
+            schema: "two".into(),
+            table: "nodes".into(),
+            ref_schema: "one".into(),
+            ref_table: "nodes".into(),
+            columns: vec!["parent".into()],
+            ref_columns: vec!["id".into()],
+        };
+        let mut view = ModelView::new(Model { tables, relations: vec![relation] });
+        let points = view.relationship_points(0).unwrap();
+        assert_eq!(points.first(), Some(&pos2(650.0, 41.0)));
+        assert_eq!(points.last(), Some(&pos2(20.0, 41.0)));
+        view.positions[1] += vec2(30.0, 50.0);
+        let moved = view.relationship_points(0).unwrap();
+        assert_eq!(moved.first(), Some(&pos2(680.0, 91.0)));
+        assert_eq!(moved.last(), Some(&pos2(20.0, 41.0)));
+    }
     #[test]
     fn svg_keeps_self_referencing_relationships_visible_outside_the_table() {
         let relation = crate::db::table_model::Relation {

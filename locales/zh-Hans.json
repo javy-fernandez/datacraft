@@ -1383,5 +1383,8 @@
     "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "此引擎会立即提交表创建操作。如果后续语句失败，则必须删除新创建的表。",
     "Showing DDL from cached columns because the catalog definition is unavailable.": "目录定义不可用，正在根据缓存的列显示 DDL。",
     "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "CREATE 未得到确认；{target} 可能已存在。请在重试前检查目标。系统未自动删除该目标。"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "表列元数据不完整"
   }
 }

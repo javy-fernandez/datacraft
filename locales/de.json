@@ -1383,5 +1383,8 @@
     "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Diese Engine bestätigt die Tabellenerstellung sofort. Schlägt eine spätere Anweisung fehl, muss die neu erstellte Tabelle entfernt werden.",
     "Showing DDL from cached columns because the catalog definition is unavailable.": "DDL wird aus zwischengespeicherten Spalten angezeigt, da die Katalogdefinition nicht verfügbar ist.",
     "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "CREATE wurde nicht bestätigt; {target} könnte existieren. Prüfen Sie das Ziel vor einem erneuten Versuch. Es wurde nicht automatisch entfernt."
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "Unvollständige Spaltenmetadaten der Tabelle"
   }
 }

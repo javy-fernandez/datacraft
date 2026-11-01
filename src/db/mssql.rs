@@ -227,7 +227,7 @@ impl MsSession {
 }
 
 /// Type with length/precision in SSMS style: `nvarchar(50)`, `varchar(max)`, `decimal(10,2)`.
-fn type_label(data_type: &str, max_len: Option<i64>, precision: Option<i64>, scale: Option<i64>) -> String {
+pub(super) fn type_label(data_type: &str, max_len: Option<i64>, precision: Option<i64>, scale: Option<i64>) -> String {
     match data_type {
         "char" | "varchar" | "nchar" | "nvarchar" | "binary" | "varbinary" => match max_len {
             Some(-1) => format!("{data_type}(max)"),

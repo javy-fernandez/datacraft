@@ -866,7 +866,7 @@ impl Drop for SfSession {
 }
 
 /// Type as DataGrip shows it: `NUMBER(38,0)`, `VARCHAR(16777216)`, `TIMESTAMP_NTZ(9)`.
-fn type_label(data_type: &str, max_len: Option<i64>, precision: Option<i64>, scale: Option<i64>, dt_precision: Option<i64>) -> String {
+pub(super) fn type_label(data_type: &str, max_len: Option<i64>, precision: Option<i64>, scale: Option<i64>, dt_precision: Option<i64>) -> String {
     match data_type {
         "NUMBER" => match (precision, scale) {
             (Some(p), Some(s)) => format!("NUMBER({p},{s})"),

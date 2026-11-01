@@ -532,7 +532,7 @@ fn objects_sql(owners: &[String]) -> String {
 }
 
 /// Column type as written in DDL, lowercased: `varchar2(255)`, `number(10,2)`, `date`...
-fn type_label(
+pub(super) fn type_label(
     data_type: &str,
     data_length: Option<i64>,
     char_length: Option<i64>,

@@ -124,7 +124,7 @@ impl DataCraftApp {
                     .set_file_name(if svg { "table-model.svg" } else { "table-model.json" })
                     .save_file()
                 {
-                    let contents = if svg { Ok(view.svg()) } else { serde_json::to_string_pretty(&view.model) };
+                    let contents = if svg { Ok(view.svg()) } else { serde_json::to_string_pretty(view.model()) };
                     match contents {
                         Ok(contents) => self.worker.send(Request::SaveModel { path, contents }),
                         Err(error) => self.error(error.to_string()),

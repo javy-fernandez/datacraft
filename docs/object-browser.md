@@ -51,6 +51,9 @@ Drag tables to arrange them; **Save model…** writes JSON and **Export SVG…**
 standalone vector image. These files contain schema metadata, not credentials or row data.
 
 Catalog reads run in the background with cancellation and stale-response protection.
+Only the FK inventory spans the accessible scope; column metadata is fetched for
+selected tables and their direct neighbors. Relation endpoints are cached once and
+follow card positions without searching table names on every frame.
 Read-only connections are supported. The existing FK readers cover SQLite, PostgreSQL,
 SQL Server, MySQL/MariaDB, Oracle and Snowflake; ClickHouse and NoSQL actions are gated
 because this workflow has no complete relationship reader for them. Missing permissions

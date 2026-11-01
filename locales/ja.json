@@ -1383,5 +1383,8 @@
     "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "このエンジンはテーブルの作成を即座にコミットします。後続の文が失敗した場合、新しく作成したテーブルを削除する必要があります。",
     "Showing DDL from cached columns because the catalog definition is unavailable.": "カタログ定義を取得できないため、キャッシュされた列から DDL を表示しています。",
     "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "CREATE の完了を確認できなかったため、{target} が存在する可能性があります。再試行する前に作成先を確認してください。自動削除は行われていません。"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "テーブルの列メタデータが不完全です"
   }
 }
