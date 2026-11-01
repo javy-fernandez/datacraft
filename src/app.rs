@@ -64,6 +64,7 @@ use std::time::Instant;
 
 mod routines;
 mod views;
+mod table_grants;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -322,6 +323,7 @@ pub struct DataCraftApp {
     drop: Option<DropDialog>,
     /// "New View" / "Edit View" dialog and pending view definitions.
     views: views::ViewState,
+    table_grants: table_grants::State,
     /// Procedure and function dialogs and pending definitions.
     routines: routines::RoutineState,
     import: Option<ImportDialog>,
@@ -423,6 +425,7 @@ impl DataCraftApp {
             create: None,
             drop: None,
             views: Default::default(),
+            table_grants: Default::default(),
             routines: Default::default(),
             import: None,
             copy: None,
@@ -901,6 +904,7 @@ impl DataCraftApp {
                     { editor.reference = identity; }
                 }
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
+                Response::TableGrants { conn, request_id, result } => self.table_grants_received(conn, request_id, result),
                 Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
                 Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
                 Response::TableDetails { request_id, result } => self.modify_loaded(request_id, result.map(|d| *d)),
@@ -1519,6 +1523,7 @@ impl DataCraftApp {
                 | ExplorerAction::ImportData(t)
                 | ExplorerAction::RenameTable(t)
                 | ExplorerAction::ModifyTable(t)
+                | ExplorerAction::TablePrivileges(t)
                 | ExplorerAction::GenerateSelect(t)
                 | ExplorerAction::GenerateInsert(t)
                 | ExplorerAction::EditView(t) => Some(t.conn),
@@ -1610,6 +1615,7 @@ impl DataCraftApp {
                 ExplorerAction::CopyTable(t) => self.open_copy(t),
                 ExplorerAction::RenameTable(t) => self.open_object_dialog(t, DropKind::Rename),
                 ExplorerAction::ModifyTable(t) => self.open_modify_table(t),
+                ExplorerAction::TablePrivileges(t) => self.open_table_grants(t),
                 ExplorerAction::NewConsole(id, db) => {
                     let i = self.new_console(Some(id), None, String::new());
                     self.consoles[i].db = db;
@@ -3372,6 +3378,7 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.table_grants_dialog(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4378,7 +4385,7 @@ mod tests {
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
-            modify: None,
+            modify: None, table_grants: Default::default(),
         }
     }
 

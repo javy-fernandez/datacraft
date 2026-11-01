@@ -71,6 +71,10 @@ pub enum Request {
     DatabaseChoices { conn: ConnId },
     /// "Modify Table…": the table's full structure (defaults, primary key, indexes).
     TableDetails { conn: ConnId, db: String, schema: String, table: String, request_id: u64 },
+    TableGrants {
+        conn: ConnId, db: String, schema: String, table: String, request_id: u64,
+        request: crate::db::table_privileges::Request, cancel: Arc<std::sync::atomic::AtomicBool>,
+    },
     /// Runs statements in order; stops at the first error.
     /// `db`: database to run them in (`None` = the connection's default database).
     Execute {
@@ -148,6 +152,7 @@ pub enum Response {
     DdlDone { conn: ConnId, result: Result<(), String> },
     RoutineSaved { console: ConsoleId, result: Result<(), String>, identity: Option<crate::db::routines::RoutineRef> },
     TableDetails { request_id: u64, result: Result<Box<crate::db::alter::TableDetails>, String> },
+    TableGrants { conn: ConnId, request_id: u64, result: Result<crate::db::table_privileges::Grants, String> },
     DatabaseChoices { conn: ConnId, result: Result<crate::db::create_db::DatabaseChoices, String> },
     /// Result of `Users`.
     Users { conn: ConnId, result: Result<crate::db::users::UsersReply, String> },
@@ -251,6 +256,8 @@ impl State {
         let conn = match req {
             Request::Connect(cfg) => cfg.id,
             Request::Disconnect(conn) => *conn,
+            // Stamp queued grant writes so they cannot cross a disconnect/reconnect.
+            Request::TableGrants { conn, .. } => return self.current_epoch(*conn),
             _ => return 0,
         };
         let mut epochs = self.epochs.lock().unwrap_or_else(|e| e.into_inner());
@@ -506,6 +513,29 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
 
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
+        Request::TableGrants { conn, db, schema, table, request_id, request, cancel } => {
+            let cfg = state.live.lock().await.get(&conn).map(|live| live.cfg.clone());
+            let result = match cfg {
+                Some(cfg) if state.current_epoch(conn) == epoch => {
+                    let password = cfg.password.clone();
+                    // Composed driver futures must stay off the Tokio worker's stack.
+                    let mut task = Box::pin(crate::db::table_privileges::run(cfg, &db, &schema, &table, request, cancel.clone()));
+                    let result = tokio::select! {
+                        result = &mut task => result,
+                        _ = async {
+                            while state.current_epoch(conn) == epoch { tokio::time::sleep(std::time::Duration::from_millis(50)).await; }
+                            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        } => task.await,
+                    };
+                    result.map_err(|error| {
+                        let message = format!("{error:#}");
+                        if password.is_empty() { message } else { message.replace(&password, "[redacted]") }
+                    })
+                }
+                _ => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::TableGrants { conn, request_id, result }]
+        }
         Request::DatabaseChoices { conn } => {
             let result = async {
                 let driver = state.live.lock().await.get(&conn).map(|l| l.cfg.driver).ok_or_else(|| anyhow::anyhow!(tr("Connection lost")))?;
@@ -934,6 +964,37 @@ async fn load_databases(session: &mut Session, default_db: &str) -> anyhow::Resu
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn grants_worker_rejects_read_only_and_invalidated_connection_requests() {
+        use crate::db::table_privileges::{Edit, Principal, Request as GrantsRequest};
+        let state = State::default();
+        let mut cfg = ConnectionConfig::new(7, Driver::Sqlite);
+        cfg.read_only = true;
+        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new() });
+        let request = |id| Request::TableGrants {
+            conn: 7,
+            db: "main".into(),
+            schema: "main".into(),
+            table: "notes".into(),
+            request_id: id,
+            request: GrantsRequest::Apply(Edit { principal: Principal { name: "reader".into(), host: "".into() }, old: vec![], new: vec![], expected: vec![] }),
+            cancel: Arc::default(),
+        };
+        let responses = Box::pin(handle(request(9), 0, &state)).await;
+        let [Response::TableGrants { conn: 7, request_id: 9, result: Err(error) }] = responses.as_slice() else {
+            panic!("expected typed grants refusal");
+        };
+        assert_eq!(error, tr("Read-only connection"));
+        let pending = request(10);
+        let epoch = state.bump_if_lifecycle(&pending);
+        state.bump_if_lifecycle(&Request::Disconnect(7));
+        let responses = Box::pin(handle(pending, epoch, &state)).await;
+        let [Response::TableGrants { request_id: 10, result: Err(error), .. }] = responses.as_slice() else {
+            panic!("expected invalidated request");
+        };
+        assert_eq!(error, tr("The connection is not open"));
+    }
 
     fn wait_for(w: &Worker, pred: impl Fn(&Response) -> bool) -> Response {
         let deadline = Instant::now() + Duration::from_secs(20);

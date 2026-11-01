@@ -46,6 +46,8 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
     }
     if sql {
         button!(writable && table, "Modify Table…", &|t: &TableRef| ExplorerAction::ModifyTable(t.clone()));
+        let grants = writable && table && crate::db::table_privileges::supported(cx.driver);
+        button!(grants, "Set Privileges…", &|t: &TableRef| ExplorerAction::TablePrivileges(t.clone()));
         if kind == Some(ObjectKind::View) {
             button!(writable && single, "Edit View…", &|t: &TableRef| ExplorerAction::EditView(t.clone()));
         }
@@ -80,5 +82,38 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
     if sql {
         ui.separator();
         button!(writable && single, "Drop…", &|t: &TableRef| ExplorerAction::DropObject(t.clone(), kind.unwrap_or(ObjectKind::Table)));
+    }
+}
+
+#[cfg(test)]
+mod grants_tests {
+    use super::*;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    #[test]
+    fn grants_menu_is_available_only_for_one_writable_server_table() {
+        let table = TableRef { conn: 7, db: "main".into(), schema: "dbo".into(), table: "notes".into() };
+        for (driver, connected, read_only, kind, count, enabled) in [
+            (Driver::MsSql, true, false, ObjectKind::Table, 1, true),
+            (Driver::Postgres, false, false, ObjectKind::Table, 1, false),
+            (Driver::MySql, true, true, ObjectKind::Table, 1, false),
+            (Driver::Oracle, true, false, ObjectKind::View, 1, false),
+            (Driver::Snowflake, true, false, ObjectKind::Table, 2, false),
+            (Driver::Sqlite, true, false, ObjectKind::Table, 1, false),
+        ] {
+            let tables = vec![table.clone(); count];
+            let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 900.0)).build_ui_state(
+                move |ui, actions: &mut Vec<ExplorerAction>| show(ui, &tables, Some(kind), TableContext { driver, connected, read_only }, actions),
+                Vec::new(),
+            );
+            harness.run_steps(2);
+            let button = harness.get_by_label("Set Privileges…");
+            assert_eq!(!button.accesskit_node().is_disabled(), enabled);
+            if enabled {
+                button.click();
+                harness.run_steps(2);
+                assert_eq!(harness.state().len(), 1);
+            }
+        }
     }
 }

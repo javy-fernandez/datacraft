@@ -41,6 +41,27 @@ catalog readers and offline connections. It generates the existing local definit
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
 
+### Explicit table privileges
+
+**Set Privileges…** opens a user/role selector for one connected, writable server
+table. It displays explicit grants on that table and previews the exact GRANT and
+REVOKE statements before applying them. These grants are not the user's full
+effective permissions: ownership, role membership, PUBLIC and broader privileges
+can independently provide access. Save or discard pending table edits first.
+
+PostgreSQL, MySQL/MariaDB, SQL Server, Oracle, Snowflake and ClickHouse use their
+own live catalogs. SQLite and NoSQL engines do not offer table grants. Catalog
+visibility is required; inaccessible or truncated metadata is an error. MariaDB
+offers user accounts, while Snowflake offers account roles and requires the table
+owner role outside managed access schemas.
+
+The editor refuses grants with options, foreign grantors, column permissions,
+DENY/partial-revoke states or other scopes it cannot safely preserve. Use the SQL
+editor for those cases. Before applying, it reloads grants and provenance and
+rejects a changed snapshot or preview. Work uses a cancellable private session.
+Some engines commit each statement independently; after cancellation or an error,
+use **Reload privileges** to inspect the actual state before making more changes.
+
 ## Row counts and timestamps
 
 Browsing reads catalog statistics and **never automatically scans a table**.

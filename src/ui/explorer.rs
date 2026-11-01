@@ -80,6 +80,7 @@ pub enum ExplorerAction {
     RenameTable(TableRef),
     /// "Modify Table…": columns, primary key, indexes and name.
     ModifyTable(TableRef),
+    TablePrivileges(TableRef),
     /// Load a database's schema when it is expanded.
     LoadDatabase(ConnId, String),
     BrowseObjects(ObjectScope),
