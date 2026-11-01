@@ -51,7 +51,7 @@ impl SqliteSession {
     }
 
     /// Runs `f` with the connection on a blocking thread.
-    async fn with_conn<T, F>(&self, f: F) -> anyhow::Result<T>
+    pub(super) async fn with_conn<T, F>(&self, f: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,

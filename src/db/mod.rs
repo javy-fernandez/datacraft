@@ -4,6 +4,8 @@
 //! know each engine's native types.
 
 pub mod alter;
+pub mod table_export;
+pub mod table_definition;
 pub mod copy;
 pub mod create_db;
 pub mod datagrip;
@@ -30,6 +32,7 @@ pub mod sqlite;
 pub mod url;
 pub mod views;
 pub mod users;
+pub mod table_privileges;
 
 use serde::{Deserialize, Serialize};
 use crate::i18n::trf;
@@ -836,3 +839,7 @@ impl Engine {
         Some(format!("{product} {v}"))
     }
 }
+
+pub mod table_model;
+
+pub mod table_tools;

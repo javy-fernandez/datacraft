@@ -33,7 +33,7 @@ const HIDDEN_DATABASES: [&str; 2] = ["information_schema", "performance_schema"]
 const SYSTEM_DATABASES: [&str; 2] = ["mysql", "sys"];
 
 pub struct MySession {
-    conn: Conn,
+    pub(super) conn: Conn,
     /// Options the connection was opened with (to open the one that cancels its queries).
     opts: OptsBuilder,
     /// Set on I/O or protocol errors: the connection is no longer usable.

@@ -17,6 +17,10 @@ pub type ConnId = u64;
 pub type ConsoleId = u64;
 
 pub enum Request {
+    TableOperation { conn: ConnId, db: String, request_id: u64, operation: Box<crate::db::table_tools::Operation>, progress: Arc<crate::db::table_export::ExportProgress> },
+    SaveTableArtifact { path: std::path::PathBuf, contents: String },
+    CreateTableShortcut { path: std::path::PathBuf, target: crate::table_shortcut::Target },
+    OpenTableReport(std::path::PathBuf),
     /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
@@ -100,6 +104,8 @@ pub enum Request {
 }
 
 pub enum Response {
+    TableOperation { request_id: u64, result: Result<crate::db::table_tools::Outcome, String> },
+    TableArtifact { result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
@@ -502,8 +508,62 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
     result
 }
 
+fn save_table_artifact(path: std::path::PathBuf, contents: &str) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write;
+    let parent = path.parent().filter(|p| p.is_dir()).ok_or_else(|| anyhow::anyhow!(tr("Choose an existing destination directory")))?;
+    let temporary = parent.join(format!(".datacraft-model-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+        file.write_all(contents.as_bytes())?; file.sync_all()?; drop(file);
+        std::fs::rename(&temporary, &path)?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result?; Ok(path)
+}
+
+fn open_table_report(path: &std::path::Path) -> anyhow::Result<()> {
+    anyhow::ensure!(path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")), tr("Choose an HTML file for the print report"));
+    let path = path.canonicalize()?;
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(path).spawn()?;
+    Ok(())
+}
+
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
+        Request::TableOperation { conn, db, request_id, operation, progress } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let result = match cfg {
+                Some(cfg) => {
+                    // Composed driver futures otherwise exhaust the Tokio worker's stack.
+                    let operation = Box::pin(crate::db::table_tools::run(cfg, &db, *operation, Arc::clone(&progress)));
+                    match tokio::time::timeout(std::time::Duration::from_secs(1800), operation).await {
+                        Ok(result) => result.map_err(|e| format!("{e:#}")),
+                        Err(_) => { progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed); Err(tr("Table operation timed out").into()) }
+                    }
+                },
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::TableOperation { request_id, result }]
+        }
+        Request::SaveTableArtifact { path, contents } => {
+            let result = tokio::task::spawn_blocking(move || save_table_artifact(path, &contents)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::TableArtifact { result }]
+        }
+        Request::CreateTableShortcut { path, target } => {
+            let result = tokio::task::spawn_blocking(move || crate::table_shortcut::create(&path, &target).map(|_| path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::TableArtifact { result }]
+        }
+        Request::OpenTableReport(path) => {
+            let result = tokio::task::spawn_blocking(move || open_table_report(&path).map(|_| path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::TableArtifact { result }]
+        }
         Request::DatabaseChoices { conn } => {
             let result = async {
                 let driver = state.live.lock().await.get(&conn).map(|l| l.cfg.driver).ok_or_else(|| anyhow::anyhow!(tr("Connection lost")))?;
@@ -929,6 +989,77 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for the worker");
+    }
+
+    #[test]
+    fn table_operations_complete_on_the_background_worker() {
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-table-worker-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE notes(id INTEGER PRIMARY KEY, value TEXT, computed TEXT GENERATED ALWAYS AS ('Note '||id) VIRTUAL); INSERT INTO notes(id,value) VALUES(1,'preserved');").unwrap();
+        drop(db);
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(71, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 71, .. }));
+        let operation = crate::db::table_tools::Operation::PreviewDuplicate {
+            schema: "main".into(),
+            table: "notes".into(),
+            target: "notes_copy".into(),
+            data: true,
+        };
+        w.send(Request::TableOperation {
+            conn: 71,
+            db: "main".into(),
+            request_id: 2,
+            operation: Box::new(operation),
+            progress: Arc::default(),
+        });
+        let Response::TableOperation { result, .. } = wait_for(&w, |r| {
+            matches!(r, Response::TableOperation { request_id: 2, .. })
+        }) else {
+            unreachable!()
+        };
+        let crate::db::table_tools::Outcome::Plan(plan) = result.unwrap() else {
+            panic!("expected duplicate preview")
+        };
+        let operation = crate::db::table_tools::Operation::Duplicate {
+            schema: "main".into(),
+            table: "notes".into(),
+            target: "notes_copy".into(),
+            data: true,
+            expected: plan.statements,
+        };
+        w.send(Request::TableOperation {
+            conn: 71,
+            db: "main".into(),
+            request_id: 3,
+            operation: Box::new(operation),
+            progress: Arc::default(),
+        });
+        let Response::TableOperation { result, .. } = wait_for(&w, |r| {
+            matches!(r, Response::TableOperation { request_id: 3, .. })
+        }) else {
+            unreachable!()
+        };
+        assert!(matches!(
+            result.unwrap(),
+            crate::db::table_tools::Outcome::Done
+        ));
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row("SELECT value FROM notes_copy", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "preserved"
+        );
+        drop(db);
+        w.send(Request::Disconnect(71));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(71)));
+        std::fs::remove_file(path).unwrap();
     }
 
     /// SQLite has no stored routines: the request answers with an empty list.

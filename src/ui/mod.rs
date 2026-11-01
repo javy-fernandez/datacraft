@@ -18,6 +18,7 @@ pub mod filter_sort;
 pub mod explorer;
 pub mod icons;
 pub mod object_browser;
+pub mod table_menu;
 pub mod object_organization;
 pub mod performance;
 pub mod plan_view;
@@ -114,3 +115,5 @@ mod tests {
         assert_eq!(quote_ident(Driver::Postgres, "a\"b"), "\"a\"\"b\"");
     }
 }
+
+pub mod table_model;

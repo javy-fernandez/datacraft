@@ -14,7 +14,7 @@ use crate::db::sqlite::hex_preview;
 use crate::i18n::{tr, trf};
 
 pub struct MsSession {
-    client: Client<Compat<TcpStream>>,
+    pub(super) client: Client<Compat<TcpStream>>,
     /// Set on I/O or protocol errors: the connection is no longer usable.
     broken: bool,
 }
@@ -293,7 +293,7 @@ fn cell(data: &ColumnData<'static>) -> Cell {
 }
 
 /// `numeric(18,0)` must show as `42`, not `42.0` as tiberius' `Display` does.
-fn numeric_text(n: tiberius::numeric::Numeric) -> String {
+pub(super) fn numeric_text(n: tiberius::numeric::Numeric) -> String {
     let scale = u32::from(n.scale());
     let sign = if n.value() < 0 { "-" } else { "" };
     let abs = n.value().unsigned_abs();

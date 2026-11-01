@@ -63,6 +63,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 mod routines;
+mod table_actions;
 mod views;
 
 #[cfg(all(test, target_os = "windows"))]
@@ -320,6 +321,7 @@ pub struct DataCraftApp {
     views: views::ViewState,
     /// Procedure and function dialogs and pending definitions.
     routines: routines::RoutineState,
+    table_actions: table_actions::TableActions,
     import: Option<ImportDialog>,
     /// "Copy Table To…".
     copy: Option<CopyDialog>,
@@ -419,6 +421,7 @@ impl DataCraftApp {
             drop: None,
             views: Default::default(),
             routines: Default::default(),
+            table_actions: Default::default(),
             import: None,
             copy: None,
             mask_export: None,
@@ -676,6 +679,7 @@ impl DataCraftApp {
                         }
                     }
                     self.recheck_edit_targets(conn);
+                    self.open_startup_table(conn);
                     if self.demo_pending {
                         self.demo_pending = false;
                         if std::env::var("DATACRAFT_DEMO_USERS").is_ok() {
@@ -844,6 +848,8 @@ impl DataCraftApp {
                     self.attach_edit_targets(console);
                     self.apply_demo_edit(console);
                 }
+                Response::TableOperation { request_id, result } => self.table_operation_received(request_id, result),
+                Response::TableArtifact { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
@@ -1439,7 +1445,8 @@ impl DataCraftApp {
 
     fn generate(&mut self, ctx: &egui::Context, t: &TableRef, kind: Generate) {
         // Views: their real definition, read from the server.
-        if kind == Generate::Ddl && self.request_view_ddl(t) {
+        if kind == Generate::Ddl {
+            if !self.request_view_ddl(t) { self.handle_table_action(ctx, ExplorerAction::GenerateDdl(t.clone())); }
             return;
         }
         let Some(c) = self.conn(t.conn) else { return };
@@ -1485,6 +1492,7 @@ impl DataCraftApp {
                 ExplorerAction::Backup(id, _) => Some(*id),
                 ExplorerAction::DropObject(t, _)
                 | ExplorerAction::TruncateTable(t)
+                | ExplorerAction::EmptyTable(t)
                 | ExplorerAction::ImportData(t)
                 | ExplorerAction::RenameTable(t)
                 | ExplorerAction::ModifyTable(t)
@@ -1565,6 +1573,7 @@ impl DataCraftApp {
                 }
                 ExplorerAction::DropObject(t, kind) => self.open_object_dialog(t, kind.into()),
                 ExplorerAction::TruncateTable(t) => self.open_object_dialog(t, DropKind::Truncate),
+                ExplorerAction::EmptyTable(t) => self.open_object_dialog(t, DropKind::Empty),
                 ExplorerAction::ImportData(t) => self.open_import(t),
                 ExplorerAction::CopyTable(t) => self.open_copy(t),
                 ExplorerAction::RenameTable(t) => self.open_object_dialog(t, DropKind::Rename),
@@ -1603,6 +1612,7 @@ impl DataCraftApp {
                 ExplorerAction::EditUser(id, account) => self.open_user_dialog(id, Some(account), false),
                 ExplorerAction::DropUser(id, account) => self.open_user_dialog(id, Some(account), true),
                 ExplorerAction::Hide => self.show_explorer = false,
+                other => self.handle_table_action(ctx, other),
             }
         }
     }
@@ -1839,6 +1849,7 @@ impl DataCraftApp {
 
     /// Drop / truncate / rename confirmation for a table or view.
     fn open_object_dialog(&mut self, t: TableRef, kind: DropKind) {
+        if self.table_has_pending_edits(&t) { self.error(tr("Save or discard this table's pending edits before changing it.")); return; }
         if self.refuse_read_only(t.conn) {
             return;
         }
@@ -1859,6 +1870,7 @@ impl DataCraftApp {
 
     /// "Modify Table…": opens the dialog and asks the worker for the table's full structure.
     fn open_modify_table(&mut self, t: TableRef) {
+        if self.table_has_pending_edits(&t) { self.error(tr("Save or discard this table's pending edits before changing it.")); return; }
         if self.refuse_read_only(t.conn) {
             return;
         }
@@ -2163,10 +2175,10 @@ impl DataCraftApp {
                 }
                 self.worker.send(Request::Refresh(conn));
             }
-            DropKind::Truncate => {
+            DropKind::Truncate | DropKind::Empty => {
                 // Open data editors of that table show the (now empty) data again.
                 self.reload_table_editors(conn, &d.db, &d.schema, &d.name);
-                self.info(trf("Table “{name}” truncated", &[("name", &d.name)]));
+                self.info(trf(if d.kind == DropKind::Empty { "Table “{name}” emptied" } else { "Table “{name}” truncated" }, &[("name", &d.name)]));
             }
             DropKind::Table | DropKind::View | DropKind::Rename => {
                 // Its data editors no longer have anything to show.
@@ -3307,6 +3319,7 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.show_table_actions(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4224,7 +4237,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), table_actions: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,

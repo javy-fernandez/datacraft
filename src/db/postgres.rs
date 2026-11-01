@@ -25,7 +25,7 @@ use super::{ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, Tab
 use crate::i18n::{tr, trf};
 
 pub struct PgSession {
-    client: Client,
+    pub(super) client: Client,
     /// Also for the cancel requests, which go over a connection of their own.
     tls: PgTls,
 }
