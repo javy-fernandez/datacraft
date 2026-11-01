@@ -5,20 +5,20 @@
 //! MySQL, MariaDB, SQL Server, Oracle (standalone routines, not packages) and Snowflake have them.
 
 mod call;
+pub mod comments;
 mod ddl;
 mod parse;
 
 pub use call::{ArgValue, call_sql, callable};
 pub use ddl::{RoutineStatements, drop_sql, final_name, routine_statements};
-#[cfg(test)]
-pub use ddl::create_sql;
+pub use ddl::{create_sql, input_signature};
 pub use parse::parse_definition;
 
 use super::{Driver, Session};
 use crate::edit::literal;
 use crate::i18n::{tr, trf};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum RoutineKind {
     #[default]
     Procedure,
@@ -65,7 +65,7 @@ impl RoutineInfo {
 }
 
 /// A routine of a connection's database.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RoutineRef {
     pub conn: u64,
     pub db: String,
@@ -291,6 +291,8 @@ impl RoutineSpec {
 /// The definition read from the server.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoutineDefinition {
+    /// Native metadata comment, including when the definition could not be parsed.
+    pub comment: String,
     /// The complete statement that creates it, ready for a console.
     pub ddl: String,
     /// The definition split into the dialog's fields (`None` if it couldn't be understood).
@@ -428,6 +430,25 @@ fn routines_from_rows(driver: Driver, rows: Vec<Vec<super::Cell>>) -> Vec<Routin
 }
 
 impl Session {
+    /// Resolve PostgreSQL's canonical overload signature before committing the edit.
+    pub async fn save_postgres_routine(&mut self, statements: &[String], mut identity: RoutineRef) -> anyhow::Result<RoutineRef> {
+        self.execute("BEGIN", 0).await?;
+        let result = async {
+            for statement in statements { self.execute(statement, 0).await?; }
+            let name = format!("{}({})", Session::quote_table(Driver::Postgres, &identity.schema, &identity.name), identity.signature);
+            let query = format!("SELECT pg_get_function_identity_arguments(to_regprocedure({}))", literal(Driver::Postgres, &Some(name)));
+            let rows = self.execute(&query, 1).await?;
+            let Some(signature) = rows.iter().flat_map(|r| &r.rows).find_map(|r| r.first().and_then(|v| v.clone())) else {
+                anyhow::bail!(trf("The definition of “{name}” is not available", &[("name", &identity.name)]));
+            };
+            identity.signature = signature;
+            self.execute("COMMIT", 0).await?;
+            Ok(identity)
+        }.await;
+        if result.is_err() { let _ = self.execute("ROLLBACK", 0).await; }
+        result
+    }
+
     /// Procedures and functions of database `db` (the session must be on it).
     pub async fn list_routines(&mut self, driver: Driver, db: &str) -> anyhow::Result<Vec<RoutineInfo>> {
         if !supported(driver) {
@@ -458,7 +479,7 @@ impl Session {
                 lit(&r.signature)
             ),
             Driver::MySql | Driver::MariaDb => format!("SHOW CREATE {kind} {}", Session::quote_table(driver, &r.db, &r.name)),
-            Driver::MsSql => format!("SELECT OBJECT_DEFINITION(OBJECT_ID({}))", lit(&Session::quote_table(driver, &r.schema, &r.name))),
+            Driver::MsSql => format!("SELECT OBJECT_DEFINITION(OBJECT_ID({0})), (SELECT CONVERT(nvarchar(max), value) FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID({0}) AND minor_id = 0 AND name = N'MS_Description')", lit(&Session::quote_table(driver, &r.schema, &r.name))),
             Driver::Oracle => format!(
                 "SELECT TEXT FROM ALL_SOURCE WHERE OWNER = {} AND NAME = {} AND TYPE = '{kind}' ORDER BY LINE",
                 lit(&r.schema),
@@ -485,12 +506,25 @@ impl Session {
             anyhow::bail!(trf("The definition of “{name}” is not available", &[("name", &r.name)]));
         }
         let mut def = definition_from_text(driver, r, &source);
-        // PostgreSQL keeps the comment apart from the definition.
-        if driver == Driver::Postgres
-            && let Some(spec) = def.spec.as_mut()
-        {
-            spec.options.comment = rows.first().map(|row| text(row, 1)).unwrap_or_default();
-            spec.mark_original(&r.signature);
+        // These engines keep the comment apart from the definition.
+        if matches!(driver, Driver::Postgres | Driver::MsSql) {
+            def.comment = rows.first().map(|row| text(row, 1)).unwrap_or_default();
+            if let Some(spec) = def.spec.as_mut() {
+                spec.options.comment.clone_from(&def.comment);
+                spec.mark_original(&r.signature);
+            }
+        }
+        if let Some(query) = comments::query(driver, r) {
+            let result = self.execute(&query, usize::MAX).await?;
+            let row = result.iter().flat_map(|rs| &rs.rows).find(|row| driver != Driver::Snowflake || snowflake_signature(&text(row, 0)) == r.signature);
+            let Some(row) = row else {
+                anyhow::bail!(trf("The definition of “{name}” is not available", &[("name", &r.name)]));
+            };
+            def.comment = text(row, 1);
+            if let Some(spec) = def.spec.as_mut() {
+                spec.options.comment.clone_from(&def.comment);
+                spec.mark_original(&r.signature);
+            }
         }
         Ok(def)
     }
@@ -515,7 +549,8 @@ pub(crate) fn definition_from_text(driver: Driver, r: &RoutineRef, text: &str) -
         spec.mark_original(&r.signature);
         spec
     });
-    RoutineDefinition { ddl, spec }
+    let comment = spec.as_ref().map(|s| s.options.comment.clone()).unwrap_or_default();
+    RoutineDefinition { ddl, spec, comment }
 }
 
 #[cfg(test)]

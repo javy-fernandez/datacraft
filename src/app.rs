@@ -224,6 +224,10 @@ enum DemoEdit {
 
 #[derive(Serialize, Deserialize)]
 struct PersistedConsole {
+    #[serde(default)]
+    routine_comment: Option<crate::ui::routine_dialog::RoutineComment>,
+    #[serde(default)]
+    routine: Option<(crate::db::routines::RoutineRef, String, bool)>,
     title: String,
     text: String,
     conn: Option<u64>,
@@ -333,6 +337,7 @@ pub struct DataCraftApp {
     user_dialog: Option<crate::ui::user_dialog::UserDialog>,
     renaming: Option<(u64, String)>,
     show_about: bool,
+    show_shortcuts: bool,
     show_settings: bool,
     script: Option<crate::ui::script_dialog::ScriptDialog>,
     check_updates: bool,
@@ -429,6 +434,7 @@ impl DataCraftApp {
             user_dialog: None,
             renaming: None,
             show_about: false,
+            show_shortcuts: false,
             show_settings: false,
             script: None,
             check_updates: persisted.check_updates,
@@ -488,6 +494,15 @@ impl DataCraftApp {
                 (None, _) => {
                     let mut c = Console::new(id, pc.title, pc.text, conn);
                     c.db = pc.db.filter(|_| conn.is_some());
+                    if let Some((reference, saved, transaction)) = pc.routine
+                        && let Some(driver) = conn.and_then(|id| self.conn(id)).map(|c| c.cfg.driver)
+                    {
+                        let spec = crate::db::routines::RoutineSpec { kind: reference.kind, schema: reference.schema.clone(), name: reference.name.clone(), ..Default::default() };
+                        let mut dialog = crate::ui::routine_dialog::RoutineDialog::edit_routine(reference.conn, driver, reference.db.clone(), spec, 0);
+                        dialog.loading = None;
+                        dialog.raw = Some(c.text.clone());
+                        c.routine = Some(crate::ui::routine_dialog::RoutineEditor { comment: pc.routine_comment.unwrap_or_default(), reference, dialog, saved, submitted: None, transaction, page: Default::default(), word_wrap: false, outline: true, snippets: true });
+                    }
                     self.consoles.push(c);
                 }
             }
@@ -884,6 +899,13 @@ impl DataCraftApp {
                 }
                 Response::ChangesApplied { console, result } => self.changes_applied(console, result),
                 Response::DdlDone { conn, result } => self.ddl_done(conn, result),
+                Response::RoutineSaved { console, result, identity } => {
+                    let saved = result.is_ok();
+                    self.routine_tab_saved(console, result);
+                    if saved && let Some(identity) = identity
+                        && let Some(editor) = self.consoles.iter_mut().find(|c| c.id == console).and_then(|c| c.routine.as_mut())
+                    { editor.reference = identity; }
+                }
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
                 Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
                 Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
@@ -1217,6 +1239,13 @@ impl DataCraftApp {
 
     /// true if the action can go ahead now; with unsaved changes, asks for confirmation.
     fn guard(&mut self, action: Discard) -> bool {
+        let closing = match action {
+            Discard::Close(id) => self.consoles.iter().position(|c| c.id == id).into_iter().collect(),
+            Discard::CloseTabs(id, which) => self.tab_close_indices(id, which),
+            Discard::CloseAll => (0..self.consoles.len()).collect(),
+            _ => Vec::new(),
+        };
+        if closing.iter().any(|&i| self.consoles[i].routine.as_ref().is_some_and(|r| r.dialog.running)) { return false; }
         let dirty = match action {
             Discard::CloseTabs(id, which) => self.tab_close_indices(id, which).iter().any(|&i| self.consoles[i].has_pending_edits()),
             Discard::CloseAll => self.consoles.iter().any(|c| c.has_pending_edits()),
@@ -1271,6 +1300,7 @@ impl DataCraftApp {
     // ---------------------------------------------------------------- execution
 
     fn run_console(&mut self, idx: usize, all: bool) {
+        if let Some(reference) = self.consoles.get(idx).and_then(|c| c.routine.as_ref()).map(|r| r.reference.clone()) { self.open_execute_routine(reference); return; }
         let Some(console) = self.consoles.get(idx) else { return };
         let id = console.id;
         if console.is_busy() {
@@ -1592,6 +1622,12 @@ impl DataCraftApp {
                     self.explorer.selected_table = None;
                     let focus = self.object_browser.active || self.consoles.is_empty();
                     if self.object_browser.open(scope) { self.load_object_catalog(); }
+                    self.object_browser.active = focus;
+                }
+                ExplorerAction::BrowseRoutines(scope, kind) => {
+                    self.explorer.selected_table = None;
+                    let focus = self.object_browser.active || self.consoles.is_empty();
+                    self.object_browser.open_routines(scope, kind);
                     self.object_browser.active = focus;
                 }
                 ExplorerAction::InspectObject(t, kind) => {
@@ -2460,6 +2496,7 @@ impl DataCraftApp {
             || self.copy.is_some()
             || self.mask_export.is_some()
             || self.user_dialog.is_some()
+            || self.show_shortcuts
             || self.show_about
             || self.show_settings
             || self.preview.as_ref().is_some_and(|p| p.visible)
@@ -2475,6 +2512,7 @@ impl DataCraftApp {
     }
 
     fn save_active_changes(&mut self) {
+        if self.consoles.get(self.active).is_some_and(|c| c.routine.is_some()) { self.save_routine_tab(self.active); return; }
         if let Some(c) = self.consoles.get(self.active)
             && let Some(vi) = c.edit_view_index()
             && !c.is_busy()
@@ -2538,6 +2576,7 @@ impl DataCraftApp {
                 }
                 // No help website: shows the app info window.
                 M::Help => self.show_about = true,
+                M::Shortcuts => self.show_shortcuts = true,
                 _ => {}
             }
         }
@@ -2554,7 +2593,7 @@ impl DataCraftApp {
                 self.open_new_connection_dialog();
                 ui.close();
             }
-            if ui.add(egui::Button::new(tr("New console")).shortcut_text("⇧⌘N")).clicked() {
+            if ui.add(egui::Button::new(tr("New console")).shortcut_text(crate::shortcuts::format("⇧⌘N"))).clicked() {
                 self.new_console_here();
                 ui.close();
             }
@@ -2575,12 +2614,16 @@ impl DataCraftApp {
                 self.save_console_as();
             }
             ui.separator();
-            if ui.add(egui::Button::new(tr("Quit")).shortcut_text("⌘Q")).clicked() {
+            if ui.add(egui::Button::new(tr("Quit")).shortcut_text(crate::shortcuts::format("⌘Q"))).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
         ui.menu_button(tr("View"), |ui| self.view_menu(ui));
         ui.menu_button(tr("Help"), |ui| {
+            if ui.button(tr("Keyboard shortcuts…")).clicked() {
+                self.show_shortcuts = true;
+                ui.close();
+            }
             if ui.button(tr("Check for Updates…")).clicked() {
                 self.check_for_updates(ui.ctx());
                 ui.close();
@@ -2620,10 +2663,10 @@ impl DataCraftApp {
         });
         ui.separator();
         ui.label(RichText::new(trf("Editor font: {size} pt", &[("size", &format!("{:.0}", self.font_size))])).small().color(p.muted));
-        if ui.add(egui::Button::new(tr("Increase")).shortcut_text("⌥⌘+")).clicked() {
+        if ui.add(egui::Button::new(tr("Increase")).shortcut_text(crate::shortcuts::format("⌥⌘+"))).clicked() {
             self.font_size = (self.font_size + 1.0).min(32.0);
         }
-        if ui.add(egui::Button::new(tr("Decrease")).shortcut_text("⌥⌘-")).clicked() {
+        if ui.add(egui::Button::new(tr("Decrease")).shortcut_text(crate::shortcuts::format("⌥⌘-"))).clicked() {
             self.font_size = (self.font_size - 1.0).max(8.0);
         }
         if ui.button(tr("Reset")).clicked() {
@@ -2643,13 +2686,13 @@ impl DataCraftApp {
     /// "IDE zoom" submenu: zoom in, zoom out, reset and fixed steps.
     fn zoom_menu(&mut self, ui: &mut Ui) {
         ui.set_min_width(180.0);
-        if ui.add_enabled(self.zoom < ZOOM_STEPS[ZOOM_STEPS.len() - 1], egui::Button::new(tr("Zoom In")).shortcut_text("⌘+")).clicked() {
+        if ui.add_enabled(self.zoom < ZOOM_STEPS[ZOOM_STEPS.len() - 1], egui::Button::new(tr("Zoom In")).shortcut_text(crate::shortcuts::format("⌘+"))).clicked() {
             self.zoom = zoom_in(self.zoom);
         }
-        if ui.add_enabled(self.zoom > ZOOM_STEPS[0], egui::Button::new(tr("Zoom Out")).shortcut_text("⌘-")).clicked() {
+        if ui.add_enabled(self.zoom > ZOOM_STEPS[0], egui::Button::new(tr("Zoom Out")).shortcut_text(crate::shortcuts::format("⌘-"))).clicked() {
             self.zoom = zoom_out(self.zoom);
         }
-        if ui.add(egui::Button::new(tr("Reset (100%)")).shortcut_text("⌘0")).clicked() {
+        if ui.add(egui::Button::new(tr("Reset (100%)")).shortcut_text(crate::shortcuts::format("⌘0"))).clicked() {
             self.zoom = 1.0;
             ui.close();
         }
@@ -2706,7 +2749,7 @@ impl DataCraftApp {
                 Some(c) => (Ico::Driver(c.cfg.driver), c.summary().label(active_db.as_deref())),
                 None => (Ico::Database, tr("No connection").into()),
             };
-            let busy = self.object_browser.active || self.consoles.get(self.active).is_some_and(|c| c.is_busy() || c.table.is_some());
+            let busy = self.object_browser.active || self.consoles.get(self.active).is_some_and(|c| c.is_busy() || c.table.is_some() || c.routine.is_some());
             let resp = theme::flat_button(ui, Some(ico), &label, FontId::proportional(13.0), true, true)
                 .on_hover_text(tr("Data source of the active tab"));
             let mut chosen = None;
@@ -2779,7 +2822,7 @@ impl DataCraftApp {
     fn set_active_connection(&mut self, id: ConnId) {
         let needs_connect = self.conn(id).is_some_and(|c| matches!(c.status, ConnStatus::Disconnected | ConnStatus::Error(_)));
         if let Some(c) = self.consoles.get_mut(self.active) {
-            if c.is_busy() || c.table.is_some() || c.conn == Some(id) {
+            if c.is_busy() || c.table.is_some() || c.routine.is_some() || c.conn == Some(id) {
                 return;
             }
             c.conn = Some(id);
@@ -2823,7 +2866,7 @@ impl DataCraftApp {
             let c = problems.rect.right_top() + vec2(-9.0, 9.0);
             bottom.painter().circle_filled(c, 3.0, palette(self.dark).error);
         }
-        if stripe_button(&mut bottom, Ico::Terminal, false, tr("New console (⇧⌘N)")).clicked() {
+        if stripe_button(&mut bottom, Ico::Terminal, false, &crate::shortcuts::format(tr("New console (⇧⌘N)"))).clicked() {
             self.new_console_here();
         }
         if stripe_button(&mut bottom, Ico::Services, self.show_results, tr("Services (results)")).clicked() {
@@ -2941,7 +2984,7 @@ impl DataCraftApp {
                 ui.add_space(6.0);
                 if (self.zoom - 1.0).abs() > 0.001 {
                     let resp = theme::flat_button(ui, None, &zoom_label(self.zoom), FontId::proportional(12.5), false, true)
-                        .on_hover_text(tr("IDE zoom (⌘0 to reset)"));
+                        .on_hover_text(crate::shortcuts::format(tr("IDE zoom (⌘0 to reset)")));
                     egui::Popup::menu(&resp).show(|ui| self.zoom_menu(ui));
                     ui.add_space(4.0);
                 }
@@ -3045,7 +3088,9 @@ impl DataCraftApp {
                                 }
                                 continue;
                             }
-                            let ico = if c.table.is_some() { Ico::Table } else { Ico::Console };
+                            let ico = if let Some(editor) = &c.routine {
+                                if editor.reference.kind == crate::db::routines::RoutineKind::Function { Ico::Function } else { Ico::Procedure }
+                            } else if c.table.is_some() { Ico::Table } else { Ico::Console };
                             let busy = c.is_busy();
                             let title = if busy {
                                 format!("{} …", c.title)
@@ -3095,7 +3140,7 @@ impl DataCraftApp {
                 ui.add_space(4.0);
                 let more = theme::icon_button(ui, Ico::MoreVert, true, tr("Tabs"));
                 egui::Popup::menu(&more).show(|ui| {
-                    if ui.add(egui::Button::new(tr("New console")).shortcut_text("⇧⌘N")).clicked() {
+                    if ui.add(egui::Button::new(tr("New console")).shortcut_text(crate::shortcuts::format("⇧⌘N"))).clicked() {
                         new = true;
                         ui.close();
                     }
@@ -3175,7 +3220,7 @@ impl DataCraftApp {
             let db = c.db.clone();
             self.ensure_db_loaded(conn, db.as_deref());
         }
-        let is_console = self.consoles.get(self.active).is_some_and(|c| c.table.is_none());
+        let is_console = self.consoles.get(self.active).is_some_and(|c| c.table.is_none() && c.routine.is_none());
         let mut actions = Vec::new();
         let conn_list = self.conn_list();
 
@@ -3219,7 +3264,7 @@ impl DataCraftApp {
                     ui.add_space(ui.available_height() / 3.0);
                     ui.label(RichText::new(tr("No open tabs")).color(p.muted));
                     ui.add_space(4.0);
-                    ui.label(RichText::new(tr("New console  ⇧⌘N")).color(p.muted));
+                    ui.label(RichText::new(crate::shortcuts::format(tr("New console  ⇧⌘N"))).color(p.muted));
                     ui.add_space(8.0);
                     if theme::primary_button(ui, tr("New console")).clicked() {
                         self.new_console_here();
@@ -3251,7 +3296,7 @@ impl DataCraftApp {
                 auto_complete: self.auto_complete,
             };
             let console = &mut self.consoles[idx];
-            let out = if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
+            let out = if console.routine.is_some() { console.show_routine(ui, &cx) } else if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
             actions.extend(out);
         });
 
@@ -3259,6 +3304,7 @@ impl DataCraftApp {
         self.sync_save_on_row_change();
         for a in actions {
             match a {
+                ConsoleAction::SaveRoutine => self.save_routine_tab(idx),
                 ConsoleAction::ApplyFilter => {
                     if let Some(id) = self.consoles.get(idx).map(|c| c.id) && self.guard(Discard::ApplyFilter(id)) { self.apply_filter_now(idx); }
                 }
@@ -3575,7 +3621,7 @@ impl DataCraftApp {
                 ui.label(RichText::new(tr("Unsaved changes")).font(theme::bold(15.0)));
                 ui.add_space(8.0);
                 ui.label(match action {
-                    Discard::Close(_) | Discard::CloseAll | Discard::CloseTabs(..) => tr("Closing the tab will discard the pending grid changes."),
+                    Discard::Close(_) | Discard::CloseAll | Discard::CloseTabs(..) => if self.consoles.iter().any(|c| c.routine.is_some() && c.has_pending_edits()) { tr("Unsaved changes") } else { tr("Closing the tab will discard the pending grid changes.") },
                     Discard::Reload(_) | Discard::ApplyFilter(_) | Discard::Page(..) => tr("Reloading the data will discard the pending grid changes."),
                     Discard::CloseResults(..) => tr("Closing the result tab will discard the pending grid changes."),
                     Discard::Run(..) => tr("Running again will discard the pending grid changes."),
@@ -3605,6 +3651,86 @@ impl DataCraftApp {
         }
 
         self.preview_dialog(ctx, frame);
+
+        if self.show_shortcuts {
+            let resp = egui::Modal::new(egui::Id::new("keyboard_shortcuts")).frame(frame).show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(RichText::new(tr("Keyboard shortcuts")).font(theme::bold(17.0)));
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
+                    ui.set_width(430.0);
+                    for (section, rows) in [
+                        (tr("General"), &[
+                            (tr("New console"), "⇧⌘N"), (tr("Quit"), "⌘Q"),
+                            (tr("Zoom In"), "⌘+"), (tr("Zoom Out"), "⌘-"),
+                            (tr("Reset (100%)"), "⌘0"), (tr("Increase"), "⌥⌘+"),
+                            (tr("Decrease"), "⌥⌘-"),
+                        ][..]),
+                        (tr("Edit"), &[
+                            (tr("Undo"), "⌘Z"), (tr("Redo"), "⇧⌘Z"),
+                            (tr("Cut"), "⌘X"), (tr("Copy"), "⌘C"),
+                            (tr("Paste"), "⌘V"), (tr("Select all"), "⌘A"),
+                        ][..]),
+                        (tr("SQL editor"), &[
+                            (tr("Run statement"), "⌘↩"), (tr("Run all"), "⇧⌘↩"),
+                            (tr("Explain Plan"), "⇧⌘E"), (tr("Reformat Code"), "⌥⌘L"),
+                            (tr("Comment with Line Comment"), "⌘/"), (tr("Duplicate Line or Selection"), "⌘D"),
+                            (tr("Delete Line"), if cfg!(target_os = "macos") { "⌘⌫" } else { "Ctrl+Y" }),
+                            (tr("Find…"), "⌘F"), (tr("Replace…"), "⌘R"),
+                            (tr("Query History"), "⌥⌘E"), (tr("Show completions"), "Ctrl+Space"),
+                            (tr("Next match"), "⌘G / F3"),
+                            (tr("Previous match"), "⇧⌘G / ⇧F3"),
+                        ][..]),
+                        (tr("Results panel"), &[
+                            (tr("Find…"), "⌘F"), (tr("Reload data"), "⌘R"),
+                            (tr("Submit changes"), "⌘S"), (tr("Undo"), "⌘Z"),
+                            (tr("Clone Row"), "⌘D"), (tr("Add row"), "⌘N / Insert"),
+                            (tr("Delete row"), "⌘Delete"), (tr("Record View"), "⇧↩"),
+                            (tr("Edit cell"), "Enter / F2 / ⌘↩"), (tr("View Value"), "⌥Click"),
+                            (tr("Select all"), "⌘A"), (tr("Set NULL"), "Delete"),
+                            (tr("Move between cells"), "Arrows / Tab / ⇧Tab"),
+                            (tr("Extend selection"), "⇧Arrows"),
+                            (tr("First or last column"), "⌘Left / ⌘Right / Home / End"),
+                            (tr("First or last row"), "⌘Up / ⌘Down / ⌘Home / ⌘End"),
+                            (tr("First or last row"), "⌘Page Up / ⌘Page Down"),
+                            (tr("Move by page"), "Page Up / Page Down"),
+                            (tr("Discard current record changes"), "Esc"),
+                        ][..]),
+                    ] {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(section).strong());
+                        ui.separator();
+                        for (label, keys) in rows {
+                            ui.horizontal(|ui| {
+                                ui.label(*label);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(crate::shortcuts::format(keys)).monospace().color(p.muted));
+                                });
+                            });
+                        }
+                    }
+                    if cfg!(target_os = "macos") {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("macOS").strong());
+                        ui.separator();
+                        for (label, keys) in [
+                            (tr("Settings…"), "⌘,"), (tr("Open SQL script…"), "⌘O"),
+                            (tr("Save console as…"), "⇧⌘S"), (tr("Close tab"), "⌘W"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(label);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(keys).monospace().color(p.muted));
+                                });
+                            });
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                theme::primary_button(ui, tr("Close")).clicked()
+            });
+            if resp.inner || resp.should_close() { self.show_shortcuts = false; }
+        }
 
         if self.show_about {
             let resp = egui::Modal::new(egui::Id::new("about")).frame(frame).show(ctx, |ui| {
@@ -4199,6 +4325,8 @@ impl eframe::App for DataCraftApp {
                 .consoles
                 .iter()
                 .map(|c| PersistedConsole {
+                    routine_comment: c.routine.as_ref().map(|r| r.comment.clone()),
+                    routine: c.routine.as_ref().map(|r| (r.reference.clone(), r.saved.clone(), r.transaction)),
                     title: c.title.clone(),
                     text: c.text.clone(),
                     conn: c.conn,
@@ -4238,7 +4366,7 @@ mod tests {
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), table_actions: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
+            show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
@@ -4267,6 +4395,8 @@ mod tests {
         assert!(h.query_by_label("Select a database in the explorer to browse its objects.").is_some());
         let app = h.state_mut();
         app.restore_tabs(vec![PersistedConsole {
+            routine_comment: None,
+            routine: None,
             title: "Saved query".into(), text: "SELECT 42;".into(), conn: None,
             table: None, table_view: Default::default(), db: None,
         }], 7);

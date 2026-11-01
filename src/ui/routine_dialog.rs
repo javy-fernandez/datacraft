@@ -42,6 +42,108 @@ pub enum RoutineResult {
     Cancel,
 }
 
+/// A main-window editor. Its last successful save is independent of other tabs.
+pub struct RoutineEditor {
+    pub comment: RoutineComment,
+    pub reference: routines::RoutineRef,
+    pub dialog: RoutineDialog,
+    pub saved: String,
+    pub submitted: Option<String>,
+    pub transaction: bool,
+    pub page: RoutinePage,
+    pub word_wrap: bool,
+    pub outline: bool,
+    pub snippets: bool,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RoutineComment {
+    pub text: String,
+    pub saved: String,
+    #[serde(skip)]
+    pub submitted: Option<String>,
+}
+
+impl RoutineEditor {
+    fn edited_definition(&self, text: &str) -> Result<Option<RoutineSpec>, String> {
+        let Some(mut original) = routines::parse_definition(self.dialog.driver, &self.saved) else { return Ok(None) };
+        let error = || tr("The edited routine could not be parsed safely. Check its definition before saving.").to_string();
+        let mut edited = routines::parse_definition(self.dialog.driver, text).ok_or_else(error)?;
+        if edited.schema.is_empty() { edited.schema.clone_from(&self.reference.schema); }
+        if edited.schema != self.reference.schema || edited.name != self.reference.name || edited.kind != self.reference.kind {
+            return Err(tr("The routine name, schema and kind must match the open tab.").into());
+        }
+        original.name.clone_from(&self.reference.name);
+        original.mark_original(&self.reference.signature);
+        edited.original = original.original;
+        edited.options.comment.clone_from(&self.comment.text);
+        Ok(Some(edited))
+    }
+
+    fn target(&self, spec: &RoutineSpec) -> routines::RoutineRef {
+        let mut target = self.reference.clone();
+        if matches!(self.dialog.driver, Driver::Postgres | Driver::Snowflake) {
+            target.signature = routines::input_signature(self.dialog.driver, &spec.params);
+        }
+        target
+    }
+
+    pub fn accept_saved_definition(&mut self, text: String) {
+        if text == self.saved { return; }
+        if let Ok(Some(mut spec)) = self.edited_definition(&text) {
+            self.reference = self.target(&spec);
+            spec.options.comment.clone_from(&self.comment.saved);
+            spec.mark_original(&self.reference.signature);
+            self.dialog.spec = spec;
+            self.dialog.raw = None;
+        }
+        self.saved = text;
+    }
+
+    /// PostgreSQL resolves type aliases and argument names to its catalog identity after saving.
+    pub fn identity_to_resolve(&self, text: &str) -> Option<routines::RoutineRef> {
+        if self.dialog.driver != Driver::Postgres || text == self.saved { return None; }
+        let spec = self.edited_definition(text).ok()??;
+        let mut target = self.target(&spec);
+        target.signature = spec.params.iter().filter(|p| p.mode.takes_input()).map(|p| p.data_type.as_str()).collect::<Vec<_>>().join(", ");
+        Some(target)
+    }
+
+    /// The same plan feeds both SQL Preview and the background save.
+    pub fn save_statements(&self, text: &str) -> Result<RoutineStatements, String> {
+        let definition_changed = text != self.saved;
+        let comment_changed = self.comment.text != self.comment.saved;
+        let mut transaction = self.transaction;
+        let mut target = self.reference.clone();
+        let mut statements = if definition_changed {
+            if text.trim().is_empty() { return Err(tr("The body is required").into()); }
+            match self.edited_definition(text)? {
+                Some(spec) => {
+                    target = self.target(&spec);
+                    let plan = routines::routine_statements(self.dialog.driver, &spec);
+                    transaction = plan.transaction;
+                    plan.statements
+                }
+                None => sql::split_batches(text, self.dialog.driver).into_iter().map(|s| s.text).collect(),
+            }
+        } else { Vec::new() };
+        if definition_changed && statements.is_empty() { return Err(tr("The body is required").into()); }
+        if comment_changed || (definition_changed && routines::comments::supported(self.dialog.driver)) {
+            statements.push(routines::comments::statement(self.dialog.driver, &target, &self.comment.text)?);
+            transaction |= matches!(self.dialog.driver, Driver::MsSql | Driver::Postgres);
+        }
+        Ok(RoutineStatements { statements, transaction })
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum RoutinePage {
+    #[default]
+    Definition,
+    Comment,
+    Preview,
+}
+
 pub(crate) fn mode_label(driver: Driver, mode: ParamMode) -> &'static str {
     match (driver, mode) {
         (_, ParamMode::In) => "IN",
@@ -119,13 +221,21 @@ impl RoutineDialog {
         routines::routine_statements(self.driver, &self.spec)
     }
 
-    fn preview_text(&self) -> String {
+    pub fn preview_text(&self) -> String {
         let terminator = |s: &str| match self.driver {
             Driver::Oracle if s.trim_end().ends_with(';') => "\n/".to_string(),
             Driver::MsSql => "\nGO".to_string(),
             _ => ";".to_string(),
         };
         self.statements().statements.iter().map(|s| format!("{s}{}", terminator(s))).collect::<Vec<_>>().join("\n\n")
+    }
+
+    /// One editable definition; scratch compilation belongs only in the save preview.
+    pub fn definition_text(&self) -> String {
+        match &self.raw {
+            Some(raw) => raw.clone(),
+            None => routines::create_sql(self.driver, &self.spec, self.driver != Driver::MySql),
+        }
     }
 
     pub fn validate(&self) -> Result<RoutineStatements, String> {
@@ -837,7 +947,7 @@ mod tests {
             let mut edit = RoutineDialog::edit_routine(1, Driver::MsSql, "shop".into(), ms.clone(), 1);
             let mut loaded = ms;
             loaded.mark_original("");
-            edit.definition_loaded(Ok(RoutineDefinition { ddl: String::new(), spec: Some(loaded) }));
+            edit.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: String::new(), spec: Some(loaded) }));
             let mut h = harness_with_size(edit, vec2(780.0, 560.0), dark);
             h.run_steps(3);
             h.render().unwrap().save(directory.join(format!("edit-procedure-{}.png", if dark { "dark" } else { "light" }))).unwrap();
@@ -862,13 +972,13 @@ mod tests {
     #[test]
     fn definitions_that_cant_be_split_are_edited_as_text() {
         let mut d = RoutineDialog::edit_routine(1, Driver::MsSql, "shop".into(), RoutineSpec { name: "p".into(), schema: "dbo".into(), ..Default::default() }, 3);
-        d.definition_loaded(Ok(RoutineDefinition { ddl: "CREATE PROCEDURE dbo.p WITH ENCRYPTION AS SELECT 1\nGO\n".into(), spec: None }));
+        d.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: "CREATE PROCEDURE dbo.p WITH ENCRYPTION AS SELECT 1\nGO\n".into(), spec: None }));
         assert_eq!(d.raw.as_deref(), Some("create or alter PROCEDURE dbo.p WITH ENCRYPTION AS SELECT 1"));
         assert_eq!(d.validate().unwrap().statements, vec!["create or alter PROCEDURE dbo.p WITH ENCRYPTION AS SELECT 1"]);
         assert!(d.is_edit());
 
         let mut my = RoutineDialog::edit_routine(1, Driver::MySql, "shop".into(), RoutineSpec { name: "p".into(), schema: "shop".into(), ..Default::default() }, 3);
-        my.definition_loaded(Ok(RoutineDefinition { ddl: "CREATE PROCEDURE `p`() SELECT 1;\n".into(), spec: None }));
+        my.definition_loaded(Ok(RoutineDefinition { comment: String::new(), ddl: "CREATE PROCEDURE `p`() SELECT 1;\n".into(), spec: None }));
         assert_eq!(my.statements().statements, vec!["drop procedure if exists `shop`.`p`", "CREATE PROCEDURE `p`() SELECT 1"]);
     }
 }

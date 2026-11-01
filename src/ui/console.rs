@@ -97,6 +97,7 @@ struct Completion {
 }
 
 pub struct Console {
+    pub routine: Option<crate::ui::routine_dialog::RoutineEditor>,
     pub id: u64,
     pub title: String,
     pub text: String,
@@ -208,6 +209,7 @@ pub enum PageMove { First, Previous, Next, Last, Number(usize), Size(usize) }
 
 /// Actions the console asks the app to perform.
 pub enum ConsoleAction {
+    SaveRoutine,
     ApplyFilter,
     Page(PageMove),
     Inspect(bool),
@@ -258,6 +260,7 @@ pub struct ConsoleCtx<'a> {
 impl Console {
     pub fn new(id: u64, title: String, text: String, conn: Option<ConnId>) -> Self {
         Self {
+            routine: None,
             id,
             title,
             text,
@@ -302,7 +305,7 @@ impl Console {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.running || self.pending.is_some() || self.table.as_ref().is_some_and(|t| t.counting_page)
+        self.running || self.pending.is_some() || self.table.as_ref().is_some_and(|t| t.counting_page) || self.routine.as_ref().is_some_and(|r| r.dialog.running || r.dialog.loading.is_some())
     }
 
     /// Result whose changes are being edited: the last one in the data editor or the
@@ -318,7 +321,7 @@ impl Console {
     }
 
     pub fn has_pending_edits(&self) -> bool {
-        self.results.iter().any(|r| r.is_dirty())
+        self.results.iter().any(|r| r.is_dirty()) || self.routine.as_ref().is_some_and(|r| self.text != r.saved || r.comment.text != r.comment.saved)
     }
 
     /// true if any of the views `which` would close has unsaved changes.
@@ -426,9 +429,133 @@ impl Console {
         actions
     }
 
+    pub fn show_routine(&mut self, ui: &mut Ui, cx: &ConsoleCtx<'_>) -> Vec<ConsoleAction> {
+        use crate::ui::routine_dialog::RoutinePage;
+        let mut actions = Vec::new();
+        let busy = self.is_busy() || self.routine.as_ref().is_some_and(|r| r.saved.is_empty());
+        let mut cmds = if !busy && self.routine.as_ref().is_some_and(|r| r.page == RoutinePage::Definition) { self.shortcut_cmds(ui) } else { Vec::new() };
+        toolbar_row(ui, |ui| {
+            let font = FontId::proportional(12.5);
+            if theme::flat_button(ui, Some(Ico::Save), tr("Save"), font.clone(), false, !busy).clicked() { actions.push(ConsoleAction::SaveRoutine); }
+            if theme::flat_button(ui, Some(Ico::Play), tr("Execute…"), font.clone(), false, !busy).clicked() { actions.push(ConsoleAction::Run); }
+            theme::toolbar_separator(ui);
+            if theme::flat_button(ui, Some(Ico::Search), tr("Find…"), font.clone(), false, true).clicked() {
+                if let Some(editor) = &mut self.routine { editor.page = RoutinePage::Definition; }
+                cmds.push(EditCmd::Find);
+            }
+            if let Some(editor) = &mut self.routine
+                && theme::tool_button(ui, Ico::WordWrap, tr("Word Wrap"), editor.word_wrap).clicked()
+            { editor.word_wrap = !editor.word_wrap; }
+            theme::toolbar_separator(ui);
+            if theme::flat_button(ui, Some(Ico::Copy), tr("Copy SQL"), font, false, true).clicked() { ui.ctx().copy_text(self.text.clone()); }
+            theme::toolbar_separator(ui);
+            if let Some(editor) = &mut self.routine {
+                if theme::icon_tab(ui, Ico::Structure, tr("Parameters"), editor.outline).clicked() { editor.outline = !editor.outline; }
+                if theme::icon_tab(ui, Ico::Code, tr("SQL Snippets"), editor.snippets).clicked() { editor.snippets = !editor.snippets; }
+            }
+            if busy { ui.spinner(); }
+        });
+        hline(ui);
+        if let Some(editor) = &mut self.routine {
+            ui.horizontal(|ui| {
+                for (page, icon, label) in [
+                    (RoutinePage::Definition, Ico::Code, tr("Definition")),
+                    (RoutinePage::Comment, Ico::Comment, tr("Comment")),
+                    (RoutinePage::Preview, Ico::Eye, tr("SQL Preview")),
+                ] {
+                    if theme::tool_button(ui, icon, label, editor.page == page).clicked() { editor.page = page; }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(format!("{} / {}", editor.reference.db, editor.reference.schema)).small().color(theme::pal(ui).muted));
+                });
+            });
+        }
+        if let Some(error) = self.routine.as_ref().and_then(|r| r.dialog.error.as_ref()) {
+            egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| { ui.colored_label(theme::pal(ui).error, error); });
+        }
+        hline(ui);
+        match self.routine.as_ref().map(|r| r.page).unwrap_or_default() {
+            RoutinePage::Definition => {
+                if self.routine.as_ref().is_some_and(|r| r.outline) {
+                    egui::Panel::left(ui.id().with("routine_outline")).default_size(180.0).size_range(120.0..=320.0).resizable(true).show(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.strong(tr("Parameters"));
+                        ui.separator();
+                        let spec = crate::db::routines::parse_definition(cx.driver, &self.text);
+                        if let Some(spec) = spec {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                for param in &spec.params {
+                                    if theme::flat_button(ui, Some(Ico::Column), &param.name, FontId::proportional(12.0), false, !busy).on_hover_text(&param.data_type).clicked()
+                                        && let Some(offset) = self.text.find(&param.name)
+                                    {
+                                        let start = self.text[..offset].chars().count();
+                                        self.set_cursor(ui.ctx(), start, start + param.name.chars().count());
+                                    }
+                                    ui.label(RichText::new(&param.data_type).small().color(theme::pal(ui).muted));
+                                }
+                            });
+                        }
+                    });
+                }
+                if self.routine.as_ref().is_some_and(|r| r.snippets) {
+                    egui::Panel::right(ui.id().with("routine_snippets")).default_size(190.0).size_range(140.0..=320.0).resizable(true).show(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.strong(tr("SQL Snippets"));
+                        ui.separator();
+                        let mut snippets = vec![
+                            ("CASE", "CASE WHEN condition THEN value ELSE other_value END"),
+                            ("SELECT", "SELECT column_name\nFROM table_name\nWHERE condition;"),
+                            ("INSERT", "INSERT INTO table_name (column_name)\nVALUES (value);"),
+                            ("UPDATE", "UPDATE table_name\nSET column_name = value\nWHERE condition;"),
+                            (tr("Comment"), "-- Comment\n"),
+                        ];
+                        if cx.driver == Driver::MsSql {
+                            snippets.push(("IF…ELSE", "IF condition\nBEGIN\n    -- statements\nEND\nELSE\nBEGIN\n    -- statements\nEND;"));
+                            snippets.push(("WHILE", "WHILE condition\nBEGIN\n    -- statements\nEND;"));
+                        }
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for (label, snippet) in snippets {
+                                if theme::flat_button(ui, Some(Ico::Code), label, FontId::proportional(12.0), false, !busy).on_hover_text(snippet).clicked() {
+                                    self.insert_text(ui.ctx(), snippet);
+                                }
+                                ui.separator();
+                            }
+                        });
+                    });
+                }
+                if self.find.is_some() { self.find_bar(ui, &mut cmds); }
+                ui.add_enabled_ui(!busy, |ui| { self.editor(ui, cx, &mut cmds); });
+            }
+            RoutinePage::Comment => {
+                ui.add_space(12.0);
+                if let Some(editor) = &mut self.routine {
+                    if crate::db::routines::comments::supported(cx.driver) {
+                        let before = editor.comment.text.clone();
+                        let response = ui.add_enabled(!busy, egui::TextEdit::multiline(&mut editor.comment.text).desired_width(f32::INFINITY).desired_rows(12).hint_text(tr("Routine comment")));
+                        response.widget_info(|| egui::WidgetInfo { label: Some(tr("Routine comment").into()), ..egui::WidgetInfo::text_edit(!busy, &before, &editor.comment.text, tr("Routine comment")) });
+                    } else { ui.label(tr("Routine comments are not supported by this engine.")); }
+                }
+            }
+            RoutinePage::Preview => {
+                let preview = match self.routine.as_ref().map(|r| r.save_statements(&self.text)) {
+                    Some(Ok(run)) if !run.statements.is_empty() => run.statements.join("\n\n"),
+                    Some(Err(error)) => { ui.colored_label(theme::pal(ui).error, error); return actions; }
+                    _ => tr("No changes").to_string(),
+                };
+                let mut job = sql::highlight_for(&preview, cx.driver, cx.dark, FontId::monospace(cx.font_size));
+                job.wrap.max_width = if self.routine.as_ref().is_some_and(|r| r.word_wrap) { ui.available_width() } else { f32::INFINITY };
+                egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| { ui.add(egui::Label::new(job).selectable(true)); });
+            }
+        }
+        let ctx = ui.ctx().clone();
+        for cmd in cmds { self.apply_cmd(&ctx, cx, cmd, &mut actions); }
+        actions
+    }
+
     /// Opens the find bar (with the selection as the search text if it is a single line).
     /// `replace` also shows the replace row. For the app's Find / Replace menu commands.
     pub fn open_find(&mut self, replace: bool) {
+        if let Some(editor) = &mut self.routine { editor.page = crate::ui::routine_dialog::RoutinePage::Definition; }
         if self.table.is_some() {
             if let Some(i) = self.edit_view_index() { self.results[i].open_find(); }
             return;
@@ -732,7 +859,7 @@ impl Console {
         }
         row(ui, &mut |ui| {
             let chevron = if f.show_replace { Ico::ChevronDown } else { Ico::ChevronRight };
-            if theme::icon_button_sized(ui, chevron, true, tr("Show or hide replace (⌘R)"), 22.0).clicked() {
+            if theme::icon_button_sized(ui, chevron, true, &crate::shortcuts::format(tr("Show or hide replace (⌘R)")), 22.0).clicked() {
                 f.show_replace = !f.show_replace;
             }
             let resp = ui.add(field(&mut f.query, find_id, tr("Text to find"), p.disabled));
@@ -743,13 +870,13 @@ impl Console {
             changed = resp.changed();
             let has_matches = !matches.is_empty();
             if theme::flat_button(ui, None, "↑", FontId::proportional(14.0), false, has_matches)
-                .on_hover_text(tr("Previous match (⇧⌘G)"))
+                .on_hover_text(crate::shortcuts::format(tr("Previous match (⇧⌘G)")))
                 .clicked()
             {
                 cmds.push(EditCmd::FindPrev);
             }
             if theme::flat_button(ui, None, "↓", FontId::proportional(14.0), false, has_matches)
-                .on_hover_text(tr("Next match (⌘G)"))
+                .on_hover_text(crate::shortcuts::format(tr("Next match (⌘G)")))
                 .clicked()
             {
                 cmds.push(EditCmd::FindNext);
@@ -1046,22 +1173,22 @@ impl Console {
         toolbar_row(ui, |ui| {
             theme::split_row(ui, |ui, side| match side {
                 theme::Side::Left => {
-            if theme::icon_button(ui, Ico::Play, !busy, tr("Run current statement or selection (⌘↩)")).clicked() {
+            if theme::icon_button(ui, Ico::Play, !busy, &crate::shortcuts::format(tr("Run current statement or selection (⌘↩)"))).clicked() {
                 actions.push(ConsoleAction::Run);
             }
-            if theme::icon_button(ui, Ico::PlayAll, !busy, tr("Run all (⌘⇧↩)")).clicked() {
+            if theme::icon_button(ui, Ico::PlayAll, !busy, &crate::shortcuts::format(tr("Run all (⌘⇧↩)"))).clicked() {
                 actions.push(ConsoleAction::RunAll);
             }
-            if theme::icon_button(ui, Ico::Structure, !busy, tr("Explain plan of the current statement (⇧⌘E)")).clicked() {
+            if theme::icon_button(ui, Ico::Structure, !busy, &crate::shortcuts::format(tr("Explain plan of the current statement (⇧⌘E)"))).clicked() {
                 cmds.push(EditCmd::Explain);
             }
             theme::toolbar_separator(ui);
-            let hist = theme::icon_button(ui, Ico::History, true, tr("Query history (⌥⌘E)"));
+            let hist = theme::icon_button(ui, Ico::History, true, &crate::shortcuts::format(tr("Query history (⌥⌘E)")));
             self.history_anchor = Some(hist.rect.left_bottom() + vec2(0.0, 4.0));
             if hist.clicked() {
                 cmds.push(EditCmd::History);
             }
-            if theme::icon_button(ui, Ico::Search, true, tr("Find and replace (⌘F)")).clicked() {
+            if theme::icon_button(ui, Ico::Search, true, &crate::shortcuts::format(tr("Find and replace (⌘F)"))).clicked() {
                 cmds.push(EditCmd::Find);
             }
             self.tx_dropdown(ui);
@@ -1167,7 +1294,7 @@ impl Console {
             theme::split_row(ui, |ui, side| match side {
                 theme::Side::Left => {
                     if let Some(a) = results::edit_buttons(ui, self.results.last_mut(), !busy) && let Some(i) = self.results.len().checked_sub(1) { actions.push(edit_action(a, i)); }
-                    if theme::icon_button(ui, Ico::Refresh, !busy, tr("Reload page (⌘R)")).clicked() { actions.push(ConsoleAction::Reload); }
+                    if theme::icon_button(ui, Ico::Refresh, !busy, &crate::shortcuts::format(tr("Reload page (⌘R)"))).clicked() { actions.push(ConsoleAction::Reload); }
                     if theme::icon_button(ui, Ico::Stop, self.running, tr("Cancel the running query")).clicked() { actions.push(ConsoleAction::Cancel); }
                     if let Some(view) = self.results.last() { edit_status_icon(ui, view); }
                 }
@@ -1512,7 +1639,8 @@ impl Console {
         // Find bar matches are painted with a background (the selected one stronger).
         let search = self.find.as_ref().filter(|f| !f.query.is_empty()).map(|f| (f.query.clone(), f.case_sensitive));
         let selected = self.cursor;
-        let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, _wrap: f32| -> Arc<egui::Galley> {
+        let word_wrap = self.routine.as_ref().is_some_and(|r| r.word_wrap);
+        let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| -> Arc<egui::Galley> {
             let text = buf.as_str();
             let mut h = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut h);
@@ -1524,7 +1652,7 @@ impl Console {
                 selected.hash(&mut h);
             }
             let key = h.finish();
-            let job = match hl_cache {
+            let mut job = match hl_cache {
                 Some((k, job)) if *k == key => job.clone(),
                 _ => {
                     let mut job = sql::highlight_for(text, driver, dark, FontId::monospace(font_size));
@@ -1544,6 +1672,7 @@ impl Console {
                     job
                 }
             };
+            job.wrap.max_width = if word_wrap { wrap } else { f32::INFINITY };
             ui.fonts_mut(|f| f.layout_job(job))
         };
 
@@ -1560,7 +1689,7 @@ impl Console {
 
         egui::Frame::NONE.fill(pal.editor_bg).show(ui, |ui| {
             let avail = ui.available_size();
-            egui::ScrollArea::both()
+            egui::ScrollArea::new([!word_wrap, true])
                 .id_salt(("editor_scroll", self.id))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1841,7 +1970,7 @@ fn editor_menu(ui: &mut Ui, busy: bool, analyze: bool, cmds: &mut Vec<EditCmd>) 
                 ui.separator();
             }
             Some(c) => {
-                if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut)).clicked() {
+                if ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(crate::shortcuts::format(shortcut))).clicked() {
                     cmds.push(c);
                     ui.close();
                 }

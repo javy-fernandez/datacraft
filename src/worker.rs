@@ -96,6 +96,7 @@ pub enum Request {
     /// it can be dropped.
     /// `transaction`: all statements in one transaction (imports); DDL runs without one.
     RunDdl { conn: ConnId, db: Option<String>, statements: Vec<String>, close_db: Option<String>, transaction: bool },
+    SaveRoutine { conn: ConnId, db: String, console: ConsoleId, statements: Vec<String>, transaction: bool, identity: Option<crate::db::routines::RoutineRef> },
     /// Cancels what a console's `Execute` is running. Engines without a native cancel
     /// abandon the query and close the session (it reconnects on the next run).
     Cancel { console: ConsoleId },
@@ -151,6 +152,7 @@ pub enum Response {
     ChangesApplied { console: ConsoleId, result: Result<u64, String> },
     /// Result of `RunDdl`.
     DdlDone { conn: ConnId, result: Result<(), String> },
+    RoutineSaved { console: ConsoleId, result: Result<(), String>, identity: Option<crate::db::routines::RoutineRef> },
     TableDetails { request_id: u64, result: Result<Box<crate::db::alter::TableDetails>, String> },
     DatabaseChoices { conn: ConnId, result: Result<crate::db::create_db::DatabaseChoices, String> },
     /// Result of `Users`.
@@ -794,7 +796,16 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             }
             out
         }
-        Request::RunDdl { conn, db, statements, close_db, transaction } => {
+        request @ (Request::RunDdl { .. } | Request::SaveRoutine { .. }) => {
+            let (conn, db, statements, close_db, transaction, console, identity) = match request {
+                Request::RunDdl { conn, db, statements, close_db, transaction } => (conn, db, statements, close_db, transaction, None, None),
+                Request::SaveRoutine { conn, db, console, statements, transaction, identity } => (conn, Some(db), statements, None, transaction, Some(console), identity),
+                _ => unreachable!(),
+            };
+            let response = |result, identity| match console {
+                Some(console) => Response::RoutineSaved { console, result, identity },
+                None => Response::DdlDone { conn, result },
+            };
             if let Some(name) = close_db.filter(|n| !n.is_empty())
                 && let Some(l) = state.live.lock().await.get_mut(&conn)
             {
@@ -803,11 +814,17 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             }
             let (session, target) = match state.session_for(conn, db.as_deref()).await {
                 Ok(s) => s,
-                Err(e) => return vec![Response::DdlDone { conn, result: Err(format!("{e:#}")) }],
+                Err(e) => return vec![response(Err(format!("{e:#}")), None)],
             };
             let mut s = session.lock().await;
             let mut result = s.use_database(&target).await.map_err(|e| format!("{e:#}"));
-            if result.is_ok() && transaction {
+            let mut resolved = None;
+            if result.is_ok() && let Some(identity) = identity {
+                match s.save_postgres_routine(&statements, identity).await {
+                    Ok(identity) => resolved = Some(identity),
+                    Err(error) => result = Err(format!("{error:#}")),
+                }
+            } else if result.is_ok() && transaction {
                 result = s.run_transaction(&statements).await.map(|_| ()).map_err(|e| format!("{e:#}"));
             } else if result.is_ok() {
                 for stmt in &statements {
@@ -819,7 +836,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             }
             let lost = s.is_closed();
             drop(s);
-            let mut out = vec![Response::DdlDone { conn, result }];
+            let mut out = vec![response(result, resolved)];
             if lost {
                 state.forget(conn, &session).await;
                 out.push(Response::ConnectFailed { conn, error: tr("Connection lost").into() });
