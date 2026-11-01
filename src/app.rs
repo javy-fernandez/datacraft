@@ -2508,6 +2508,7 @@ impl DataCraftApp {
             || self.show_settings
             || self.preview.as_ref().is_some_and(|p| p.visible)
             || self.confirm_discard.is_some()
+            || self.modify.is_some()
     }
 
     fn reload_active(&mut self) {
@@ -4392,6 +4393,22 @@ mod tests {
                 assert!(app.consoles.iter().any(|c| c.text.contains("create table") && c.text.contains("primary key") && c.text.contains("id")), "{driver:?}");
             }
         }
+    }
+
+    #[test]
+    fn modify_table_dialog_blocks_the_hidden_console_shortcut() {
+        let (mut app, table) = table_menu_app(Driver::Sqlite, true);
+        let active = app.active;
+        app.consoles[active].conn = Some(table.conn); app.consoles[active].db = Some(table.db.clone()); app.consoles[active].text = "SELECT 1".into();
+        app.object_browser.active = false;
+        app.open_modify_table(table);
+        assert!(app.modify.is_some());
+        let mut h = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut DataCraftApp| app.shortcuts(ui.ctx()), app);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Enter); h.run_steps(2);
+        assert!(!h.state().consoles[active].running, "Modify Table must block the hidden console");
+        h.state_mut().modify = None;
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Enter); h.run_steps(2);
+        assert!(h.state().consoles[active].running);
     }
 
     #[test]
