@@ -2507,6 +2507,7 @@ impl DataCraftApp {
             || self.create.is_some()
             || self.views.dialog.is_some()
             || self.routines.is_open()
+            || self.table_duplicate.is_open()
             || self.drop.is_some()
             || self.import.is_some()
             || self.copy.is_some()

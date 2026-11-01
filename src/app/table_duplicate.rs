@@ -10,6 +10,17 @@ pub(super) struct TableDuplicateState {
     ddl: HashMap<u64, TableRef>,
 }
 
+impl TableDuplicateState {
+    pub(super) fn is_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+}
+
+enum DialogIntent {
+    Run(Operation),
+    Close,
+}
+
 struct Dialog {
     id: u64,
     table: TableRef,
@@ -36,7 +47,7 @@ impl Dialog {
         Operation::PreviewDuplicate { schema: self.table.schema.clone(), table: self.table.table.clone(), target: self.target.trim().into(), data: self.data }
     }
 
-    fn show(&mut self, ctx: &egui::Context) -> Option<Operation> {
+    fn show(&mut self, ctx: &egui::Context) -> Option<DialogIntent> {
         let subtitle = format!("{} / {} / {}", self.table.db, self.table.schema, self.table.table);
         let mut operation = None;
         crate::ui::workflow_dialog::show(ctx, egui::Id::new("duplicate_table"), tr("Duplicate Table"), &subtitle, vec2(680.0, 600.0), |root, regions| {
@@ -70,18 +81,22 @@ impl Dialog {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button(tr(if self.pending { "Cancel" } else { "Close" })).clicked() {
-                        self.progress.cancel.store(true, Ordering::Relaxed);
+                        if self.pending {
+                            self.progress.cancel.store(true, Ordering::Relaxed);
+                        } else {
+                            operation = Some(DialogIntent::Close);
+                        }
                     }
                     let approved = self.plan.is_some() && self.target.trim() == self.planned_name;
                     let enabled = !self.pending && !self.target.trim().is_empty() && self.target.trim() != self.table.table;
                     if ui.add_enabled(enabled, egui::Button::new(tr(if approved { "Duplicate" } else { "Preview SQL" }))).clicked() {
-                        operation = Some(self.operation());
+                        operation = Some(DialogIntent::Run(self.operation()));
                     }
                 });
             });
         });
         if !self.pending && ctx.input(|input| input.key_pressed(Key::Escape)) {
-            self.progress.cancel.store(true, Ordering::Relaxed);
+            operation = Some(DialogIntent::Close);
         }
         operation
     }
@@ -223,7 +238,9 @@ impl DataCraftApp {
         self.table_duplicate.ddl.retain(|_, table| table.conn != conn);
         if let Some(dialog) = self.table_duplicate.dialog.as_ref().filter(|dialog| dialog.table.conn == conn) {
             dialog.progress.cancel.store(true, Ordering::Relaxed);
-            self.table_duplicate.dialog = None;
+            if !dialog.pending && dialog.error.is_none() {
+                self.table_duplicate.dialog = None;
+            }
         }
     }
 
@@ -232,12 +249,10 @@ impl DataCraftApp {
             return;
         };
         let operation = dialog.show(ctx);
-        if !dialog.pending && dialog.progress.cancel.load(Ordering::Relaxed) {
-            self.table_duplicate.dialog = None;
-            return;
-        }
-        if let Some(operation) = operation {
-            self.start_table_duplicate(operation);
+        match operation {
+            Some(DialogIntent::Run(operation)) => self.start_table_duplicate(operation),
+            Some(DialogIntent::Close) => self.table_duplicate.dialog = None,
+            None => {}
         }
     }
 }
@@ -362,5 +377,68 @@ mod tests {
         harness.get_by_label("Cancel").click();
         harness.run_steps(2);
         assert!(harness.state().table_duplicate.dialog.as_ref().unwrap().progress.cancel.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn duplicate_modal_blocks_running_a_hidden_console_from_the_keyboard() {
+        let (mut app, table) = crate::app::tests::table_menu_app(Driver::Sqlite, true);
+        app.object_browser.active = false;
+        app.consoles[app.active].conn = Some(table.conn);
+        app.consoles[app.active].text = "SELECT 42".into();
+        app.open_table_duplicate(table, true);
+        let shortcut = |app: &mut DataCraftApp| {
+            let modifiers = Modifiers::COMMAND;
+            let events =
+                [true, false].into_iter().map(|pressed| egui::Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers }).collect();
+            let mut output = egui::Context::default().run_ui(egui::RawInput { events, ..Default::default() }, |ui| app.shortcuts(ui.ctx()));
+            output.textures_delta.clear();
+        };
+        shortcut(&mut app);
+        assert!(!app.consoles[app.active].is_busy());
+        app.table_duplicate.dialog = None;
+        shortcut(&mut app);
+        assert!(app.consoles[app.active].is_busy());
+    }
+
+    #[test]
+    fn duplicate_cancellation_keeps_an_incomplete_target_cleanup_error_visible() {
+        use egui_kittest::kittest::Queryable;
+        for connection_cancel in [false, true] {
+            let (mut app, table) = crate::app::tests::table_menu_app(Driver::Sqlite, true);
+            app.open_table_duplicate(table, true);
+            let dialog = app.table_duplicate.dialog.as_mut().unwrap();
+            dialog.id = 41;
+            dialog.pending = true;
+            let mut first = true;
+            let mut harness = egui_kittest::Harness::builder().with_size(vec2(960.0, 760.0)).build_ui_state(
+                move |ui, app: &mut DataCraftApp| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    app.table_duplicate_dialog(ui.ctx());
+                },
+                app,
+            );
+            harness.run_steps(3);
+            if connection_cancel {
+                harness.state_mut().cancel_table_duplicate(7);
+            } else {
+                harness.get_by_label("Cancel").click();
+                harness.run_steps(2);
+            }
+            assert!(harness.state().table_duplicate.dialog.as_ref().unwrap().progress.cancel.load(Ordering::Relaxed));
+            let error = "Could not remove the incomplete duplicate: notes_copy remains. Resolve it before retrying.";
+            harness.state_mut().table_duplicate_received(7, 41, Err(error.into()));
+            if connection_cancel {
+                harness.state_mut().cancel_table_duplicate(7);
+            }
+            harness.run_steps(2);
+            assert!(harness.query_by_label(error).is_some());
+            assert!(harness.state().table_duplicate.dialog.is_some());
+            harness.get_by_label("Close").click();
+            harness.run_steps(2);
+            assert!(harness.state().table_duplicate.dialog.is_none());
+        }
     }
 }
