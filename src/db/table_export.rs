@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
+mod publication;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportKind {
@@ -57,23 +58,31 @@ async fn cancellable<T>(
     future: impl std::future::Future<Output = anyhow::Result<T>>,
     progress: &ExportProgress,
     handle: Option<super::CancelHandle>,
+    timeout: Option<Duration>,
 ) -> anyhow::Result<T> {
     cancelled(progress)?;
     tokio::pin!(future);
     let mut timer = tokio::time::interval(Duration::from_millis(50));
-    loop {
+    let deadline = async {
+        match timeout {
+            Some(duration) => tokio::time::sleep(duration).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(deadline);
+    let error = loop {
         tokio::select! {
             result = &mut future => return result,
-            _ = timer.tick() => if progress.cancel.load(Ordering::Relaxed) {
-                if let Some(handle) = &handle {
-                    let _ = tokio::time::timeout(Duration::from_secs(1), handle.cancel()).await;
-                    // Blocking SQLite reads must release their connection before fixture/file cleanup.
-                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut future).await;
-                }
-                bail!(tr("Cancelled"));
-            }
+            _ = &mut deadline => break anyhow::anyhow!(tr("Table operation timed out")),
+            _ = timer.tick() => if progress.cancel.load(Ordering::Relaxed) { break anyhow::anyhow!(tr("Cancelled")); }
         }
+    };
+    if let Some(handle) = &handle {
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle.cancel()).await;
+        // Blocking SQLite reads must release their connection before fixture/file cleanup.
+        let _ = tokio::time::timeout(Duration::from_secs(1), &mut future).await;
     }
+    Err(error)
 }
 
 /// A row owns its native values; binary and text never pass through grid previews.
@@ -106,9 +115,9 @@ pub async fn export(mut cfg: ConnectionConfig, db: &str, request: ExportRequest,
         cfg.database = db.to_owned();
     }
     ensure!(request.overwrite || !request.path.exists(), tr("The export destination already exists"));
-    let mut session = cancellable(Session::connect(&cfg), &progress, None).await?;
+    let mut session = cancellable(Session::connect(&cfg), &progress, None, Some(Duration::from_secs(30))).await?;
     let handle = session.cancel_handle();
-    cancellable(session.use_database(db), &progress, handle).await?;
+    cancellable(session.use_database(db), &progress, handle, Some(Duration::from_secs(30))).await?;
     export_session(&mut session, cfg.driver, request, progress).await
 }
 
@@ -144,9 +153,17 @@ async fn insertable_columns(session: &mut Session, driver: Driver, schema: &str,
     let table_literal = quoted(table)?;
     let sql = match driver {
         Driver::Sqlite => format!("SELECT name FROM pragma_table_xinfo({table_literal},{schema}) WHERE hidden=0 ORDER BY cid"),
-        Driver::MsSql => format!(
-            "SELECT name FROM sys.columns WHERE object_id=OBJECT_ID({name}) AND is_computed=0 AND generated_always_type=0 AND system_type_id<>189 AND is_hidden=0 ORDER BY column_id"
-        ),
+        Driver::MsSql => {
+            // Inspect the catalog view itself: Azure and SQL Server versions need not share a major version.
+            let fields = session
+                .execute("SELECT name FROM sys.all_columns WHERE object_id=OBJECT_ID(N'sys.columns')", usize::MAX)
+                .await?
+                .into_iter()
+                .flat_map(|r| r.rows)
+                .map(|r| r.into_iter().next().flatten().context(tr("Missing export column metadata")))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            mssql_insertable_sql(&name, &fields)?
+        }
         Driver::Postgres => {
             format!("SELECT attname FROM pg_attribute WHERE attrelid=to_regclass({name}) AND attnum>0 AND NOT attisdropped AND attgenerated='' ORDER BY attnum")
         }
@@ -164,6 +181,19 @@ async fn insertable_columns(session: &mut Session, driver: Driver, schema: &str,
         .collect()
 }
 
+fn mssql_insertable_sql(name: &str, catalog: &[String]) -> anyhow::Result<String> {
+    let has = |field: &str| catalog.iter().any(|name| name == field);
+    ensure!(["name", "object_id", "column_id", "is_computed", "system_type_id"].into_iter().all(has), tr("Missing export column metadata"));
+    let mut sql = format!("SELECT name FROM sys.columns WHERE object_id=OBJECT_ID({name}) AND is_computed=0 AND system_type_id<>189");
+    for field in ["generated_always_type", "is_hidden"] {
+        if has(field) {
+            sql.push_str(&format!(" AND {field}=0"));
+        }
+    }
+    sql.push_str(" ORDER BY column_id");
+    Ok(sql)
+}
+
 async fn export_session(session: &mut Session, driver: Driver, request: ExportRequest, progress: Arc<ExportProgress>) -> anyhow::Result<u64> {
     if !supported(driver) && matches!(request.kind, ExportKind::Print { data: false } | ExportKind::Sql { structure: true, data: false }) {
         return export_transaction(session, driver, request, progress).await;
@@ -171,11 +201,12 @@ async fn export_session(session: &mut Session, driver: Driver, request: ExportRe
     // SQL Server falls back to READ COMMITTED when snapshot isolation is disabled.
     let begin = snapshot_sql(driver)?;
     let handle = session.cancel_handle();
-    cancellable(session.execute(begin, 0), &progress, handle).await?;
-    let result = export_transaction(session, driver, request, progress).await;
+    cancellable(session.execute(begin, 0), &progress, handle, Some(Duration::from_secs(30))).await?;
+    let result = export_transaction(session, driver, request, Arc::clone(&progress)).await;
     // No source changes were made. Dropping a failed connection also releases its snapshot.
     if result.is_ok() {
-        let _ = session.execute("ROLLBACK", 0).await;
+        let handle = session.cancel_handle();
+        let _ = cancellable(session.execute("ROLLBACK", 0), &progress, handle, Some(Duration::from_secs(3))).await;
     }
     result
 }
@@ -269,7 +300,7 @@ async fn export_transaction(session: &mut Session, driver: Driver, request: Expo
         }
         Ok((all_columns, selected, ddl, before, after))
     };
-    let (all_columns, selected, ddl, before, after) = cancellable(metadata, &progress, handle).await?;
+    let (all_columns, selected, ddl, before, after) = cancellable(metadata, &progress, handle, Some(Duration::from_secs(30))).await?;
     let include_data = !matches!(request.kind, ExportKind::Sql { data: false, .. } | ExportKind::Print { data: false });
     let query = if include_data { select_sql(driver, &request.schema, &request.table, &selected)? } else { String::new() };
     let (sender, receiver) = mpsc::channel(64);
@@ -280,7 +311,7 @@ async fn export_transaction(session: &mut Session, driver: Driver, request: Expo
         write_output(driver, &writer_request, &writer_columns, &all_columns, &ddl, &before, &after, receiver, &writer_progress)
     });
     let handle = session.cancel_handle();
-    let result = if include_data { cancellable(stream(session, driver, query, &selected, &sender, &progress), &progress, handle).await } else { Ok(()) };
+    let result = if include_data { cancellable(stream(session, driver, query, &selected, &sender, &progress), &progress, handle, None).await } else { Ok(()) };
     if result.is_ok() {
         let _ = sender.send(Message::Finished).await;
     }
@@ -730,8 +761,8 @@ fn write_output(
     if request.overwrite {
         fs::rename(&output.temporary, &request.path)?;
     } else {
-        // A same-directory hard link publishes atomically without a clobber race.
-        fs::hard_link(&output.temporary, &request.path).context(tr("Could not publish the export; the destination may already exist"))?;
+        // Same-directory native no-replace rename; never fall back to a partial copy.
+        publication::no_replace(&output.temporary, &request.path).context(tr("Could not publish the export; the destination may already exist"))?;
     }
     Ok(count)
 }
@@ -756,6 +787,70 @@ mod tests {
     use super::super::Driver;
     use super::*;
     use std::{fs, sync::atomic::Ordering};
+
+    #[test]
+    fn review_sql_server_insertable_columns_follow_catalog_capabilities() {
+        let mut catalog = ["name", "object_id", "column_id", "is_computed", "system_type_id"].map(str::to_owned).to_vec();
+        let legacy = mssql_insertable_sql("N'[dbo].[t]'", &catalog).unwrap();
+        assert!(!legacy.contains("generated_always_type"));
+        assert!(!legacy.contains("is_hidden"));
+        assert!(legacy.contains("is_computed=0"));
+        assert!(legacy.contains("system_type_id<>189"));
+        catalog.push("generated_always_type".into());
+        catalog.push("is_hidden".into());
+        let modern = mssql_insertable_sql("N'[dbo].[t]'", &catalog).unwrap();
+        assert!(modern.contains("generated_always_type=0"));
+        assert!(modern.contains("is_hidden=0"));
+        assert!(mssql_insertable_sql("N'[dbo].[t]'", &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn review_setup_steps_are_bounded_but_streams_have_no_total_deadline() {
+        let progress = ExportProgress::default();
+        let bounded = tokio::time::timeout(
+            Duration::from_millis(200),
+            cancellable(std::future::pending::<anyhow::Result<()>>(), &progress, None, Some(Duration::from_millis(5))),
+        )
+        .await;
+        assert!(bounded.is_ok(), "setup step must stop at its own deadline");
+        assert!(bounded.unwrap().is_err());
+        let streamed = cancellable(
+            async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok(123u64)
+            },
+            &progress,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(streamed.unwrap(), 123);
+    }
+
+    #[test]
+    fn review_destination_created_during_export_is_preserved_and_stage_is_cleaned() {
+        let f = Fixture::new();
+        let request = f.request(ExportKind::Json);
+        let output_path = request.path.clone();
+        let dir = f.dir.clone();
+        let cols = vec![ColumnInfo { name: "id".into(), data_type: "INTEGER".into(), nullable: false, primary_key: true }];
+        let progress = Arc::new(ExportProgress::default());
+        let writer_progress = progress.clone();
+        let (tx, rx) = mpsc::channel(2);
+        tx.try_send(Message::Row(vec![Value::Number("1".into())])).unwrap();
+        let writer = std::thread::spawn(move || write_output(Driver::Sqlite, &request, &cols, &cols, &[], &[], &[], rx, &writer_progress));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while progress.rows.load(Ordering::Relaxed) == 0 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(progress.rows.load(Ordering::Relaxed), 1);
+        fs::write(&output_path, b"created concurrently").unwrap();
+        tx.blocking_send(Message::Finished).unwrap();
+        drop(tx);
+        assert!(writer.join().unwrap().is_err());
+        assert_eq!(fs::read(output_path).unwrap(), b"created concurrently");
+        assert!(!fs::read_dir(dir).unwrap().any(|p| p.unwrap().file_name().to_string_lossy().starts_with(".datacraft-export-")));
+    }
 
     #[test]
     fn non_sqlite_self_references_require_structure_and_data() {
@@ -840,7 +935,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
             cancel.cancel.store(true, Ordering::Relaxed);
         });
-        let result = tokio::time::timeout(Duration::from_millis(500), cancellable(std::future::pending::<anyhow::Result<()>>(), &progress, None)).await;
+        let result = tokio::time::timeout(Duration::from_millis(500), cancellable(std::future::pending::<anyhow::Result<()>>(), &progress, None, None)).await;
         assert!(result.is_ok(), "Cancellation must drop a pending driver future");
         assert!(result.unwrap().is_err());
     }
