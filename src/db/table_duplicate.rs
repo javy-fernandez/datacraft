@@ -168,6 +168,16 @@ async fn metadata<T>(
     cancellable(future, handle, progress, Duration::from_secs(30)).await
 }
 
+fn create_failure(error: anyhow::Error, transaction: bool, attempted: bool, confirmed: bool, target: &str) -> anyhow::Error {
+    if !transaction && attempted && !confirmed {
+        let warning =
+            trf("CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.", &[("target", &target)]);
+        anyhow::anyhow!("{error:#}\n{warning}")
+    } else {
+        error
+    }
+}
+
 pub async fn run(cfg: ConnectionConfig, db: &str, operation: Operation, progress: Arc<Progress>) -> anyhow::Result<Outcome> {
     anyhow::ensure!(table_definition::supported(cfg.driver), tr("Not available for this engine"));
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), tr("Cancelled"));
@@ -193,14 +203,17 @@ pub async fn run(cfg: ConnectionConfig, db: &str, operation: Operation, progress
             if plan.transaction {
                 execute(&mut session, begin, &progress).await?;
             }
+            let mut create_attempted = false;
             let mut created = false;
             let mut result = Ok(());
             for statement in &plan.statements {
+                let is_create = statement.trim_start().to_ascii_lowercase().starts_with("create table ");
+                create_attempted |= is_create;
                 if let Err(error) = execute(&mut session, statement, &progress).await {
                     result = Err(error);
                     break;
                 }
-                if statement.trim_start().to_ascii_lowercase().starts_with("create table ") {
+                if is_create {
                     created = true;
                 }
             }
@@ -223,13 +236,16 @@ pub async fn run(cfg: ConnectionConfig, db: &str, operation: Operation, progress
                 };
                 if let Err(error) = cleanup {
                     return Err(anyhow::anyhow!(
-                        "{}\n{}: {error:#}",
+                        "{}\n{}: {}: {error:#}",
                         result.err().map(|e| format!("{e:#}")).unwrap_or_default(),
-                        tr("Could not remove the incomplete duplicate")
+                        tr("Could not remove the incomplete duplicate"),
+                        qualified(driver, &schema, &target)
                     ));
                 }
             }
-            result?;
+            if let Err(error) = result {
+                return Err(create_failure(error, plan.transaction, create_attempted, created, &qualified(driver, &schema, &target)));
+            }
             Ok(Outcome::Done)
         }
     }
@@ -376,6 +392,18 @@ mod tests {
         assert_eq!(db.query_row("SELECT value FROM copy", [], |r| r.get::<_, String>(0)).unwrap(), "kept");
         drop(db);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn create_failure_warns_for_an_unconfirmed_nontransactional_target() {
+        let message = create_failure(anyhow::anyhow!("Cancelled"), false, true, false, "`db`.`copy``name`").to_string();
+        assert!(message.contains("Cancelled"));
+        assert!(message.contains("`db`.`copy``name`"));
+        assert!(message.contains("may exist") && message.contains("not removed automatically"));
+        for (transaction, attempted, confirmed) in [(true, true, false), (false, false, false), (false, true, true)] {
+            let message = create_failure(anyhow::anyhow!("DDL failed"), transaction, attempted, confirmed, "`db`.`copy``name`").to_string();
+            assert_eq!(message, "DDL failed");
+        }
     }
 
     #[tokio::test]

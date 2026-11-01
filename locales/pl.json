@@ -1368,6 +1368,8 @@
     "The duplicate needs a different table name": "Kopia musi mieć inną nazwę tabeli",
     "The existing table is preserved. The destination must not exist.": "Istniejąca tabela zostanie zachowana. Tabela docelowa nie może istnieć.",
     "The table definition changed. Preview the operation again.": "Definicja tabeli uległa zmianie. Ponownie wyświetl podgląd operacji.",
-    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Ten silnik natychmiast zatwierdza utworzenie tabeli. Jeśli kolejna instrukcja się nie powiedzie, nowo utworzona tabela musi zostać usunięta."
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Ten silnik natychmiast zatwierdza utworzenie tabeli. Jeśli kolejna instrukcja się nie powiedzie, nowo utworzona tabela musi zostać usunięta.",
+    "Showing DDL from cached columns because the catalog definition is unavailable.": "Wyświetlanie DDL z kolumn zapisanych w pamięci podręcznej, ponieważ definicja z katalogu jest niedostępna.",
+    "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "Nie potwierdzono CREATE; {target} może istnieć. Sprawdź obiekt docelowy przed ponowną próbą. Nie został automatycznie usunięty."
   }
 }

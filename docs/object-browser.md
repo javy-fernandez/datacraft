@@ -36,7 +36,8 @@ data and copying names support multiple selections; single-object dialogs requir
 exactly one supported object. Connection state and read-only mode gate writes.
 
 **Show DDL** reads catalog definitions for supported live SQL tables. Cached column
-metadata remains available for unsupported catalog readers and offline connections.
+metadata remains available for unsupported/offline readers and catalog failures;
+fallback scripts and the status message identify that cached columns were used.
 **Empty Table** uses DELETE; **Truncate** uses the engine's operation. SQLite uses
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
@@ -48,6 +49,8 @@ never overwritten. The background operation can be cancelled; transactional DDL
 rolls back, while nontransactional engines remove only a successfully created
 incomplete destination. Data copies retain complete values, including binary data,
 and apply foreign keys after copying where the dialect permits it.
+If CREATE has an unconfirmed outcome, the target may exist: the error names it for
+manual inspection, and it is never removed without confirmed ownership.
 
 Definitions that cannot be copied faithfully, such as tables with triggers or
 specialized storage features, return an error. MySQL/MariaDB require direct trigger

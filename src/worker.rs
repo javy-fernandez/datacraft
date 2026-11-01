@@ -516,12 +516,14 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             let cfg = state.live.lock().await.get(&conn).map(|live| live.cfg.clone());
             let result = match cfg {
                 Some(cfg) => {
+                    let password = cfg.password.clone();
                     // Composed driver futures otherwise exhaust the Tokio worker's stack.
+                    // Per-statement bounds own cancellation and cleanup; never drop the whole operation on a second timer.
                     let future = Box::pin(crate::db::table_duplicate::run(cfg, &db, *operation, Arc::clone(&progress)));
-                    match tokio::time::timeout(std::time::Duration::from_secs(1800), future).await {
-                        Ok(result) => result.map_err(|error| format!("{error:#}")),
-                        Err(_) => { progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed); Err(tr("Table operation timed out").into()) }
-                    }
+                    future.await.map_err(|error| {
+                        let message = format!("{error:#}");
+                        if password.is_empty() { message } else { message.replace(&password, "[redacted]") }
+                    })
                 }
                 None => Err(tr("The connection is not open").into()),
             };
@@ -1125,10 +1127,7 @@ mod tests {
 
     #[test]
     fn duplicate_requests_complete_on_the_background_worker() {
-        let path = std::env::temp_dir().join(format!(
-            "datacraft-table-worker-{}.db",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("datacraft-table-worker-{}.db", uuid::Uuid::new_v4()));
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE notes(id INTEGER PRIMARY KEY, value TEXT, computed TEXT GENERATED ALWAYS AS ('Note '||id) VIRTUAL); INSERT INTO notes(id,value) VALUES(1,'preserved');").unwrap();
         drop(db);
@@ -1137,27 +1136,11 @@ mod tests {
         cfg.file_path = path.to_string_lossy().into_owned();
         w.send(Request::Connect(cfg));
         wait_for(&w, |r| matches!(r, Response::Connected { conn: 71, .. }));
-        let operation = crate::db::table_duplicate::Operation::PreviewDuplicate {
-            schema: "main".into(),
-            table: "notes".into(),
-            target: "notes_copy".into(),
-            data: true,
-        };
-        w.send(Request::TableDuplicate {
-            conn: 71,
-            db: "main".into(),
-            request_id: 2,
-            operation: Box::new(operation),
-            progress: Arc::default(),
-        });
-        let Response::TableDuplicate { result, .. } = wait_for(&w, |r| {
-            matches!(r, Response::TableDuplicate { request_id: 2, .. })
-        }) else {
-            unreachable!()
-        };
-        let crate::db::table_duplicate::Outcome::Plan(plan) = result.unwrap() else {
-            panic!("expected duplicate preview")
-        };
+        let operation =
+            crate::db::table_duplicate::Operation::PreviewDuplicate { schema: "main".into(), table: "notes".into(), target: "notes_copy".into(), data: true };
+        w.send(Request::TableDuplicate { conn: 71, db: "main".into(), request_id: 2, operation: Box::new(operation), progress: Arc::default() });
+        let Response::TableDuplicate { result, .. } = wait_for(&w, |r| matches!(r, Response::TableDuplicate { request_id: 2, .. })) else { unreachable!() };
+        let crate::db::table_duplicate::Outcome::Plan(plan) = result.unwrap() else { panic!("expected duplicate preview") };
         let operation = crate::db::table_duplicate::Operation::Duplicate {
             schema: "main".into(),
             table: "notes".into(),
@@ -1165,33 +1148,36 @@ mod tests {
             data: true,
             expected: plan.statements,
         };
-        w.send(Request::TableDuplicate {
-            conn: 71,
-            db: "main".into(),
-            request_id: 3,
-            operation: Box::new(operation),
-            progress: Arc::default(),
-        });
-        let Response::TableDuplicate { result, .. } = wait_for(&w, |r| {
-            matches!(r, Response::TableDuplicate { request_id: 3, .. })
-        }) else {
-            unreachable!()
-        };
-        assert!(matches!(
-            result.unwrap(),
-            crate::db::table_duplicate::Outcome::Done
-        ));
+        w.send(Request::TableDuplicate { conn: 71, db: "main".into(), request_id: 3, operation: Box::new(operation), progress: Arc::default() });
+        let Response::TableDuplicate { result, .. } = wait_for(&w, |r| matches!(r, Response::TableDuplicate { request_id: 3, .. })) else { unreachable!() };
+        assert!(matches!(result.unwrap(), crate::db::table_duplicate::Outcome::Done));
         let db = rusqlite::Connection::open(&path).unwrap();
-        assert_eq!(
-            db.query_row("SELECT value FROM notes_copy", [], |r| r
-                .get::<_, String>(0))
-                .unwrap(),
-            "preserved"
-        );
+        assert_eq!(db.query_row("SELECT value FROM notes_copy", [], |r| r.get::<_, String>(0)).unwrap(), "preserved");
         drop(db);
         w.send(Request::Disconnect(71));
         wait_for(&w, |r| matches!(r, Response::Disconnected(71)));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_worker_redacts_passwords_from_connection_errors() {
+        let secret = "unit-test-password-only";
+        let state = State::default();
+        let mut cfg = ConnectionConfig::new(71, Driver::Sqlite);
+        cfg.password = secret.into();
+        cfg.file_path = std::env::temp_dir().join(format!("datacraft-missing-{secret}-{}.db", uuid::Uuid::new_v4())).to_string_lossy().into_owned();
+        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new() });
+        let request = Request::TableDuplicate {
+            conn: 71,
+            db: "main".into(),
+            request_id: 9,
+            operation: Box::new(crate::db::table_duplicate::Operation::Definition { schema: "main".into(), table: "notes".into() }),
+            progress: Arc::default(),
+        };
+        let response = Box::pin(handle(request, 0, &state)).await.pop().unwrap();
+        let Response::TableDuplicate { result: Err(error), .. } = response else { panic!("expected a connection error") };
+        assert!(!error.contains(secret));
+        assert!(error.contains("[redacted]"));
     }
 
     /// SQLite has no stored routines: the request answers with an empty list.

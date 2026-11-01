@@ -195,15 +195,26 @@ impl DataCraftApp {
             if table.conn != conn || !self.conn(conn).is_some_and(|connection| connection.status == ConnStatus::Connected) {
                 return;
             }
-            match result {
-                Ok(Outcome::Definition(definition)) => {
-                    let text = definition.ddl.iter().map(|sql| format!("{sql};\n\n")).collect();
-                    let index = self.new_console(Some(conn), Some(format!("{}.sql", table.table)), text);
-                    self.consoles[index].db = Some(table.db);
+            let text = match result {
+                Ok(Outcome::Definition(definition)) => definition.ddl.iter().map(|sql| format!("{sql};\n\n")).collect(),
+                Err(error) => {
+                    let cached = self.conn(conn).and_then(|connection| {
+                        self.table_columns(conn, Some(&table.db), &table.schema, &table.table)
+                            .filter(|columns| !columns.is_empty())
+                            .map(|columns| ddl(connection.cfg.driver, &Session::quote_table(connection.cfg.driver, &table.schema, &table.table), columns))
+                    });
+                    let Some(text) = cached else {
+                        self.error(error);
+                        return;
+                    };
+                    let notice = tr("Showing DDL from cached columns because the catalog definition is unavailable.");
+                    self.info(notice);
+                    format!("-- {notice}\n\n{text}")
                 }
-                Err(error) => self.error(error),
-                _ => {}
-            }
+                _ => return,
+            };
+            let index = self.new_console(Some(conn), Some(format!("{}.sql", table.table)), text);
+            self.consoles[index].db = Some(table.db);
             return;
         }
         let Some(dialog) = self.table_duplicate.dialog.as_mut().filter(|dialog| dialog.table.conn == conn && dialog.id == request_id) else {
@@ -288,6 +299,53 @@ mod tests {
             assert!(!app.request_catalog_table_ddl(&table));
             assert!(app.table_duplicate.ddl.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn catalog_ddl_failure_uses_cache_without_relaxing_duplicate_errors() {
+        let (mut app, table) = crate::app::tests::table_menu_app(Driver::Sqlite, true);
+        let path = std::env::temp_dir().join(format!("datacraft-ddl-trigger-{}.db", uuid::Uuid::new_v4()));
+        {
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute_batch("CREATE TABLE notes(id INTEGER PRIMARY KEY, value TEXT); CREATE TRIGGER notes_insert AFTER INSERT ON notes BEGIN UPDATE notes SET value='triggered' WHERE id=NEW.id; END;").unwrap();
+        }
+        let mut cfg = app.conns[0].cfg.clone();
+        cfg.file_path = path.to_string_lossy().into_owned();
+        let mut session = Session::connect(&cfg).await.unwrap();
+        let error = crate::db::table_definition::definition(&mut session, Driver::Sqlite, "main", "notes").await.unwrap_err().to_string();
+        assert!(error.contains("trigger"));
+        drop(session);
+        std::fs::remove_file(path).unwrap();
+        assert!(app.request_catalog_table_ddl(&table));
+        let request_id = *app.table_duplicate.ddl.keys().next().unwrap();
+        app.table_duplicate_received(7, request_id, Err(error.clone()));
+        let console = app.consoles.last().unwrap();
+        assert!(console.text.contains("create table") && console.text.contains("primary key") && console.text.contains("id"));
+        assert_eq!(console.db.as_deref(), Some("main"));
+        assert!(app.status_msg.as_ref().is_some_and(|(message, is_error)| !is_error && message.contains("cached columns")));
+        assert!(app.table_duplicate.ddl.is_empty());
+        let consoles = app.consoles.len();
+        app.open_table_duplicate(table, true);
+        let dialog = app.table_duplicate.dialog.as_mut().unwrap();
+        dialog.id = 41;
+        dialog.pending = true;
+        app.table_duplicate_received(7, 41, Err(error.clone()));
+        assert_eq!(app.consoles.len(), consoles);
+        assert_eq!(app.table_duplicate.dialog.as_ref().unwrap().error.as_deref(), Some(error.as_str()));
+        assert!(app.table_duplicate.dialog.as_ref().unwrap().plan.is_none());
+    }
+
+    #[test]
+    fn catalog_ddl_failure_without_cached_columns_keeps_the_error() {
+        let (mut app, table) = crate::app::tests::table_menu_app(Driver::Sqlite, true);
+        app.conns[0].databases[0].schemas.as_mut().unwrap()[0].tables[0].columns.clear();
+        assert!(app.request_catalog_table_ddl(&table));
+        let request_id = *app.table_duplicate.ddl.keys().next().unwrap();
+        let consoles = app.consoles.len();
+        app.table_duplicate_received(7, request_id, Err("catalog unavailable".into()));
+        assert_eq!(app.consoles.len(), consoles);
+        assert_eq!(app.status_msg.as_ref().map(|(message, error)| (message.as_str(), *error)), Some(("catalog unavailable", true)));
+        assert!(app.table_duplicate.ddl.is_empty());
     }
 
     #[test]
