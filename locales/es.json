@@ -1306,6 +1306,21 @@
     "Missing object name in table definition": "Falta el nombre del objeto en la definición de la tabla",
     "Missing table catalog field {index}": "Falta el campo {index} del catálogo de tablas",
     "Overlapping table definition edits": "Los cambios en la definición de la tabla se superponen",
-    "Unterminated SQL quote in table definition": "Comillas SQL sin cerrar en la definición de la tabla"
+    "Unterminated SQL quote in table definition": "Comillas SQL sin cerrar en la definición de la tabla",
+    "Could not remove the incomplete duplicate": "No se pudo eliminar la copia incompleta",
+    "Duplicate Table": "Duplicar tabla",
+    "Faithful table duplication is not available for {engine}": "La duplicación fiel de tablas no está disponible para {engine}",
+    "New table name": "Nombre de la nueva tabla",
+    "Preview SQL": "Vista previa del SQL",
+    "Structure Only": "Solo estructura",
+    "Structure and Data": "Estructura y datos",
+    "Table operation timed out": "Se agotó el tiempo de la operación de tabla",
+    "The destination table or object already exists": "La tabla o el objeto de destino ya existe",
+    "The duplicate needs a different table name": "La copia debe tener un nombre de tabla distinto",
+    "The existing table is preserved. The destination must not exist.": "La tabla existente se conserva. El destino no debe existir.",
+    "The table definition changed. Preview the operation again.": "La definición de la tabla ha cambiado. Vuelve a previsualizar la operación.",
+    "The table has no insertable columns": "La tabla no tiene columnas en las que se puedan insertar datos",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Este motor confirma la creación de la tabla inmediatamente. Si falla una sentencia posterior, debe eliminarse la tabla recién creada.",
+    "Wait for the current table operation to finish": "Espera a que termine la operación de tabla actual"
   }
 }

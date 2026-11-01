@@ -63,6 +63,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 mod routines;
+mod table_duplicate;
 mod views;
 
 #[cfg(all(test, target_os = "windows"))]
@@ -324,6 +325,7 @@ pub struct DataCraftApp {
     views: views::ViewState,
     /// Procedure and function dialogs and pending definitions.
     routines: routines::RoutineState,
+    table_duplicate: table_duplicate::TableDuplicateState,
     import: Option<ImportDialog>,
     /// "Copy Table To…".
     copy: Option<CopyDialog>,
@@ -424,6 +426,7 @@ impl DataCraftApp {
             drop: None,
             views: Default::default(),
             routines: Default::default(),
+            table_duplicate: Default::default(),
             import: None,
             copy: None,
             mask_export: None,
@@ -655,6 +658,7 @@ impl DataCraftApp {
     }
 
     fn disconnect(&mut self, id: ConnId) {
+        self.cancel_table_duplicate(id);
         if let Some(c) = self.conn_mut(id) {
             c.status = ConnStatus::Disconnected;
             c.clear();
@@ -789,6 +793,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::ConnectFailed { conn, error } => {
+                    self.cancel_table_duplicate(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
                     if let Some(c) = self.conn_mut(conn) {
                         // Also if it was connected: the session is lost and the next run
@@ -900,6 +905,7 @@ impl DataCraftApp {
                         && let Some(editor) = self.consoles.iter_mut().find(|c| c.id == console).and_then(|c| c.routine.as_mut())
                     { editor.reference = identity; }
                 }
+                Response::TableDuplicate { conn, request_id, result } => self.table_duplicate_received(conn, request_id, result),
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
                 Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
                 Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
@@ -1472,6 +1478,7 @@ impl DataCraftApp {
         if kind == Generate::Ddl && self.request_view_ddl(t) {
             return;
         }
+        if kind == Generate::Ddl && self.request_catalog_table_ddl(t) { return; }
         let Some(c) = self.conn(t.conn) else { return };
         let driver = c.cfg.driver;
         let Some(columns) = self.table_columns(t.conn, Some(&t.db), &t.schema, &t.table) else {
@@ -1515,6 +1522,7 @@ impl DataCraftApp {
                 ExplorerAction::Backup(id, _) => Some(*id),
                 ExplorerAction::DropObject(t, _)
                 | ExplorerAction::TruncateTable(t)
+                | ExplorerAction::DuplicateTable(t, _)
                 | ExplorerAction::EmptyTable(t)
                 | ExplorerAction::ImportData(t)
                 | ExplorerAction::RenameTable(t)
@@ -1594,6 +1602,7 @@ impl DataCraftApp {
                     }
                 }
                 ExplorerAction::DropObject(t, kind) => self.open_object_dialog(t, kind.into()),
+                ExplorerAction::DuplicateTable(t, data) => self.open_table_duplicate(t, data),
                 ExplorerAction::TruncateTable(t) => self.open_object_dialog(t, DropKind::Truncate),
                 ExplorerAction::EmptyTable(t) => self.open_object_dialog(t, DropKind::Empty),
                 ExplorerAction::RefreshObject(t) => {
@@ -3372,6 +3381,7 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.table_duplicate_dialog(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4371,7 +4381,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), table_duplicate: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,

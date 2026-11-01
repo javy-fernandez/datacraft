@@ -58,6 +58,16 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         ui.separator();
         button!(writable && table, "Empty Table…", &|t: &TableRef| ExplorerAction::EmptyTable(t.clone()));
         button!(writable && table, "Truncate…", &|t: &TableRef| ExplorerAction::TruncateTable(t.clone()));
+        ui.add_enabled_ui(writable && table && crate::db::table_definition::supported(cx.driver), |ui| {
+            ui.menu_button(tr("Duplicate Table"), |ui| {
+                for (data, label) in [(true, "Structure and Data"), (false, "Structure Only")] {
+                    if ui.button(tr(label)).clicked() {
+                        if let Some(table) = tables.first() { actions.push(ExplorerAction::DuplicateTable(table.clone(), data)); }
+                        ui.close();
+                    }
+                }
+            });
+        });
         button!(writable && table, "Import Data from File…", &|t: &TableRef| ExplorerAction::ImportData(t.clone()));
         ui.separator();
         button!(cx.connected && single, "Generate SELECT", &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone()));

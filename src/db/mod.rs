@@ -5,6 +5,7 @@
 
 pub mod alter;
 pub mod table_definition;
+pub mod table_duplicate;
 pub mod copy;
 pub mod create_db;
 pub mod datagrip;

@@ -71,6 +71,7 @@ pub enum ExplorerAction {
     /// Confirm and drop a table or view.
     DropObject(TableRef, ObjectKind),
     TruncateTable(TableRef),
+    DuplicateTable(TableRef, bool),
     EmptyTable(TableRef),
     RefreshObject(TableRef),
     ObjectInformation(TableRef),

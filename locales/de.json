@@ -1306,6 +1306,21 @@
     "Missing object name in table definition": "Der Objektname in der Tabellendefinition fehlt",
     "Missing table catalog field {index}": "Feld {index} im Tabellenkatalog fehlt",
     "Overlapping table definition edits": "Überlappende Änderungen an der Tabellendefinition",
-    "Unterminated SQL quote in table definition": "Nicht abgeschlossenes SQL-Anführungszeichen in der Tabellendefinition"
+    "Unterminated SQL quote in table definition": "Nicht abgeschlossenes SQL-Anführungszeichen in der Tabellendefinition",
+    "Could not remove the incomplete duplicate": "Das unvollständige Duplikat konnte nicht entfernt werden",
+    "Duplicate Table": "Tabelle duplizieren",
+    "Faithful table duplication is not available for {engine}": "Originalgetreue Tabellenduplizierung ist für {engine} nicht verfügbar",
+    "New table name": "Neuer Tabellenname",
+    "Preview SQL": "SQL-Vorschau",
+    "Structure Only": "Nur Struktur",
+    "Structure and Data": "Struktur und Daten",
+    "Table operation timed out": "Zeitüberschreitung beim Tabellenvorgang",
+    "The destination table or object already exists": "Die Zieltabelle oder das Zielobjekt ist bereits vorhanden",
+    "The duplicate needs a different table name": "Das Duplikat benötigt einen anderen Tabellennamen",
+    "The existing table is preserved. The destination must not exist.": "Die vorhandene Tabelle bleibt erhalten. Das Ziel darf noch nicht vorhanden sein.",
+    "The table definition changed. Preview the operation again.": "Die Tabellendefinition wurde geändert. Prüfen Sie den Vorgang erneut in der Vorschau.",
+    "The table has no insertable columns": "Die Tabelle enthält keine Spalten, in die Daten eingefügt werden können",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Diese Engine bestätigt die Tabellenerstellung sofort. Schlägt eine spätere Anweisung fehl, muss die neu erstellte Tabelle entfernt werden.",
+    "Wait for the current table operation to finish": "Warten Sie, bis der aktuelle Tabellenvorgang abgeschlossen ist"
   }
 }

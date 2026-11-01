@@ -1306,6 +1306,21 @@
     "Missing object name in table definition": "表定义中缺少对象名称",
     "Missing table catalog field {index}": "缺少表目录字段 {index}",
     "Overlapping table definition edits": "表定义编辑存在重叠",
-    "Unterminated SQL quote in table definition": "表定义中的 SQL 引号未闭合"
+    "Unterminated SQL quote in table definition": "表定义中的 SQL 引号未闭合",
+    "Could not remove the incomplete duplicate": "无法删除不完整的副本",
+    "Duplicate Table": "复制表",
+    "Faithful table duplication is not available for {engine}": "{engine} 不支持完整复制表",
+    "New table name": "新表名",
+    "Preview SQL": "预览 SQL",
+    "Structure Only": "仅结构",
+    "Structure and Data": "结构和数据",
+    "Table operation timed out": "表操作超时",
+    "The destination table or object already exists": "目标表或对象已存在",
+    "The duplicate needs a different table name": "副本必须使用不同的表名",
+    "The existing table is preserved. The destination must not exist.": "现有表将被保留。目标表必须尚不存在。",
+    "The table definition changed. Preview the operation again.": "表定义已更改。请重新预览操作。",
+    "The table has no insertable columns": "表中没有可插入的列",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "此引擎会立即提交表创建操作。如果后续语句失败，则必须删除新创建的表。",
+    "Wait for the current table operation to finish": "请等待当前表操作完成"
   }
 }

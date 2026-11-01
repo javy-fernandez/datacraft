@@ -1306,6 +1306,21 @@
     "Missing object name in table definition": "Nom d’objet manquant dans la définition de la table",
     "Missing table catalog field {index}": "Champ {index} du catalogue des tables manquant",
     "Overlapping table definition edits": "Modifications de définition de table qui se chevauchent",
-    "Unterminated SQL quote in table definition": "Guillemet SQL non fermé dans la définition de la table"
+    "Unterminated SQL quote in table definition": "Guillemet SQL non fermé dans la définition de la table",
+    "Could not remove the incomplete duplicate": "Impossible de supprimer la copie incomplète",
+    "Duplicate Table": "Dupliquer la table",
+    "Faithful table duplication is not available for {engine}": "La duplication fidèle de tables n’est pas disponible pour {engine}",
+    "New table name": "Nom de la nouvelle table",
+    "Preview SQL": "Aperçu SQL",
+    "Structure Only": "Structure uniquement",
+    "Structure and Data": "Structure et données",
+    "Table operation timed out": "Le délai de l’opération sur la table a expiré",
+    "The destination table or object already exists": "La table ou l’objet de destination existe déjà",
+    "The duplicate needs a different table name": "La copie doit porter un nom de table différent",
+    "The existing table is preserved. The destination must not exist.": "La table existante est conservée. La destination ne doit pas exister.",
+    "The table definition changed. Preview the operation again.": "La définition de la table a changé. Prévisualisez à nouveau l’opération.",
+    "The table has no insertable columns": "La table ne contient aucune colonne permettant l’insertion",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Ce moteur valide immédiatement la création de la table. Si une instruction ultérieure échoue, la nouvelle table doit être supprimée.",
+    "Wait for the current table operation to finish": "Attendez la fin de l’opération en cours sur la table"
   }
 }

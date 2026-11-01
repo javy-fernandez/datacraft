@@ -1306,6 +1306,21 @@
     "Missing object name in table definition": "テーブル定義にオブジェクト名がありません",
     "Missing table catalog field {index}": "テーブルカタログのフィールド {index} がありません",
     "Overlapping table definition edits": "テーブル定義の編集範囲が重複しています",
-    "Unterminated SQL quote in table definition": "テーブル定義の SQL 引用符が閉じられていません"
+    "Unterminated SQL quote in table definition": "テーブル定義の SQL 引用符が閉じられていません",
+    "Could not remove the incomplete duplicate": "未完成の複製を削除できませんでした",
+    "Duplicate Table": "テーブルを複製",
+    "Faithful table duplication is not available for {engine}": "{engine} ではテーブルを忠実に複製できません",
+    "New table name": "新しいテーブル名",
+    "Preview SQL": "SQL をプレビュー",
+    "Structure Only": "構造のみ",
+    "Structure and Data": "構造とデータ",
+    "Table operation timed out": "テーブル操作がタイムアウトしました",
+    "The destination table or object already exists": "複製先のテーブルまたはオブジェクトはすでに存在します",
+    "The duplicate needs a different table name": "複製先には別のテーブル名が必要です",
+    "The existing table is preserved. The destination must not exist.": "既存のテーブルは保持されます。複製先のテーブルは存在していてはいけません。",
+    "The table definition changed. Preview the operation again.": "テーブル定義が変更されています。操作をもう一度プレビューしてください。",
+    "The table has no insertable columns": "このテーブルには挿入可能な列がありません",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "このエンジンはテーブルの作成を即座にコミットします。後続の文が失敗した場合、新しく作成したテーブルを削除する必要があります。",
+    "Wait for the current table operation to finish": "現在のテーブル操作が完了するまでお待ちください"
   }
 }
