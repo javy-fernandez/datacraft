@@ -61,6 +61,25 @@ impl MsSession {
         Ok(Self { client, broken: false })
     }
 
+    /// Stream full native values without exposing the driver connection.
+    pub(super) async fn export_rows(
+        &mut self,
+        sql: &str,
+        sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
+        progress: &std::sync::Arc<super::table_export::ExportProgress>,
+    ) -> anyhow::Result<()> {
+        use super::table_export::{Message, cancelled, mssql_value};
+        let mut rows = self.client.simple_query(sql).await?;
+        while let Some(item) = rows.try_next().await? {
+            cancelled(progress)?;
+            if let tiberius::QueryItem::Row(row) = item {
+                let values = row.cells().map(|(_, d)| mssql_value(d)).collect::<anyhow::Result<_>>()?;
+                sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         match run(&mut self.client, sql, max_rows).await {
             Ok(results) => Ok(results),
@@ -293,7 +312,7 @@ fn cell(data: &ColumnData<'static>) -> Cell {
 }
 
 /// `numeric(18,0)` must show as `42`, not `42.0` as tiberius' `Display` does.
-fn numeric_text(n: tiberius::numeric::Numeric) -> String {
+pub(super) fn numeric_text(n: tiberius::numeric::Numeric) -> String {
     let scale = u32::from(n.scale());
     let sign = if n.value() < 0 { "-" } else { "" };
     let abs = n.value().unsigned_abs();
