@@ -17,6 +17,7 @@ pub type ConnId = u64;
 pub type ConsoleId = u64;
 
 pub enum Request {
+    TableShortcut { path: std::path::PathBuf, target: crate::table_shortcut::Target },
     /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
@@ -101,6 +102,7 @@ pub enum Request {
 }
 
 pub enum Response {
+    TableShortcut { result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
@@ -506,6 +508,10 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
 
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
+        Request::TableShortcut { path, target } => {
+            let result = tokio::task::spawn_blocking(move || crate::table_shortcut::create(&path, &target).map(|_| path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::TableShortcut { result }]
+        }
         Request::DatabaseChoices { conn } => {
             let result = async {
                 let driver = state.live.lock().await.get(&conn).map(|l| l.cfg.driver).ok_or_else(|| anyhow::anyhow!(tr("Connection lost")))?;

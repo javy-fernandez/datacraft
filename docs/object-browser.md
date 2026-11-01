@@ -41,6 +41,19 @@ catalog readers and offline connections. It generates the existing local definit
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
 
+## Open-table launchers
+
+**Create Open Table Shortcut…** saves a Windows `.lnk`, macOS `.command` or Linux `.sh`
+launcher for a table on an existing saved connection. Opening it starts DataCraft,
+resolves the saved connection and opens the qualified table. The launcher contains
+the connection ID and object names; credentials continue to come from the existing
+credential store. A missing connection is reported rather than silently choosing another.
+
+The complete launcher is staged and verified before replacing an existing destination.
+Unusual Windows executable paths that Windows Script Host cannot represent fail with
+an error; a broken launcher is not published. Moving the executable or removing the
+saved connection can invalidate a launcher. Demo connections cannot create saved launchers.
+
 ## Row counts and timestamps
 
 Browsing reads catalog statistics and **never automatically scans a table**.

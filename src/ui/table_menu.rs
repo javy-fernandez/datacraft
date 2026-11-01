@@ -71,6 +71,7 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         ui.ctx().copy_text(tables.iter().map(|t| t.table.as_str()).collect::<Vec<_>>().join("\n"));
         ui.close();
     }
+    button!(single, "Create Open Table Shortcut…", &|t: &TableRef| ExplorerAction::TableShortcut(t.clone()));
     if sql {
         button!(writable && table, "Rename…", &|t: &TableRef| ExplorerAction::RenameTable(t.clone()));
     }
