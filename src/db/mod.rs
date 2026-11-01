@@ -33,6 +33,7 @@ pub mod sqlite;
 pub mod url;
 pub mod views;
 pub mod users;
+pub mod table_privileges;
 
 use serde::{Deserialize, Serialize};
 use crate::i18n::trf;

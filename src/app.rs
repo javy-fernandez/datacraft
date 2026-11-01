@@ -67,6 +67,7 @@ mod table_duplicate;
 mod views;
 mod table_export;
 mod table_shortcuts;
+mod table_grants;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -326,6 +327,7 @@ pub struct DataCraftApp {
     /// "New View" / "Edit View" dialog and pending view definitions.
     views: views::ViewState,
     table_export: table_export::ExportState,
+    table_grants: table_grants::State,
     /// Procedure and function dialogs and pending definitions.
     routines: routines::RoutineState,
     table_duplicate: table_duplicate::TableDuplicateState,
@@ -430,6 +432,7 @@ impl DataCraftApp {
             drop: None,
             views: Default::default(),
             table_export: Default::default(),
+            table_grants: Default::default(),
             routines: Default::default(),
             table_duplicate: Default::default(),
             import: None,
@@ -921,6 +924,7 @@ impl DataCraftApp {
                 }
                 Response::TableDuplicate { conn, request_id, result } => self.table_duplicate_received(conn, request_id, result),
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
+                Response::TableGrants { conn, request_id, result } => self.table_grants_received(conn, request_id, result),
                 Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
                 Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
                 Response::TableDetails { request_id, result } => self.modify_loaded(request_id, result.map(|d| *d)),
@@ -1544,6 +1548,7 @@ impl DataCraftApp {
                 | ExplorerAction::PrintTable(t)
                 | ExplorerAction::RenameTable(t)
                 | ExplorerAction::ModifyTable(t)
+                | ExplorerAction::TablePrivileges(t)
                 | ExplorerAction::GenerateSelect(t)
                 | ExplorerAction::GenerateInsert(t)
                 | ExplorerAction::EditView(t) => Some(t.conn),
@@ -1640,6 +1645,7 @@ impl DataCraftApp {
                 ExplorerAction::RenameTable(t) => self.open_object_dialog(t, DropKind::Rename),
                 ExplorerAction::TableShortcut(t) => self.create_table_shortcut(t),
                 ExplorerAction::ModifyTable(t) => self.open_modify_table(t),
+                ExplorerAction::TablePrivileges(t) => self.open_table_grants(t),
                 ExplorerAction::NewConsole(id, db) => {
                     let i = self.new_console(Some(id), None, String::new());
                     self.consoles[i].db = db;
@@ -2529,6 +2535,7 @@ impl DataCraftApp {
             || self.create.is_some()
             || self.views.dialog.is_some()
             || self.table_export.is_open()
+            || self.table_grants.is_open()
             || self.routines.is_open()
             || self.table_duplicate.is_open()
             || self.drop.is_some()
@@ -3408,6 +3415,7 @@ impl DataCraftApp {
     fn dialogs(&mut self, ctx: &egui::Context) {
         self.table_duplicate_dialog(ctx);
         self.show_table_export(ctx);
+        self.table_grants_dialog(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4415,7 +4423,7 @@ mod tests {
             startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
-            modify: None,
+            modify: None, table_grants: Default::default(),
         }
     }
 

@@ -91,6 +91,32 @@ is an explicit choice and follows the data-export engine support above. Submit
 browser's Print command to select a printer or PDF. Schema-only reports are
 available for every SQL engine.
 
+### Explicit table privileges
+
+**Set Privileges…** opens a user/role selector for one connected, writable server
+table. It displays explicit grants on that table and previews the exact GRANT and
+REVOKE statements before applying them. These grants are not the user's full
+effective permissions: ownership, role membership, PUBLIC and broader privileges
+can independently provide access. Save or discard pending table edits first.
+
+PostgreSQL, MySQL/MariaDB, SQL Server, Oracle, Snowflake and ClickHouse use their
+own live catalogs. SQLite and NoSQL engines do not offer table grants. Catalog
+visibility is required; inaccessible or truncated metadata is an error. MariaDB
+offers user accounts, while Snowflake offers account roles and requires the table
+owner role outside managed access schemas.
+
+The editor refuses grants with options, foreign grantors, column permissions,
+DENY/partial-revoke states or other scopes it cannot safely preserve. Use the SQL
+editor for those cases. Before applying, it reloads grants and provenance and
+rejects a changed snapshot or preview. Work uses a cancellable private session.
+Some engines commit each statement independently; after cancellation or an error,
+use **Reload privileges** to inspect the actual state before making more changes.
+
+ClickHouse ignores wildcard grants outside the selected database/table scope and
+refuses matching prefix grants. Exact grants work on pre-24.10 catalogs without
+`is_wildcard`; prefix-capable versions that omit this metadata require the SQL
+editor because exact and prefix provenance cannot be distinguished safely.
+
 ## Open-table launchers
 
 **Create Open Table Shortcut…** saves a Windows `.lnk`, macOS `.command` or Linux `.sh`
