@@ -352,7 +352,6 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
 }
 
 /// The statement that creates the routine (with `OR REPLACE` / `OR ALTER` if `replace`).
-#[cfg(test)]
 pub fn create_sql(driver: Driver, spec: &RoutineSpec, replace: bool) -> String {
     create(driver, spec, if replace { Verb::Replace } else { Verb::Create })
 }

@@ -2,6 +2,7 @@
 
 use crate::app::{ConnState, ConnStatus};
 use crate::db::{ObjectKind, TableInfo, object_info::ObjectInfo};
+use crate::db::routines::{RoutineKind, RoutineRef};
 use crate::i18n::tr;
 use crate::ui::explorer::{ExplorerAction, TableRef};
 use crate::ui::icons::{self, Ico};
@@ -39,6 +40,8 @@ pub struct ObjectBrowser {
     marquee: Option<Marquee>,
     pub active: bool,
     pub scope: Option<ObjectScope>,
+    routine_kind: Option<RoutineKind>,
+    selected_routine: Option<RoutineRef>,
     pub selected: Option<TableRef>,
     pub layout: ObjectLayout,
     inspector_mode: crate::ui::inspector::InspectorMode,
@@ -103,8 +106,10 @@ struct Marquee {
 
 impl ObjectBrowser {
     pub fn open(&mut self, scope: ObjectScope) -> bool {
-        let changed = self.scope.as_ref() != Some(&scope);
+        let changed = self.scope.as_ref() != Some(&scope) || self.routine_kind.is_some();
+        self.routine_kind = None;
         if changed {
+            self.selected_routine = None;
             self.current_group = None;
             self.clear_selection();
             self.selected = None;
@@ -120,6 +125,11 @@ impl ObjectBrowser {
         self.scope = Some(scope);
         self.active = true;
         changed
+    }
+
+    pub fn open_routines(&mut self, scope: ObjectScope, kind: RoutineKind) {
+        self.open(scope);
+        self.routine_kind = Some(kind);
     }
 
     pub fn start_catalog_request(&mut self) -> u64 {
@@ -439,6 +449,10 @@ impl ObjectBrowser {
             });
             return actions;
         };
+        if let Some(kind) = self.routine_kind {
+            self.show_routines(ui, connections, &scope, kind, &mut actions);
+            return actions;
+        }
         let org_index = self
             .organizations
             .iter()
@@ -1070,6 +1084,85 @@ impl ObjectBrowser {
         });
     }
 
+    fn show_routines(&mut self, ui: &mut Ui, connections: &[ConnState], scope: &ObjectScope, kind: RoutineKind, actions: &mut Vec<BrowserAction>) {
+        let p = pal(ui);
+        let icon = if kind == RoutineKind::Procedure { Ico::Procedure } else { Ico::Function };
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.add_space(12.0);
+            let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+            icons::paint(ui.painter(), rect, icon, p.routine_icon, &p, true);
+            ui.label(RichText::new(if kind == RoutineKind::Procedure { tr("Procedures") } else { tr("Functions") }).font(theme::bold(16.0)));
+            ui.label(RichText::new(format!("{} / {}", scope.db, scope.schema.as_deref().unwrap_or_default())).color(p.muted));
+        });
+        ui.add_space(8.0);
+        ui.separator();
+        let Some(connection) = connections.iter().find(|c| c.cfg.id == scope.conn) else { return };
+        let Some(list) = connection.routines.get(&scope.db) else { return };
+        if list.loading { ui.spinner(); }
+        if let Some(error) = &list.error { ui.colored_label(p.error, error); }
+        let search = self.search.to_lowercase();
+        let mut items: Vec<_> = list.items.iter().flatten().filter(|r| r.kind == kind && scope.schema.as_ref().is_none_or(|s| *s == r.schema) && (r.name.to_lowercase().contains(&search) || r.schema.to_lowercase().contains(&search))).collect();
+        items.sort_by_key(|r| (r.name.to_lowercase(), &r.schema, &r.signature));
+        let mut responses = Vec::new();
+        if self.layout == ObjectLayout::List {
+            TableBuilder::new(ui).id_salt("routine_list").resizable(true).sense(Sense::click())
+                .column(Column::initial(260.0).at_least(160.0)).column(Column::initial(240.0)).column(Column::remainder().at_least(120.0))
+                .header(26.0, |mut header| {
+                    for label in [tr("Name"), tr("Parameters"), tr("Returns")] { header.col(|ui| { ui.strong(label); }); }
+                }).body(|body| {
+                    body.rows(26.0, items.len(), |mut row| {
+                        let routine = items[row.index()];
+                        let reference = RoutineRef::new(scope.conn, &scope.db, routine);
+                        row.set_selected(self.selected_routine.as_ref() == Some(&reference));
+                        row.col(|ui| { ui.horizontal(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                            icons::paint(ui.painter(), rect, icon, p.routine_icon, &p, true);
+                            ui.add(egui::Label::new(&routine.name).truncate());
+                        }); });
+                        row.col(|ui| { ui.add(egui::Label::new(&routine.arguments).truncate()); });
+                        row.col(|ui| { ui.add(egui::Label::new(&routine.returns).truncate()); });
+                        let response = row.response();
+                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, self.selected_routine.as_ref() == Some(&reference), routine.display()));
+                        responses.push((routine, reference, response));
+                    });
+                });
+        } else {
+            let rows = ((ui.available_height() - 14.0) / 28.0).floor().max(1.0) as usize;
+            let columns = items.len().div_ceil(rows);
+            let height = (ui.available_height() - 14.0).max(28.0);
+            egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_min_size(vec2(columns as f32 * 280.0, height));
+                let origin = ui.min_rect().min;
+                for (index, routine) in items.iter().enumerate() {
+                    let reference = RoutineRef::new(scope.conn, &scope.db, routine);
+                    let rect = Rect::from_min_size(origin + vec2((index / rows) as f32 * 280.0, (index % rows) as f32 * 28.0), vec2(274.0, 26.0));
+                    let response = ui.interact(rect, ui.id().with(("routine", &reference)), Sense::click());
+                    let selected = self.selected_routine.as_ref() == Some(&reference);
+                    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, routine.display()));
+                    if selected || response.hovered() { ui.painter().rect_filled(rect.shrink(1.0), 3.0, if selected { p.selection } else { p.row_hover }); }
+                    icons::paint(ui.painter(), Rect::from_min_size(rect.left_center() + vec2(5.0, -8.0), vec2(16.0, 16.0)), icon, p.routine_icon, &p, true);
+                    ui.painter_at(rect).text(rect.left_center() + vec2(28.0, 0.0), egui::Align2::LEFT_CENTER, &routine.name, FontId::proportional(12.5), p.text);
+                    responses.push((*routine, reference, response));
+                }
+            });
+        }
+        for (routine, reference, response) in responses {
+            if response.clicked() || response.secondary_clicked() { self.selected_routine = Some(reference.clone()); }
+            if response.double_clicked() { actions.push(BrowserAction::Explorer(ExplorerAction::EditRoutine(reference.clone()))); }
+            response.on_hover_text(routine.display()).context_menu(|ui| {
+                for (icon, label, action) in [
+                    (Ico::Play, tr("Execute…"), ExplorerAction::ExecuteRoutine(reference.clone())),
+                    (Ico::Edit, if kind == RoutineKind::Procedure { tr("Edit Procedure…") } else { tr("Edit Function…") }, ExplorerAction::EditRoutine(reference.clone())),
+                    (Ico::Ddl, tr("Generate DDL"), ExplorerAction::RoutineDdl(reference.clone())),
+                ] {
+                    if theme::flat_button(ui, Some(icon), label, FontId::proportional(12.5), false, connection.status == ConnStatus::Connected).clicked() { actions.push(BrowserAction::Explorer(action)); ui.close(); }
+                }
+            });
+        }
+        if items.is_empty() && !list.loading { ui.label(RichText::new(tr("No matching objects")).color(p.muted)); }
+    }
+
     pub fn status_controls(&mut self, ui: &mut Ui, connected: bool) -> Option<ExplorerAction> {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::F)) {
             ui.memory_mut(|m| m.request_focus(egui::Id::new("object_search")));
@@ -1088,6 +1181,33 @@ impl ObjectBrowser {
         let Some(scope) = &self.scope else { return actions; };
         let connection = connections.iter().find(|connection| connection.cfg.id == scope.conn);
         let connected = connection.is_some_and(|connection| connection.status == ConnStatus::Connected);
+        if let Some(kind) = self.routine_kind {
+            let routine = self.selected_routine.as_ref().and_then(|selected| connection?.routines.get(&scope.db)?.items.as_ref()?.iter().find(|r| RoutineRef::new(scope.conn, &scope.db, r) == *selected));
+            egui::Panel::right("object_information").default_size(300.0).size_range(220.0..=520.0).resizable(true).show(ui, |ui| {
+                let p = pal(ui);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
+                    icons::paint(ui.painter(), rect, if kind == RoutineKind::Procedure { Ico::Procedure } else { Ico::Function }, p.routine_icon, &p, true);
+                    ui.strong(routine.map_or_else(|| if kind == RoutineKind::Procedure { tr("Procedures") } else { tr("Functions") }, |r| r.name.as_str()));
+                });
+                ui.separator();
+                if let Some(routine) = routine {
+                    ui.label(RichText::new(format!("{} / {}", scope.db, routine.schema)).color(p.muted));
+                    ui.add_space(12.0);
+                    ui.strong(tr("Parameters"));
+                    ui.add(egui::Label::new(RichText::new(format!("({})", routine.arguments)).monospace()).wrap());
+                    if !routine.returns.is_empty() { ui.strong(tr("Returns")); ui.label(&routine.returns); }
+                    ui.add_space(12.0);
+                    let reference = RoutineRef::new(scope.conn, &scope.db, routine);
+                    if theme::flat_button(ui, Some(Ico::Edit), if kind == RoutineKind::Procedure { tr("Edit Procedure…") } else { tr("Edit Function…") }, FontId::proportional(12.5), false, connected).clicked() { actions.push(BrowserAction::Explorer(ExplorerAction::EditRoutine(reference.clone()))); }
+                    if theme::flat_button(ui, Some(Ico::Play), tr("Execute…"), FontId::proportional(12.5), false, connected).clicked() { actions.push(BrowserAction::Explorer(ExplorerAction::ExecuteRoutine(reference))); }
+                } else {
+                    ui.label(tr("Select an object to see its information"));
+                }
+            });
+            return actions;
+        }
         let entries = self.entries(connections);
         egui::Panel::right("object_information")
             .default_size(300.0)
@@ -1442,6 +1562,60 @@ mod tests {
             );
         h.run_steps(3);
         h
+    }
+
+    fn routine_harness(layout: ObjectLayout) -> egui_kittest::Harness<'static, State> {
+        use crate::db::routines::{RoutineInfo, RoutineList};
+        let mut h = harness(layout, true);
+        h.state_mut().connections[0].routines.insert("shop".into(), RoutineList {
+            items: Some(vec![
+                RoutineInfo { schema: "public".into(), name: "archive".into(), kind: RoutineKind::Procedure, ..Default::default() },
+                RoutineInfo { schema: "public".into(), name: "tax".into(), kind: RoutineKind::Function, ..Default::default() },
+                RoutineInfo { schema: "other".into(), name: "other_proc".into(), kind: RoutineKind::Procedure, ..Default::default() },
+            ]), ..Default::default()
+        });
+        h.state_mut().browser.open_routines(scope(None), RoutineKind::Procedure);
+        h.run_steps(3);
+        h
+    }
+
+    #[test]
+    fn routine_scope_displays_only_matching_routines() {
+        for layout in [ObjectLayout::List, ObjectLayout::Grid] {
+        let mut h = routine_harness(layout);
+        assert!(h.query_by_label("archive()").is_some());
+        assert!(h.query_by_label("tax()").is_none());
+        assert!(h.query_by_label("other_proc()").is_none());
+        h.get_by_label("archive()").click(); h.run_steps(2);
+        assert_eq!(h.state().browser.selected_routine.as_ref().unwrap().name, "archive");
+        assert!(h.query_by_label("Edit Procedure…").is_some());
+        h.state_mut().browser.open_routines(scope(None), RoutineKind::Function);
+        h.run_steps(3);
+        assert!(h.query_by_label("tax()").is_some());
+        assert!(h.query_by_label("archive()").is_none());
+        }
+    }
+
+    #[test]
+    #[ignore = "Requires a GPU; renders routine list/grid and their icons using fixture data"]
+    fn render_routine_object_views() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/routine-snapshots");
+        std::fs::create_dir_all(&directory).unwrap();
+        for (layout, name) in [(ObjectLayout::List, "routine-list"), (ObjectLayout::Grid, "routine-grid")] {
+            let mut h = routine_harness(layout);
+            let list = h.state_mut().connections[0].routines.get_mut("shop").unwrap();
+            let items = list.items.as_mut().unwrap();
+            for name in ["archive_orders", "rebuild_indexes", "refresh_statistics", "sync_inventory", "update_prices", "validate_orders"] {
+                items.push(crate::db::routines::RoutineInfo { schema: "public".into(), name: name.into(), arguments: "before_date timestamp".into(), kind: RoutineKind::Procedure, valid: true, ..Default::default() });
+            }
+            for name in ["calculate_discount", "get_order_total", "get_stock_level", "normalize_address"] {
+                items.push(crate::db::routines::RoutineInfo { schema: "public".into(), name: name.into(), arguments: "id integer".into(), returns: "numeric".into(), kind: RoutineKind::Function, valid: true, ..Default::default() });
+            }
+            for (kind, suffix) in [(RoutineKind::Procedure, "procedures"), (RoutineKind::Function, "functions")] {
+                h.state_mut().browser.open_routines(scope(None), kind); h.run_steps(3);
+                h.render().unwrap().save(directory.join(format!("{name}-{suffix}.png"))).unwrap();
+            }
+        }
     }
 
     #[test]

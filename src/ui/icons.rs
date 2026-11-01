@@ -62,6 +62,10 @@ pub enum Ico {
     Close,
     Export,
     Copy,
+    Save,
+    WordWrap,
+    Code,
+    Comment,
 }
 
 const W: f32 = 1.3;
@@ -79,6 +83,28 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
     };
     let obj = |c: Color32| if enabled { c } else { color };
     match ico {
+        Ico::Code => {
+            line(&[(9.5, 1.5), (3.0, 1.5), (3.0, 14.5), (13.0, 14.5), (13.0, 5.0), (9.5, 1.5), (9.5, 5.0), (13.0, 5.0)], color);
+            line(&[(6.5, 7.5), (4.5, 9.5), (6.5, 11.5)], color);
+            line(&[(9.5, 7.5), (11.5, 9.5), (9.5, 11.5)], color);
+        }
+        Ico::Comment => {
+            line(&[(2.0, 2.5), (14.0, 2.5), (14.0, 11.0), (7.0, 11.0), (3.5, 14.0), (3.5, 11.0), (2.0, 11.0), (2.0, 2.5)], color);
+            line(&[(5.0, 5.5), (11.0, 5.5)], color);
+            line(&[(5.0, 8.0), (9.0, 8.0)], color);
+        }
+        Ico::Save => {
+            let r = Rect::from_min_max(at(2.0, 1.5), at(14.0, 14.5));
+            painter.rect_stroke(r, 1.0 * s, st(color), StrokeKind::Middle);
+            line(&[(5.0, 1.5), (5.0, 6.0), (11.0, 6.0), (11.0, 1.5)], color);
+            line(&[(5.0, 14.5), (5.0, 9.0), (11.0, 9.0), (11.0, 14.5)], color);
+        }
+        Ico::WordWrap => {
+            line(&[(1.5, 3.0), (14.5, 3.0)], color);
+            line(&[(1.5, 7.0), (11.5, 7.0), (14.0, 9.0), (14.0, 11.0), (7.0, 11.0)], color);
+            line(&[(9.0, 8.5), (6.5, 11.0), (9.0, 13.5)], color);
+            line(&[(1.5, 11.0), (4.0, 11.0)], color);
+        }
         Ico::ChevronLeft => line(&[(10.0, 3.5), (5.5, 8.0), (10.0, 12.5)], color),
         Ico::ChevronRight => line(&[(6.0, 3.5), (10.5, 8.0), (6.0, 12.5)], color),
         Ico::ChevronDown => line(&[(3.5, 6.0), (8.0, 10.5), (12.5, 6.0)], color),
