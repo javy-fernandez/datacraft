@@ -16,7 +16,15 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
     let single = tables.len() == 1 && kind.is_some();
     let writable = cx.connected && !cx.read_only && sql;
     let table = single && kind == Some(ObjectKind::Table);
+    let data_export = crate::db::table_export::supported(cx.driver);
+    let structure_export = crate::db::table_export::supported_kind(cx.driver, crate::db::table_export::ExportKind::Sql { structure: true, data: false });
     macro_rules! button {
+        ($ui:expr, $enabled:expr, $label:expr, $action:expr) => {{
+            if $ui.add_enabled($enabled, egui::Button::new(tr($label))).clicked() {
+                if let Some(t) = tables.first() { actions.push($action(t)); }
+                $ui.close();
+            }
+        }};
         ($enabled:expr, $label:expr, $action:expr) => {{
             let response = ui.add_enabled($enabled, egui::Button::new(tr($label)));
             let response = if !$enabled {
@@ -61,6 +69,15 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         button!(writable && table, "Empty Table…", &|t: &TableRef| ExplorerAction::EmptyTable(t.clone()));
         button!(writable && table, "Truncate…", &|t: &TableRef| ExplorerAction::TruncateTable(t.clone()));
         button!(writable && table, "Import Data from File…", &|t: &TableRef| ExplorerAction::ImportData(t.clone()));
+        button!(cx.connected && table && data_export, "Export Table…", &|t: &TableRef| ExplorerAction::ExportTable(t.clone()));
+        ui.add_enabled_ui(cx.connected && table && (data_export || structure_export), |ui| {
+            ui.menu_button(tr("Dump SQL File"), |ui| {
+                button!(ui, data_export, "Structure and Data", &|t: &TableRef| ExplorerAction::DumpTable(t.clone(), true, true));
+                button!(ui, structure_export, "Structure Only", &|t: &TableRef| ExplorerAction::DumpTable(t.clone(), true, false));
+                button!(ui, data_export, "Data Only", &|t: &TableRef| ExplorerAction::DumpTable(t.clone(), false, true));
+            });
+        });
+        button!(cx.connected && table, "Print Table…", &|t: &TableRef| ExplorerAction::PrintTable(t.clone()));
         ui.separator();
         button!(cx.connected && single, "Generate SELECT", &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone()));
         button!(cx.connected && table, "Generate INSERT", &|t: &TableRef| ExplorerAction::GenerateInsert(t.clone()));

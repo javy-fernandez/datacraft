@@ -75,6 +75,9 @@ pub enum ExplorerAction {
     RefreshObject(TableRef),
     ObjectInformation(TableRef),
     ImportData(TableRef),
+    ExportTable(TableRef),
+    DumpTable(TableRef, bool, bool),
+    PrintTable(TableRef),
     /// "Copy Table To…" another connection, database or schema.
     CopyTable(TableRef),
     RenameTable(TableRef),
