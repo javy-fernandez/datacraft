@@ -331,6 +331,7 @@ pub struct DataCraftApp {
     user_dialog: Option<crate::ui::user_dialog::UserDialog>,
     renaming: Option<(u64, String)>,
     show_about: bool,
+    show_shortcuts: bool,
     show_settings: bool,
     script: Option<crate::ui::script_dialog::ScriptDialog>,
     check_updates: bool,
@@ -426,6 +427,7 @@ impl DataCraftApp {
             user_dialog: None,
             renaming: None,
             show_about: false,
+            show_shortcuts: false,
             show_settings: false,
             script: None,
             check_updates: persisted.check_updates,
@@ -2448,6 +2450,7 @@ impl DataCraftApp {
             || self.copy.is_some()
             || self.mask_export.is_some()
             || self.user_dialog.is_some()
+            || self.show_shortcuts
             || self.show_about
             || self.show_settings
             || self.preview.as_ref().is_some_and(|p| p.visible)
@@ -2526,6 +2529,7 @@ impl DataCraftApp {
                 }
                 // No help website: shows the app info window.
                 M::Help => self.show_about = true,
+                M::Shortcuts => self.show_shortcuts = true,
                 _ => {}
             }
         }
@@ -2542,7 +2546,7 @@ impl DataCraftApp {
                 self.open_new_connection_dialog();
                 ui.close();
             }
-            if ui.add(egui::Button::new(tr("New console")).shortcut_text("⇧⌘N")).clicked() {
+            if ui.add(egui::Button::new(tr("New console")).shortcut_text(crate::shortcuts::format("⇧⌘N"))).clicked() {
                 self.new_console_here();
                 ui.close();
             }
@@ -2563,12 +2567,16 @@ impl DataCraftApp {
                 self.save_console_as();
             }
             ui.separator();
-            if ui.add(egui::Button::new(tr("Quit")).shortcut_text("⌘Q")).clicked() {
+            if ui.add(egui::Button::new(tr("Quit")).shortcut_text(crate::shortcuts::format("⌘Q"))).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
         });
         ui.menu_button(tr("View"), |ui| self.view_menu(ui));
         ui.menu_button(tr("Help"), |ui| {
+            if ui.button(tr("Keyboard shortcuts…")).clicked() {
+                self.show_shortcuts = true;
+                ui.close();
+            }
             if ui.button(tr("Check for Updates…")).clicked() {
                 self.check_for_updates(ui.ctx());
                 ui.close();
@@ -2608,10 +2616,10 @@ impl DataCraftApp {
         });
         ui.separator();
         ui.label(RichText::new(trf("Editor font: {size} pt", &[("size", &format!("{:.0}", self.font_size))])).small().color(p.muted));
-        if ui.add(egui::Button::new(tr("Increase")).shortcut_text("⌥⌘+")).clicked() {
+        if ui.add(egui::Button::new(tr("Increase")).shortcut_text(crate::shortcuts::format("⌥⌘+"))).clicked() {
             self.font_size = (self.font_size + 1.0).min(32.0);
         }
-        if ui.add(egui::Button::new(tr("Decrease")).shortcut_text("⌥⌘-")).clicked() {
+        if ui.add(egui::Button::new(tr("Decrease")).shortcut_text(crate::shortcuts::format("⌥⌘-"))).clicked() {
             self.font_size = (self.font_size - 1.0).max(8.0);
         }
         if ui.button(tr("Reset")).clicked() {
@@ -2631,13 +2639,13 @@ impl DataCraftApp {
     /// "IDE zoom" submenu: zoom in, zoom out, reset and fixed steps.
     fn zoom_menu(&mut self, ui: &mut Ui) {
         ui.set_min_width(180.0);
-        if ui.add_enabled(self.zoom < ZOOM_STEPS[ZOOM_STEPS.len() - 1], egui::Button::new(tr("Zoom In")).shortcut_text("⌘+")).clicked() {
+        if ui.add_enabled(self.zoom < ZOOM_STEPS[ZOOM_STEPS.len() - 1], egui::Button::new(tr("Zoom In")).shortcut_text(crate::shortcuts::format("⌘+"))).clicked() {
             self.zoom = zoom_in(self.zoom);
         }
-        if ui.add_enabled(self.zoom > ZOOM_STEPS[0], egui::Button::new(tr("Zoom Out")).shortcut_text("⌘-")).clicked() {
+        if ui.add_enabled(self.zoom > ZOOM_STEPS[0], egui::Button::new(tr("Zoom Out")).shortcut_text(crate::shortcuts::format("⌘-"))).clicked() {
             self.zoom = zoom_out(self.zoom);
         }
-        if ui.add(egui::Button::new(tr("Reset (100%)")).shortcut_text("⌘0")).clicked() {
+        if ui.add(egui::Button::new(tr("Reset (100%)")).shortcut_text(crate::shortcuts::format("⌘0"))).clicked() {
             self.zoom = 1.0;
             ui.close();
         }
@@ -2811,7 +2819,7 @@ impl DataCraftApp {
             let c = problems.rect.right_top() + vec2(-9.0, 9.0);
             bottom.painter().circle_filled(c, 3.0, palette(self.dark).error);
         }
-        if stripe_button(&mut bottom, Ico::Terminal, false, tr("New console (⇧⌘N)")).clicked() {
+        if stripe_button(&mut bottom, Ico::Terminal, false, &crate::shortcuts::format(tr("New console (⇧⌘N)"))).clicked() {
             self.new_console_here();
         }
         if stripe_button(&mut bottom, Ico::Services, self.show_results, tr("Services (results)")).clicked() {
@@ -2929,7 +2937,7 @@ impl DataCraftApp {
                 ui.add_space(6.0);
                 if (self.zoom - 1.0).abs() > 0.001 {
                     let resp = theme::flat_button(ui, None, &zoom_label(self.zoom), FontId::proportional(12.5), false, true)
-                        .on_hover_text(tr("IDE zoom (⌘0 to reset)"));
+                        .on_hover_text(crate::shortcuts::format(tr("IDE zoom (⌘0 to reset)")));
                     egui::Popup::menu(&resp).show(|ui| self.zoom_menu(ui));
                     ui.add_space(4.0);
                 }
@@ -3083,7 +3091,7 @@ impl DataCraftApp {
                 ui.add_space(4.0);
                 let more = theme::icon_button(ui, Ico::MoreVert, true, tr("Tabs"));
                 egui::Popup::menu(&more).show(|ui| {
-                    if ui.add(egui::Button::new(tr("New console")).shortcut_text("⇧⌘N")).clicked() {
+                    if ui.add(egui::Button::new(tr("New console")).shortcut_text(crate::shortcuts::format("⇧⌘N"))).clicked() {
                         new = true;
                         ui.close();
                     }
@@ -3207,7 +3215,7 @@ impl DataCraftApp {
                     ui.add_space(ui.available_height() / 3.0);
                     ui.label(RichText::new(tr("No open tabs")).color(p.muted));
                     ui.add_space(4.0);
-                    ui.label(RichText::new(tr("New console  ⇧⌘N")).color(p.muted));
+                    ui.label(RichText::new(crate::shortcuts::format(tr("New console  ⇧⌘N"))).color(p.muted));
                     ui.add_space(8.0);
                     if theme::primary_button(ui, tr("New console")).clicked() {
                         self.new_console_here();
@@ -3592,6 +3600,86 @@ impl DataCraftApp {
         }
 
         self.preview_dialog(ctx, frame);
+
+        if self.show_shortcuts {
+            let resp = egui::Modal::new(egui::Id::new("keyboard_shortcuts")).frame(frame).show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(RichText::new(tr("Keyboard shortcuts")).font(theme::bold(17.0)));
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
+                    ui.set_width(430.0);
+                    for (section, rows) in [
+                        (tr("General"), &[
+                            (tr("New console"), "⇧⌘N"), (tr("Quit"), "⌘Q"),
+                            (tr("Zoom In"), "⌘+"), (tr("Zoom Out"), "⌘-"),
+                            (tr("Reset (100%)"), "⌘0"), (tr("Increase"), "⌥⌘+"),
+                            (tr("Decrease"), "⌥⌘-"),
+                        ][..]),
+                        (tr("Edit"), &[
+                            (tr("Undo"), "⌘Z"), (tr("Redo"), "⇧⌘Z"),
+                            (tr("Cut"), "⌘X"), (tr("Copy"), "⌘C"),
+                            (tr("Paste"), "⌘V"), (tr("Select all"), "⌘A"),
+                        ][..]),
+                        (tr("SQL editor"), &[
+                            (tr("Run statement"), "⌘↩"), (tr("Run all"), "⇧⌘↩"),
+                            (tr("Explain Plan"), "⇧⌘E"), (tr("Reformat Code"), "⌥⌘L"),
+                            (tr("Comment with Line Comment"), "⌘/"), (tr("Duplicate Line or Selection"), "⌘D"),
+                            (tr("Delete Line"), if cfg!(target_os = "macos") { "⌘⌫" } else { "Ctrl+Y" }),
+                            (tr("Find…"), "⌘F"), (tr("Replace…"), "⌘R"),
+                            (tr("Query History"), "⌥⌘E"), (tr("Show completions"), "Ctrl+Space"),
+                            (tr("Next match"), "⌘G / F3"),
+                            (tr("Previous match"), "⇧⌘G / ⇧F3"),
+                        ][..]),
+                        (tr("Results panel"), &[
+                            (tr("Find…"), "⌘F"), (tr("Reload data"), "⌘R"),
+                            (tr("Submit changes"), "⌘S"), (tr("Undo"), "⌘Z"),
+                            (tr("Clone Row"), "⌘D"), (tr("Add row"), "⌘N / Insert"),
+                            (tr("Delete row"), "⌘Delete"), (tr("Record View"), "⇧↩"),
+                            (tr("Edit cell"), "Enter / F2 / ⌘↩"), (tr("View Value"), "⌥Click"),
+                            (tr("Select all"), "⌘A"), (tr("Set NULL"), "Delete"),
+                            (tr("Move between cells"), "Arrows / Tab / ⇧Tab"),
+                            (tr("Extend selection"), "⇧Arrows"),
+                            (tr("First or last column"), "⌘Left / ⌘Right / Home / End"),
+                            (tr("First or last row"), "⌘Up / ⌘Down / ⌘Home / ⌘End"),
+                            (tr("First or last row"), "⌘Page Up / ⌘Page Down"),
+                            (tr("Move by page"), "Page Up / Page Down"),
+                            (tr("Discard current record changes"), "Esc"),
+                        ][..]),
+                    ] {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(section).strong());
+                        ui.separator();
+                        for (label, keys) in rows {
+                            ui.horizontal(|ui| {
+                                ui.label(*label);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(crate::shortcuts::format(keys)).monospace().color(p.muted));
+                                });
+                            });
+                        }
+                    }
+                    if cfg!(target_os = "macos") {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("macOS").strong());
+                        ui.separator();
+                        for (label, keys) in [
+                            (tr("Settings…"), "⌘,"), (tr("Open SQL script…"), "⌘O"),
+                            (tr("Save console as…"), "⇧⌘S"), (tr("Close tab"), "⌘W"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(label);
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(keys).monospace().color(p.muted));
+                                });
+                            });
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                theme::primary_button(ui, tr("Close")).clicked()
+            });
+            if resp.inner || resp.should_close() { self.show_shortcuts = false; }
+        }
 
         if self.show_about {
             let resp = egui::Modal::new(egui::Id::new("about")).frame(frame).show(ctx, |ui| {
@@ -4225,7 +4313,7 @@ mod tests {
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
+            show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
