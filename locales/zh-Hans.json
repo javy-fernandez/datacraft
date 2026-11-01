@@ -1405,6 +1405,7 @@
     "Windows Script Host cannot represent the shortcut arguments": "Windows Script Host 无法表示快捷方式参数",
     "Windows Script Host cannot represent the temporary shortcut path": "Windows Script Host 无法表示临时快捷方式路径",
     "Windows Script Host changed the saved executable path": "Windows Script Host 更改了已保存的可执行文件路径",
-    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host 更改了已保存的快捷方式参数"
+    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host 更改了已保存的快捷方式参数",
+    "Cannot create a table shortcut from an App Translocation path. Move DataCraft to Applications and reopen it first.": "无法从 App Translocation 路径创建表快捷方式。请先将 DataCraft 移至“应用程序”，然后重新打开。"
   }
 }

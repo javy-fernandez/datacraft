@@ -87,11 +87,16 @@ launcher for a table on an existing saved connection. Opening it starts DataCraf
 resolves the saved connection and opens the qualified table. The launcher contains
 the connection ID and object names; credentials continue to come from the existing
 credential store. A missing connection is reported rather than silently choosing another.
+Connection failure or cancelling the password prompt ends that launch attempt; a
+later manual connection does not unexpectedly open the old shortcut target.
 
 The complete launcher is staged and verified before replacing an existing destination.
 Unusual Windows executable paths that Windows Script Host cannot represent fail with
 an error; a broken launcher is not published. Moving the executable or removing the
 saved connection can invalidate a launcher. Demo connections cannot create saved launchers.
+On macOS, launchers cannot be created from an App Translocation path. Install
+DataCraft in a stable location, reopen it, then create the launcher; no temporary
+translocation path is published into the destination.
 
 ## Row counts and timestamps
 

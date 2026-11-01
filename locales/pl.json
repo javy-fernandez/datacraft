@@ -1405,6 +1405,7 @@
     "Windows Script Host cannot represent the shortcut arguments": "Windows Script Host nie może odwzorować argumentów skrótu",
     "Windows Script Host cannot represent the temporary shortcut path": "Windows Script Host nie może odwzorować ścieżki tymczasowego skrótu",
     "Windows Script Host changed the saved executable path": "Windows Script Host zmienił zapisaną ścieżkę pliku wykonywalnego",
-    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host zmienił zapisane argumenty skrótu"
+    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host zmienił zapisane argumenty skrótu",
+    "Cannot create a table shortcut from an App Translocation path. Move DataCraft to Applications and reopen it first.": "Nie można utworzyć skrótu do tabeli ze ścieżki App Translocation. Najpierw przenieś DataCraft do folderu Aplikacje i uruchom go ponownie."
   }
 }

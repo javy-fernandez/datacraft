@@ -1405,6 +1405,7 @@
     "Windows Script Host cannot represent the shortcut arguments": "Windows Script Host でショートカットの引数を表現できません",
     "Windows Script Host cannot represent the temporary shortcut path": "Windows Script Host で一時ショートカットのパスを表現できません",
     "Windows Script Host changed the saved executable path": "Windows Script Host が保存済みの実行ファイルのパスを変更しました",
-    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host が保存済みショートカットの引数を変更しました"
+    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host が保存済みショートカットの引数を変更しました",
+    "Cannot create a table shortcut from an App Translocation path. Move DataCraft to Applications and reopen it first.": "App Translocation のパスからテーブルのショートカットは作成できません。先に DataCraft を「アプリケーション」に移動して開き直してください。"
   }
 }

@@ -71,6 +71,22 @@ impl Drop for Staging {
 /// The caller confirms overwriting an existing destination before calling this function.
 /// The complete launcher is staged beside the destination and atomically renamed into place.
 pub fn create(path: &Path, target: &Target) -> anyhow::Result<()> {
+    let executable = std::env::current_exe().context(tr("Could not find the DataCraft executable"))?;
+    #[cfg(target_os = "macos")]
+    let executable = executable.canonicalize().context(tr("Could not find the DataCraft executable"))?;
+    create_for_executable(path, target, &executable, cfg!(target_os = "macos"))
+}
+
+fn validate_executable(executable: &Path, macos: bool) -> anyhow::Result<()> {
+    // A translocated mount is temporary; do not guess a persistent original bundle location.
+    anyhow::ensure!(
+        !macos || !executable.components().any(|part| part.as_os_str() == "AppTranslocation"),
+        tr("Cannot create a table shortcut from an App Translocation path. Move DataCraft to Applications and reopen it first.")
+    );
+    Ok(())
+}
+
+fn create_for_executable(path: &Path, target: &Target, executable: &Path, macos: bool) -> anyhow::Result<()> {
     let payload = encode(target)?;
     anyhow::ensure!(
         path.extension().and_then(|v| v.to_str()).is_some_and(|v| v.eq_ignore_ascii_case(extension())),
@@ -78,7 +94,7 @@ pub fn create(path: &Path, target: &Target) -> anyhow::Result<()> {
     );
     let destination = std::path::absolute(path).context(tr("Could not resolve the table shortcut path"))?;
     let parent = destination.parent().context(tr("Invalid table shortcut path"))?;
-    let executable = std::env::current_exe().context(tr("Could not find the DataCraft executable"))?;
+    validate_executable(executable, macos)?;
     let directory = parent.join(format!(".datacraft-shortcut-{}", uuid::Uuid::new_v4()));
     #[cfg(unix)]
     let staged = {
@@ -89,7 +105,7 @@ pub fn create(path: &Path, target: &Target) -> anyhow::Result<()> {
     let staged = std::fs::create_dir(&directory);
     staged.context(tr("Could not stage the table shortcut"))?;
     let staging = Staging { file: directory.join(format!("table.{}", extension())), directory };
-    write_native(&staging.file, &executable, &payload)?;
+    write_native(&staging.file, executable, &payload)?;
     let file = std::fs::OpenOptions::new().write(true).open(&staging.file).context(tr("Could not read the staged table shortcut"))?;
     file.sync_all().context(tr("Could not save the table shortcut"))?;
     drop(file);
@@ -206,6 +222,33 @@ mod tests {
         assert!(encode(&nul).is_err());
         let oversized = Target { connection: 1, database: "db".into(), schema: "s".into(), table: "x".repeat(65_536) };
         assert!(encode(&oversized).is_err());
+    }
+
+    #[test]
+    fn translocated_executable_is_refused_before_staging_or_replacing_a_launcher() {
+        let executable = Path::new("/private/var/folders/example/T/AppTranslocation/1234/d/DataCraft.app/Contents/MacOS/DataCraft");
+        assert!(validate_executable(executable, true).is_err());
+        let root = std::env::temp_dir().join(format!("dc-translocated-shortcut-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join(format!("table.{}", extension()));
+        std::fs::write(&path, b"preserve launcher").unwrap();
+        let target = Target { connection: 7, database: "main".into(), schema: "main".into(), table: "notes".into() };
+        let error = create_for_executable(&path, &target, executable, true).unwrap_err().to_string();
+        assert!(error.contains("App Translocation"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"preserve launcher");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn stable_executable_paths_remain_supported() {
+        for executable in
+            ["/Applications/DataCraft.app/Contents/MacOS/DataCraft", "/Users/me/Applications/AppTranslocation Helper.app/Contents/MacOS/DataCraft"]
+        {
+            assert!(validate_executable(Path::new(executable), true).is_ok());
+        }
+        assert!(validate_executable(Path::new("C:/Tools/AppTranslocation/DataCraft.exe"), false).is_ok());
     }
 
     #[test]

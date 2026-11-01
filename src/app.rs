@@ -665,6 +665,7 @@ impl DataCraftApp {
 
     fn disconnect(&mut self, id: ConnId) {
         self.cancel_table_duplicate(id);
+        self.cancel_startup_table(id);
         if let Some(c) = self.conn_mut(id) {
             c.status = ConnStatus::Disconnected;
             c.clear();
@@ -805,6 +806,7 @@ impl DataCraftApp {
                 }
                 Response::ConnectFailed { conn, error } => {
                     self.cancel_table_duplicate(conn);
+                    self.cancel_startup_table(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
                     if let Some(c) = self.conn_mut(conn) {
                         // Also if it was connected: the session is lost and the next run
@@ -2349,6 +2351,7 @@ impl DataCraftApp {
     }
 
     fn delete_connection(&mut self, id: ConnId) {
+        self.cancel_startup_table(id);
         self.worker.send(Request::Disconnect(id));
         self.conns.retain(|c| c.cfg.id != id);
         self.object_browser.organizations.retain(|o| o.conn != id);
@@ -3615,7 +3618,7 @@ impl DataCraftApp {
                     self.persist_connections();
                     self.connect(id);
                 }
-                Some(false) => self.ask_password = None,
+                Some(false) => { self.ask_password = None; self.cancel_startup_table(id); }
                 None => {}
             }
         }

@@ -1405,6 +1405,7 @@
     "Windows Script Host cannot represent the shortcut arguments": "Windows Script Host kann die Verknüpfungsargumente nicht darstellen",
     "Windows Script Host cannot represent the temporary shortcut path": "Windows Script Host kann den temporären Verknüpfungspfad nicht darstellen",
     "Windows Script Host changed the saved executable path": "Windows Script Host hat den gespeicherten Pfad der ausführbaren Datei geändert",
-    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host hat die gespeicherten Verknüpfungsargumente geändert"
+    "Windows Script Host changed the saved shortcut arguments": "Windows Script Host hat die gespeicherten Verknüpfungsargumente geändert",
+    "Cannot create a table shortcut from an App Translocation path. Move DataCraft to Applications and reopen it first.": "Aus einem App-Translocation-Pfad kann keine Tabellenverknüpfung erstellt werden. Verschieben Sie DataCraft zuerst nach „Programme“ und öffnen Sie es erneut."
   }
 }
