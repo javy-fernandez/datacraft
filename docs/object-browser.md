@@ -27,6 +27,20 @@ List statistics are fetched in one catalog query for the current scope, rather
 than one query per object. Catalog queries run on the background worker. Switching selection invalidates
 older requests so a late response cannot replace the current object's details.
 
+## Table actions
+
+Right-click a table in the explorer tree or the Objects list/grid to use the same
+table actions: open data, modify/create tables and views, import, copy to another
+connection, rename, empty/truncate, drop, refresh and object information. Opening
+data and copying names support multiple selections; single-object dialogs require
+exactly one supported object. Connection state and read-only mode gate writes.
+
+**Show DDL** remains available from cached column metadata, including unsupported
+catalog readers and offline connections. It generates the existing local definition.
+**Empty Table** uses DELETE; **Truncate** uses the engine's operation. SQLite uses
+DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
+discard pending edits in the affected table's data editor before changing it.
+
 ## Row counts and timestamps
 
 Browsing reads catalog statistics and **never automatically scans a table**.

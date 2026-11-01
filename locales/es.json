@@ -1228,5 +1228,16 @@
     "Pause all tasks and remove automatic startup; active tasks will finish": "Pausar todas las tareas y quitar el inicio automático; las tareas activas terminarán",
     "All tasks paused; background scheduler stops after active tasks finish": "Todas las tareas están pausadas; el programador en segundo plano se detendrá cuando terminen las tareas activas",
     "Enable a task before starting the background scheduler": "Activa una tarea antes de iniciar el programador en segundo plano"
+  },
+  "table_menu": {
+    "Deleting rows…": "Eliminando filas…",
+    "Empty Table": "Vaciar tabla",
+    "Empty Table…": "Vaciar tabla…",
+    "Object Information": "Información del objeto",
+    "SQLite uses DELETE and preserves the sequence.": "SQLite usa DELETE y conserva la secuencia.",
+    "Save or discard this table's pending edits before changing it.": "Guarda o descarta los cambios pendientes de esta tabla antes de modificarla.",
+    "Select one supported table": "Selecciona una tabla compatible",
+    "Select only tables for table actions": "Selecciona solo tablas para las acciones de tabla",
+    "Table “{name}” emptied": "Se vació la tabla «{name}»"
   }
 }

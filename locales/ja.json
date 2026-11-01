@@ -1228,5 +1228,16 @@
     "Pause all tasks and remove automatic startup; active tasks will finish": "すべてのタスクを一時停止し、自動起動を解除します。実行中のタスクは完了まで続行します",
     "All tasks paused; background scheduler stops after active tasks finish": "すべてのタスクを一時停止しました。実行中のタスクが完了するとバックグラウンドスケジューラーが停止します",
     "Enable a task before starting the background scheduler": "バックグラウンドスケジューラーを起動する前にタスクを有効にしてください"
+  },
+  "table_menu": {
+    "Deleting rows…": "行を削除中…",
+    "Empty Table": "テーブルを空にする",
+    "Empty Table…": "テーブルを空にする…",
+    "Object Information": "オブジェクト情報",
+    "SQLite uses DELETE and preserves the sequence.": "SQLite では DELETE を使用し、シーケンスを保持します。",
+    "Save or discard this table's pending edits before changing it.": "このテーブルを変更する前に、保留中の編集を保存するか破棄してください。",
+    "Select one supported table": "対応するテーブルを 1 つ選択",
+    "Select only tables for table actions": "テーブル操作にはテーブルのみを選択してください",
+    "Table “{name}” emptied": "テーブル「{name}」を空にしました"
   }
 }

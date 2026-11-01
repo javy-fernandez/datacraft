@@ -1228,5 +1228,16 @@
     "Pause all tasks and remove automatic startup; active tasks will finish": "暂停所有任务并移除自动启动设置；正在执行的任务将继续完成",
     "All tasks paused; background scheduler stops after active tasks finish": "所有任务已暂停；后台计划程序将在正在执行的任务完成后停止",
     "Enable a task before starting the background scheduler": "请先启用一个任务，再启动后台计划程序"
+  },
+  "table_menu": {
+    "Deleting rows…": "正在删除行…",
+    "Empty Table": "清空表",
+    "Empty Table…": "清空表…",
+    "Object Information": "对象信息",
+    "SQLite uses DELETE and preserves the sequence.": "SQLite 使用 DELETE 并保留序列。",
+    "Save or discard this table's pending edits before changing it.": "更改此表前，请保存或放弃待处理的编辑。",
+    "Select one supported table": "选择一个支持的表",
+    "Select only tables for table actions": "表操作只能选择表",
+    "Table “{name}” emptied": "已清空表“{name}”"
   }
 }

@@ -1515,12 +1515,12 @@ impl DataCraftApp {
                 ExplorerAction::Backup(id, _) => Some(*id),
                 ExplorerAction::DropObject(t, _)
                 | ExplorerAction::TruncateTable(t)
+                | ExplorerAction::EmptyTable(t)
                 | ExplorerAction::ImportData(t)
                 | ExplorerAction::RenameTable(t)
                 | ExplorerAction::ModifyTable(t)
                 | ExplorerAction::GenerateSelect(t)
                 | ExplorerAction::GenerateInsert(t)
-                | ExplorerAction::GenerateDdl(t)
                 | ExplorerAction::EditView(t) => Some(t.conn),
                 _ => None,
             };
@@ -1595,6 +1595,17 @@ impl DataCraftApp {
                 }
                 ExplorerAction::DropObject(t, kind) => self.open_object_dialog(t, kind.into()),
                 ExplorerAction::TruncateTable(t) => self.open_object_dialog(t, DropKind::Truncate),
+                ExplorerAction::EmptyTable(t) => self.open_object_dialog(t, DropKind::Empty),
+                ExplorerAction::RefreshObject(t) => {
+                    if let Some(c) = self.conn_mut(t.conn) { c.loading.remove(&t.db); }
+                    self.load_database(t.conn, t.db.clone());
+                    self.inspect_object(t, false);
+                }
+                ExplorerAction::ObjectInformation(t) => {
+                    let kind = self.table_info(t.conn, Some(&t.db), &t.schema, &t.table).map_or(crate::db::ObjectKind::Table, |info| info.kind);
+                    self.handle_explorer(ctx, vec![ExplorerAction::InspectObject(t, kind)]);
+                    self.object_browser.active = true;
+                }
                 ExplorerAction::ImportData(t) => self.open_import(t),
                 ExplorerAction::CopyTable(t) => self.open_copy(t),
                 ExplorerAction::RenameTable(t) => self.open_object_dialog(t, DropKind::Rename),
@@ -1873,8 +1884,15 @@ impl DataCraftApp {
         }
     }
 
+    fn table_has_pending_edits(&self, t: &TableRef) -> bool {
+        let default_db = self.conn(t.conn).and_then(|c| c.default_db());
+        self.consoles.iter().any(|c| c.conn == Some(t.conn) && c.db.as_deref().or(default_db) == Some(t.db.as_str())
+            && c.table.as_ref().is_some_and(|table| table.schema == t.schema && table.table == t.table) && c.has_pending_edits())
+    }
+
     /// Drop / truncate / rename confirmation for a table or view.
     fn open_object_dialog(&mut self, t: TableRef, kind: DropKind) {
+        if self.table_has_pending_edits(&t) { self.error(tr("Save or discard this table's pending edits before changing it.")); return; }
         if self.refuse_read_only(t.conn) {
             return;
         }
@@ -1895,6 +1913,7 @@ impl DataCraftApp {
 
     /// "Modify Table…": opens the dialog and asks the worker for the table's full structure.
     fn open_modify_table(&mut self, t: TableRef) {
+        if self.table_has_pending_edits(&t) { self.error(tr("Save or discard this table's pending edits before changing it.")); return; }
         if self.refuse_read_only(t.conn) {
             return;
         }
@@ -2199,10 +2218,10 @@ impl DataCraftApp {
                 }
                 self.worker.send(Request::Refresh(conn));
             }
-            DropKind::Truncate => {
+            DropKind::Truncate | DropKind::Empty => {
                 // Open data editors of that table show the (now empty) data again.
                 self.reload_table_editors(conn, &d.db, &d.schema, &d.name);
-                self.info(trf("Table “{name}” truncated", &[("name", &d.name)]));
+                self.info(trf(if d.kind == DropKind::Empty { "Table “{name}” emptied" } else { "Table “{name}” truncated" }, &[("name", &d.name)]));
             }
             DropKind::Table | DropKind::View | DropKind::Rename => {
                 // Its data editors no longer have anything to show.
@@ -4361,6 +4380,45 @@ mod tests {
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
             modify: None,
         }
+    }
+
+    #[test]
+    fn cached_table_ddl_remains_available_without_catalog_readers() {
+        for driver in [Driver::Oracle, Driver::ClickHouse, Driver::Kusto, Driver::Sqlite] {
+            for connected in [true, false] {
+                if driver == Driver::Sqlite && connected { continue; }
+                let (mut app, table) = table_menu_app(driver, connected);
+                app.handle_explorer(&egui::Context::default(), vec![ExplorerAction::GenerateDdl(table)]);
+                assert!(app.consoles.iter().any(|c| c.text.contains("create table") && c.text.contains("primary key") && c.text.contains("id")), "{driver:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn table_menu_writes_preserve_pending_data_editor_changes() {
+        let (mut app, table) = table_menu_app(Driver::Sqlite, true);
+        app.open_table(&table);
+        let index = app.active;
+        let mut view = ResultView::new(crate::db::ResultSet { columns: vec!["id".into()], rows: vec![vec![Some("1".into())]], ..Default::default() }, 901);
+        view.set_edit_target(Ok(editing::EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true, insert_only: false }));
+        view.edit.as_mut().unwrap().state.set_value(&view.rs, editing::RowRef::Existing(0), 0, Some("2".into()));
+        app.consoles[index].results.push(view);
+        for kind in [DropKind::Empty, DropKind::Truncate, DropKind::Rename, DropKind::Table] {
+            app.open_object_dialog(table.clone(), kind);
+            assert!(app.drop.is_none());
+            assert!(app.consoles[index].has_pending_edits());
+        }
+        app.open_modify_table(table);
+        assert!(app.modify.is_none());
+    }
+
+    pub(super) fn table_menu_app(driver: Driver, connected: bool) -> (DataCraftApp, TableRef) {
+        let mut app = tabs_app();
+        let mut connection = ConnState::new(ConnectionConfig::new(7, driver));
+        connection.status = if connected { ConnStatus::Connected } else { ConnStatus::Disconnected };
+        connection.databases = vec![DatabaseInfo { name: "main".into(), current: true, schemas: Some(vec![SchemaInfo { name: "main".into(), tables: vec![TableInfo { name: "notes".into(), kind: crate::db::ObjectKind::Table, columns: vec![ColumnInfo { name: "id".into(), data_type: "INTEGER".into(), primary_key: true, nullable: false }] }] }]) }];
+        app.conns.push(connection);
+        (app, TableRef { conn: 7, db: "main".into(), schema: "main".into(), table: "notes".into() })
     }
 
     #[test]
