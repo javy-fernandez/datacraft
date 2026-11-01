@@ -1474,13 +1474,14 @@ impl DataCraftApp {
     }
 
     fn generate(&mut self, ctx: &egui::Context, t: &TableRef, kind: Generate) {
-        // Views: their real definition, read from the server.
-        if kind == Generate::Ddl {
-            if !self.request_view_ddl(t) { self.handle_table_action(ctx, ExplorerAction::GenerateDdl(t.clone())); }
-            return;
-        }
+        // Read catalog DDL when available; otherwise preserve generation from cached columns.
+        if kind == Generate::Ddl && self.request_view_ddl(t) { return; }
         let Some(c) = self.conn(t.conn) else { return };
         let driver = c.cfg.driver;
+        if kind == Generate::Ddl && c.status == ConnStatus::Connected && crate::db::table_definition::supported(driver) {
+            self.handle_table_action(ctx, ExplorerAction::GenerateDdl(t.clone()));
+            return;
+        }
         let Some(columns) = self.table_columns(t.conn, Some(&t.db), &t.schema, &t.table) else {
             return;
         };
@@ -1528,7 +1529,6 @@ impl DataCraftApp {
                 | ExplorerAction::ModifyTable(t)
                 | ExplorerAction::GenerateSelect(t)
                 | ExplorerAction::GenerateInsert(t)
-                | ExplorerAction::GenerateDdl(t)
                 | ExplorerAction::EditView(t) => Some(t.conn),
                 _ => None,
             };

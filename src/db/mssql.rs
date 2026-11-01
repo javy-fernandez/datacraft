@@ -14,7 +14,7 @@ use crate::db::sqlite::hex_preview;
 use crate::i18n::{tr, trf};
 
 pub struct MsSession {
-    pub(super) client: Client<Compat<TcpStream>>,
+    client: Client<Compat<TcpStream>>,
     /// Set on I/O or protocol errors: the connection is no longer usable.
     broken: bool,
 }
@@ -59,6 +59,25 @@ impl MsSession {
 
         let client = Client::connect(config, tcp.compat_write()).await.map_err(ms_error)?;
         Ok(Self { client, broken: false })
+    }
+
+    /// Stream full native values without exposing the driver connection.
+    pub(super) async fn export_rows(
+        &mut self,
+        sql: &str,
+        sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
+        progress: &std::sync::Arc<super::table_export::ExportProgress>,
+    ) -> anyhow::Result<()> {
+        use super::table_export::{Message, cancelled, mssql_value};
+        let mut rows = self.client.simple_query(sql).await?;
+        while let Some(item) = rows.try_next().await? {
+            cancelled(progress)?;
+            if let tiberius::QueryItem::Row(row) = item {
+                let values = row.cells().map(|(_, d)| mssql_value(d)).collect::<anyhow::Result<_>>()?;
+                sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {

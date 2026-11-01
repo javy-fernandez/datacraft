@@ -11,26 +11,14 @@ pub struct TableContext {
     pub read_only: bool,
 }
 
-pub fn show(
-    ui: &mut egui::Ui,
-    tables: &[TableRef],
-    kind: Option<ObjectKind>,
-    cx: TableContext,
-    actions: &mut Vec<ExplorerAction>,
-) {
+pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx: TableContext, actions: &mut Vec<ExplorerAction>) {
     let sql = !cx.driver.is_nosql();
     let single = tables.len() == 1 && kind.is_some();
     let writable = cx.connected && !cx.read_only && sql;
     let table = single && kind == Some(ObjectKind::Table);
     let definitions = crate::db::table_definition::supported(cx.driver);
     let data_export = crate::db::table_export::supported(cx.driver);
-    let structure_export = crate::db::table_export::supported_kind(
-        cx.driver,
-        crate::db::table_export::ExportKind::Sql {
-            structure: true,
-            data: false,
-        },
-    );
+    let structure_export = crate::db::table_export::supported_kind(cx.driver, crate::db::table_export::ExportKind::Sql { structure: true, data: false });
     macro_rules! button {
         ($ui:expr, $enabled:expr, $label:expr, $action:expr) => {{
             let response = $ui.add_enabled($enabled, egui::Button::new(tr($label)));
@@ -53,169 +41,70 @@ pub fn show(
             }
         }};
     }
-    if ui
-        .add_enabled(cx.connected, egui::Button::new(tr("Open data")))
-        .clicked()
-    {
+    if ui.add_enabled(cx.connected, egui::Button::new(tr("Open data"))).clicked() {
         for t in tables {
             actions.push(ExplorerAction::OpenTable(t.clone()));
         }
         ui.close();
     }
     if sql {
-        button!(ui, writable && table, "Modify Table…", &|t: &TableRef| {
-            ExplorerAction::ModifyTable(t.clone())
-        });
+        button!(ui, writable && table, "Modify Table…", &|t: &TableRef| { ExplorerAction::ModifyTable(t.clone()) });
         if kind == Some(ObjectKind::View) {
-            button!(ui, writable && single, "Edit View…", &|t: &TableRef| {
-                ExplorerAction::EditView(t.clone())
-            });
+            button!(ui, writable && single, "Edit View…", &|t: &TableRef| { ExplorerAction::EditView(t.clone()) });
         }
         button!(ui, writable && single, "New Table…", &|t: &TableRef| {
-            ExplorerAction::NewTable {
-                conn: t.conn,
-                db: t.db.clone(),
-                schema: Some(t.schema.clone()),
-            }
+            ExplorerAction::NewTable { conn: t.conn, db: t.db.clone(), schema: Some(t.schema.clone()) }
         });
         button!(ui, writable && single, "New View…", &|t: &TableRef| {
-            ExplorerAction::NewView {
-                conn: t.conn,
-                db: t.db.clone(),
-                schema: Some(t.schema.clone()),
-            }
+            ExplorerAction::NewView { conn: t.conn, db: t.db.clone(), schema: Some(t.schema.clone()) }
         });
         ui.separator();
-        button!(ui, writable && table, "Empty Table…", &|t: &TableRef| {
-            ExplorerAction::EmptyTable(t.clone())
-        });
-        button!(ui, writable && table, "Truncate…", &|t: &TableRef| {
-            ExplorerAction::TruncateTable(t.clone())
-        });
+        button!(ui, writable && table, "Empty Table…", &|t: &TableRef| { ExplorerAction::EmptyTable(t.clone()) });
+        button!(ui, writable && table, "Truncate…", &|t: &TableRef| { ExplorerAction::TruncateTable(t.clone()) });
         ui.add_enabled_ui(writable && table && definitions, |ui| {
             ui.menu_button(tr("Duplicate Table"), |ui| {
-                button!(ui, true, "Structure and Data", &|t: &TableRef| {
-                    ExplorerAction::DuplicateTable(t.clone(), true)
-                });
-                button!(ui, true, "Structure Only", &|t: &TableRef| {
-                    ExplorerAction::DuplicateTable(t.clone(), false)
-                });
+                button!(ui, true, "Structure and Data", &|t: &TableRef| { ExplorerAction::DuplicateTable(t.clone(), true) });
+                button!(ui, true, "Structure Only", &|t: &TableRef| { ExplorerAction::DuplicateTable(t.clone(), false) });
             });
         });
-        button!(
-            ui,
-            writable && table && !matches!(cx.driver, Driver::Sqlite),
-            "Set Privileges…",
-            &|t: &TableRef| ExplorerAction::TablePrivileges(t.clone())
-        );
+        button!(ui, writable && table && !matches!(cx.driver, Driver::Sqlite), "Set Privileges…", &|t: &TableRef| ExplorerAction::TablePrivileges(t.clone()));
         ui.separator();
-        button!(
-            ui,
-            writable && table,
-            "Import Data from File…",
-            &|t: &TableRef| ExplorerAction::ImportData(t.clone())
-        );
-        button!(
-            ui,
-            cx.connected && table && data_export,
-            "Export Table…",
-            &|t: &TableRef| ExplorerAction::ExportTable(t.clone())
-        );
-        ui.add_enabled_ui(
-            cx.connected && table && (data_export || structure_export),
-            |ui| {
-                ui.menu_button(tr("Dump SQL File"), |ui| {
-                    button!(ui, data_export, "Structure and Data", &|t: &TableRef| {
-                        ExplorerAction::DumpTable(t.clone(), true, true)
-                    });
-                    button!(ui, structure_export, "Structure Only", &|t: &TableRef| {
-                        ExplorerAction::DumpTable(t.clone(), true, false)
-                    });
-                    button!(ui, data_export, "Data Only", &|t: &TableRef| {
-                        ExplorerAction::DumpTable(t.clone(), false, true)
-                    });
-                });
-            },
-        );
-        button!(
-            ui,
-            cx.connected && table,
-            "Print Table…",
-            &|t: &TableRef| ExplorerAction::PrintTable(t.clone())
-        );
-        if ui
-            .add_enabled(
-                cx.connected && !tables.is_empty() && kind == Some(ObjectKind::Table),
-                egui::Button::new(tr("Reverse Tables to Model…")),
-            )
-            .clicked()
+        button!(ui, writable && table, "Import Data from File…", &|t: &TableRef| ExplorerAction::ImportData(t.clone()));
+        button!(ui, cx.connected && table && data_export, "Export Table…", &|t: &TableRef| ExplorerAction::ExportTable(t.clone()));
+        ui.add_enabled_ui(cx.connected && table && (data_export || structure_export), |ui| {
+            ui.menu_button(tr("Dump SQL File"), |ui| {
+                button!(ui, data_export, "Structure and Data", &|t: &TableRef| { ExplorerAction::DumpTable(t.clone(), true, true) });
+                button!(ui, structure_export, "Structure Only", &|t: &TableRef| { ExplorerAction::DumpTable(t.clone(), true, false) });
+                button!(ui, data_export, "Data Only", &|t: &TableRef| { ExplorerAction::DumpTable(t.clone(), false, true) });
+            });
+        });
+        button!(ui, cx.connected && table, "Print Table…", &|t: &TableRef| ExplorerAction::PrintTable(t.clone()));
+        if ui.add_enabled(cx.connected && !tables.is_empty() && kind == Some(ObjectKind::Table), egui::Button::new(tr("Reverse Tables to Model…"))).clicked()
         {
             actions.push(ExplorerAction::TableModel(tables.to_vec()));
             ui.close();
         }
         ui.separator();
-        button!(
-            ui,
-            cx.connected && single && (definitions || kind == Some(ObjectKind::View)),
-            "Show DDL",
-            &|t: &TableRef| { ExplorerAction::GenerateDdl(t.clone()) }
-        );
-        button!(
-            ui,
-            cx.connected && single,
-            "Generate SELECT",
-            &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone())
-        );
-        button!(
-            ui,
-            cx.connected && table,
-            "Generate INSERT",
-            &|t: &TableRef| ExplorerAction::GenerateInsert(t.clone())
-        );
+        button!(ui, cx.connected && single, "Generate SELECT", &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone()));
+        button!(ui, cx.connected && table, "Generate INSERT", &|t: &TableRef| ExplorerAction::GenerateInsert(t.clone()));
     }
+    button!(ui, single, "Show DDL", &|t: &TableRef| ExplorerAction::GenerateDdl(t.clone()));
     if cx.driver.can_copy() {
-        button!(
-            ui,
-            cx.connected && single,
-            "Copy Table To…",
-            &|t: &TableRef| ExplorerAction::CopyTable(t.clone())
-        );
+        button!(ui, cx.connected && single, "Copy Table To…", &|t: &TableRef| ExplorerAction::CopyTable(t.clone()));
     }
     if ui.button(tr("Copy Name")).clicked() {
-        ui.ctx().copy_text(
-            tables
-                .iter()
-                .map(|t| t.table.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+        ui.ctx().copy_text(tables.iter().map(|t| t.table.as_str()).collect::<Vec<_>>().join("\n"));
         ui.close();
     }
     if sql {
-        button!(ui, writable && table, "Rename…", &|t: &TableRef| {
-            ExplorerAction::RenameTable(t.clone())
-        });
+        button!(ui, writable && table, "Rename…", &|t: &TableRef| { ExplorerAction::RenameTable(t.clone()) });
     }
-    button!(
-        ui,
-        single,
-        "Create Open Table Shortcut…",
-        &|t: &TableRef| ExplorerAction::TableShortcut(t.clone())
-    );
+    button!(ui, single, "Create Open Table Shortcut…", &|t: &TableRef| ExplorerAction::TableShortcut(t.clone()));
     ui.separator();
-    button!(ui, cx.connected && single, "Refresh", &|t: &TableRef| {
-        ExplorerAction::RefreshObject(t.clone())
-    });
-    button!(
-        ui,
-        cx.connected && single,
-        "Object Information",
-        &|t: &TableRef| ExplorerAction::ObjectInformation(t.clone())
-    );
+    button!(ui, cx.connected && single, "Refresh", &|t: &TableRef| { ExplorerAction::RefreshObject(t.clone()) });
+    button!(ui, cx.connected && single, "Object Information", &|t: &TableRef| ExplorerAction::ObjectInformation(t.clone()));
     if sql {
         ui.separator();
-        button!(ui, writable && single, "Drop…", &|t: &TableRef| {
-            ExplorerAction::DropObject(t.clone(), kind.unwrap_or(ObjectKind::Table))
-        });
+        button!(ui, writable && single, "Drop…", &|t: &TableRef| { ExplorerAction::DropObject(t.clone(), kind.unwrap_or(ObjectKind::Table)) });
     }
 }

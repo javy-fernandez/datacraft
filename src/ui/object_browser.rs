@@ -1878,6 +1878,22 @@ mod tests {
     }
 
     #[test]
+    fn review_show_ddl_works_with_cached_metadata_for_every_engine() {
+        for layout in [ObjectLayout::List, ObjectLayout::Grid] {
+            for driver in [crate::db::Driver::Oracle, crate::db::Driver::ClickHouse, crate::db::Driver::Kusto, crate::db::Driver::Sqlite] {
+                for connected in [true, false] {
+                    let mut h = harness(layout, true);
+                    h.state_mut().connections[0].cfg.driver = driver;
+                    if !connected { h.state_mut().connections[0].status = ConnStatus::Disconnected; }
+                    h.run_steps(2);
+                    h.get_by_label("customers").click_secondary(); h.run_steps(2);
+                    assert!(!h.get_by_label("Show DDL").accesskit_node().is_disabled(), "{driver:?}, connected={connected}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn truncate_is_available_only_for_one_writable_table_and_uses_the_existing_action() {
         let mut h = harness(ObjectLayout::Grid, true);
         h.get_by_label("customers").click_secondary();

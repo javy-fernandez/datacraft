@@ -67,8 +67,8 @@ remain local preferences.
   connection can invalidate a shortcut.
 - **Refresh** reloads the database catalog and selected object's metadata.
   **Object Information** focuses its inspector. **Show DDL** reads the supported
-  engine's actual table definition rather than reconstructing it from visible
-  column names.
+  engine's actual table definition when connected. Unsupported catalog readers
+  and disconnected connections retain local DDL generation from cached columns.
 
 Complete data exports support SQLite, PostgreSQL, SQL Server, MySQL and MariaDB.
 Faithful duplication supports those engines and Snowflake. Schema-only printing
@@ -76,7 +76,12 @@ is available for all SQL engines; Snowflake also supports structure-only SQL dum
 Unsupported operations are disabled; table-specific
 features, server versions and catalog permissions can impose additional limits.
 Read-only connections allow reading, modeling and exports, while write actions
-remain disabled. SQL-only actions are not offered for NoSQL objects.
+remain disabled. Database-changing SQL actions are not offered for NoSQL objects;
+cached DDL generation remains available.
+
+SQL Server exports use SNAPSHOT isolation when the database has enabled it, and
+READ COMMITTED otherwise. They do not request SERIALIZABLE range locks for the
+duration of the dump. No database isolation options are changed by the export.
 
 For self-referencing foreign keys, structure-and-data dumps defer constraint
 validation until the rows are restored. SQLite also supports data-only dumps of

@@ -51,7 +51,7 @@ impl SqliteSession {
     }
 
     /// Runs `f` with the connection on a blocking thread.
-    pub(super) async fn with_conn<T, F>(&self, f: F) -> anyhow::Result<T>
+    async fn with_conn<T, F>(&self, f: F) -> anyhow::Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,
@@ -62,6 +62,41 @@ impl SqliteSession {
             f(&conn)
         })
         .await?
+    }
+
+    /// Stream full native values without exposing the driver connection.
+    pub(super) async fn export_rows(
+        &mut self,
+        sql: String,
+        sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
+        progress: &Arc<super::table_export::ExportProgress>,
+    ) -> anyhow::Result<()> {
+        use super::table_export::{Message, Value, cancelled};
+        let sender = sender.clone();
+        let progress = Arc::clone(progress);
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(&sql)?;
+            let n = stmt.column_count();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                cancelled(&progress)?;
+                let values = (0..n)
+                    .map(|i| {
+                        use rusqlite::types::ValueRef;
+                        Ok(match row.get_ref(i)? {
+                            ValueRef::Null => Value::Null,
+                            ValueRef::Integer(n) => Value::Number(n.to_string()),
+                            ValueRef::Real(n) => Value::Number(format!("{n:?}")),
+                            ValueRef::Text(t) => Value::Text(t.to_vec()),
+                            ValueRef::Blob(b) => Value::Binary(b.to_vec()),
+                        })
+                    })
+                    .collect::<anyhow::Result<_>>()?;
+                sender.blocking_send(Message::Row(values)).context(tr("Export writer stopped"))?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {

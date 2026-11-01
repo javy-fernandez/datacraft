@@ -20,52 +20,28 @@ pub struct Target {
 
 impl From<&TableRef> for Target {
     fn from(t: &TableRef) -> Self {
-        Self {
-            connection: t.conn,
-            database: t.db.clone(),
-            schema: t.schema.clone(),
-            table: t.table.clone(),
-        }
+        Self { connection: t.conn, database: t.db.clone(), schema: t.schema.clone(), table: t.table.clone() }
     }
 }
 
 fn validate(target: &Target) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        target.connection != 0 && !target.database.is_empty() && !target.table.is_empty(),
-        tr("Invalid table shortcut target")
-    );
-    anyhow::ensure!(
-        [&target.database, &target.schema, &target.table]
-            .iter()
-            .all(|v| !v.contains('\0')),
-        tr("Invalid table shortcut target")
-    );
+    anyhow::ensure!(target.connection != 0 && !target.database.is_empty() && !target.table.is_empty(), tr("Invalid table shortcut target"));
+    anyhow::ensure!([&target.database, &target.schema, &target.table].iter().all(|v| !v.contains('\0')), tr("Invalid table shortcut target"));
     Ok(())
 }
 
 pub fn encode(target: &Target) -> anyhow::Result<String> {
     validate(target)?;
     let json = serde_json::to_vec(target)?;
-    anyhow::ensure!(
-        json.len() <= MAX_PAYLOAD,
-        tr("Table shortcut target is too large")
-    );
+    anyhow::ensure!(json.len() <= MAX_PAYLOAD, tr("Table shortcut target is too large"));
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
-    anyhow::ensure!(
-        payload.len() <= MAX_PAYLOAD,
-        tr("Table shortcut target is too large")
-    );
+    anyhow::ensure!(payload.len() <= MAX_PAYLOAD, tr("Table shortcut target is too large"));
     Ok(payload)
 }
 
 pub fn decode(payload: &str) -> anyhow::Result<Target> {
-    anyhow::ensure!(
-        payload.len() <= MAX_PAYLOAD,
-        tr("Table shortcut target is too large")
-    );
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .context(tr("Invalid table shortcut payload"))?;
+    anyhow::ensure!(payload.len() <= MAX_PAYLOAD, tr("Table shortcut target is too large"));
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).context(tr("Invalid table shortcut payload"))?;
     let target = serde_json::from_slice(&bytes).context(tr("Invalid table shortcut payload"))?;
     validate(&target)?;
     Ok(target)
@@ -97,18 +73,12 @@ impl Drop for Staging {
 pub fn create(path: &Path, target: &Target) -> anyhow::Result<()> {
     let payload = encode(target)?;
     anyhow::ensure!(
-        path.extension()
-            .and_then(|v| v.to_str())
-            .is_some_and(|v| v.eq_ignore_ascii_case(extension())),
+        path.extension().and_then(|v| v.to_str()).is_some_and(|v| v.eq_ignore_ascii_case(extension())),
         tr("Invalid table shortcut file extension")
     );
-    let destination =
-        std::path::absolute(path).context(tr("Could not resolve the table shortcut path"))?;
-    let parent = destination
-        .parent()
-        .context(tr("Invalid table shortcut path"))?;
-    let executable =
-        std::env::current_exe().context(tr("Could not find the DataCraft executable"))?;
+    let destination = std::path::absolute(path).context(tr("Could not resolve the table shortcut path"))?;
+    let parent = destination.parent().context(tr("Invalid table shortcut path"))?;
+    let executable = std::env::current_exe().context(tr("Could not find the DataCraft executable"))?;
     let directory = parent.join(format!(".datacraft-shortcut-{}", uuid::Uuid::new_v4()));
     #[cfg(unix)]
     let staged = {
@@ -118,20 +88,12 @@ pub fn create(path: &Path, target: &Target) -> anyhow::Result<()> {
     #[cfg(not(unix))]
     let staged = std::fs::create_dir(&directory);
     staged.context(tr("Could not stage the table shortcut"))?;
-    let staging = Staging {
-        file: directory.join(format!("table.{}", extension())),
-        directory,
-    };
+    let staging = Staging { file: directory.join(format!("table.{}", extension())), directory };
     write_native(&staging.file, &executable, &payload)?;
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&staging.file)
-        .context(tr("Could not read the staged table shortcut"))?;
-    file.sync_all()
-        .context(tr("Could not save the table shortcut"))?;
+    let file = std::fs::OpenOptions::new().write(true).open(&staging.file).context(tr("Could not read the staged table shortcut"))?;
+    file.sync_all().context(tr("Could not save the table shortcut"))?;
     drop(file);
-    std::fs::rename(&staging.file, destination)
-        .context(tr("Could not publish the table shortcut"))?;
+    std::fs::rename(&staging.file, destination).context(tr("Could not publish the table shortcut"))?;
     Ok(())
 }
 
@@ -141,22 +103,14 @@ fn write_native(path: &Path, executable: &Path, payload: &str) -> anyhow::Result
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    let executable = executable
-        .to_str()
-        .context(tr("Executable path is not valid Unicode"))?;
+    let executable = executable.to_str().context(tr("Executable path is not valid Unicode"))?;
     let arguments = format!("--open-table {payload}");
-    anyhow::ensure!(
-        executable.encode_utf16().count() + arguments.len() + 4 <= 32_767,
-        tr("The table shortcut exceeds the Windows command-line limit")
-    );
+    anyhow::ensure!(executable.encode_utf16().count() + arguments.len() + 4 <= 32_767, tr("The table shortcut exceeds the Windows command-line limit"));
     // WScript.Shell stores its Save path through the Windows ANSI code page. Create the link
     // under a neutral temporary name, then let Rust copy it to the Unicode destination.
     let directory = std::env::temp_dir().join(format!("dc-shortcut-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).context(tr("Could not stage the Windows shortcut"))?;
-    let native = Staging {
-        file: directory.join("table.lnk"),
-        directory,
-    };
+    let native = Staging { file: directory.join("table.lnk"), directory };
     // All variable values travel as JSON data on stdin; none becomes PowerShell source.
     let request = serde_json::to_vec(&serde_json::json!({
         "path": native.file.to_str().context(tr("Shortcut path is not valid Unicode"))?,
@@ -191,52 +145,22 @@ if ($saved.Arguments -cne [string]$request.arguments) { throw [string]$request.s
     exit 1
 }
 "#;
-    let encoded_script = base64::engine::general_purpose::STANDARD.encode(
-        script
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>(),
-    );
-    let powershell = PathBuf::from(
-        std::env::var_os("SystemRoot").context(tr("Could not locate Windows PowerShell"))?,
-    )
-    .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let encoded_script = base64::engine::general_purpose::STANDARD.encode(script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>());
+    let powershell = PathBuf::from(std::env::var_os("SystemRoot").context(tr("Could not locate Windows PowerShell"))?)
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let mut child = Command::new(powershell)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-OutputFormat",
-            "Text",
-            "-EncodedCommand",
-            &encoded_script,
-        ])
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-OutputFormat", "Text", "-EncodedCommand", &encoded_script])
         .creation_flags(0x0800_0000)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .context(tr(
-            "Could not start Windows PowerShell to create the shortcut",
-        ))?;
-    let input = child
-        .stdin
-        .take()
-        .context(tr("Could not write the shortcut request"))?
-        .write_all(&request);
-    let output = child
-        .wait_with_output()
-        .context(tr("Could not finish creating the shortcut"))?;
+        .context(tr("Could not start Windows PowerShell to create the shortcut"))?;
+    let input = child.stdin.take().context(tr("Could not write the shortcut request"))?.write_all(&request);
+    let output = child.wait_with_output().context(tr("Could not finish creating the shortcut"))?;
     input.context(tr("Could not write the shortcut request"))?;
-    anyhow::ensure!(
-        output.status.success(),
-        "{}: {}",
-        tr("Could not create the Windows shortcut"),
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    std::fs::copy(&native.file, path)
-        .context(tr("Could not stage the generated Windows shortcut"))?;
+    anyhow::ensure!(output.status.success(), "{}: {}", tr("Could not create the Windows shortcut"), String::from_utf8_lossy(&output.stderr).trim());
+    std::fs::copy(&native.file, path).context(tr("Could not stage the generated Windows shortcut"))?;
     Ok(())
 }
 
@@ -244,21 +168,10 @@ if ($saved.Arguments -cne [string]$request.arguments) { throw [string]$request.s
 fn write_native(path: &Path, executable: &Path, payload: &str) -> anyhow::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let executable = executable
-        .to_str()
-        .context(tr("Executable path is not valid Unicode"))?;
+    let executable = executable.to_str().context(tr("Executable path is not valid Unicode"))?;
     let executable = executable.replace('\'', "'\\''");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o700)
-        .open(path)
-        .context(tr("Could not create the table launcher"))?;
-    write!(
-        file,
-        "#!/bin/sh\nexec '{executable}' --open-table '{payload}'\n"
-    )
-    .context(tr("Could not write the table launcher"))?;
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o700).open(path).context(tr("Could not create the table launcher"))?;
+    write!(file, "#!/bin/sh\nexec '{executable}' --open-table '{payload}'\n").context(tr("Could not write the table launcher"))?;
     Ok(())
 }
 
@@ -273,18 +186,9 @@ mod tests {
 
     #[test]
     fn table_launcher_roundtrips_unicode_without_credentials_or_shell_syntax() {
-        let t = Target {
-            connection: 7,
-            database: "shop".into(),
-            schema: "a\"' schema".into(),
-            table: "x; $(echo pwned) 雪".into(),
-        };
+        let t = Target { connection: 7, database: "shop".into(), schema: "a\"' schema".into(), table: "x; $(echo pwned) 雪".into() };
         let payload = encode(&t).unwrap();
-        assert!(
-            payload
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
-        );
+        assert!(payload.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)));
         assert_eq!(decode(&payload).unwrap(), t);
         assert!(!serde_json::to_string(&t).unwrap().contains("password"));
     }
@@ -293,79 +197,38 @@ mod tests {
     fn invalid_or_oversized_launcher_targets_are_rejected() {
         assert!(decode("garbage!; open").is_err());
         assert!(decode(&"x".repeat(65537)).is_err());
-        let t = Target {
-            connection: 0,
-            database: "".into(),
-            schema: "".into(),
-            table: "".into(),
-        };
+        let t = Target { connection: 0, database: "".into(), schema: "".into(), table: "".into() };
         assert!(encode(&t).is_err());
-        let unknown = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            br#"{"connection":1,"database":"db","schema":"s","table":"t","password":"secret"}"#,
-        );
+        let unknown =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"connection":1,"database":"db","schema":"s","table":"t","password":"secret"}"#);
         assert!(decode(&unknown).is_err());
-        let nul = Target {
-            connection: 1,
-            database: "db".into(),
-            schema: "s\0".into(),
-            table: "t".into(),
-        };
+        let nul = Target { connection: 1, database: "db".into(), schema: "s\0".into(), table: "t".into() };
         assert!(encode(&nul).is_err());
-        let oversized = Target {
-            connection: 1,
-            database: "db".into(),
-            schema: "s".into(),
-            table: "x".repeat(65_536),
-        };
+        let oversized = Target { connection: 1, database: "db".into(), schema: "s".into(), table: "x".repeat(65_536) };
         assert!(encode(&oversized).is_err());
     }
 
     #[test]
     fn creates_a_native_launcher_without_interpreting_path_or_table_syntax() {
-        let root = std::env::temp_dir().join(format!(
-            "dc-launcher-'$(echo INJECTED); 雪-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root = std::env::temp_dir().join(format!("dc-launcher-'$(echo INJECTED); 雪-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join(format!("table.{}", extension()));
         std::fs::write(&path, b"previous launcher").unwrap();
-        let target = Target {
-            connection: 7,
-            database: "shop".into(),
-            schema: "public".into(),
-            table: "t; $(echo INJECTED) ' 雪".into(),
-        };
+        let target = Target { connection: 7, database: "shop".into(), schema: "public".into(), table: "t; $(echo INJECTED) ' 雪".into() };
         create(&path, &target).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let payload = encode(&target).unwrap();
         #[cfg(windows)]
         {
-            assert_eq!(
-                bytes.get(..20),
-                Some(
-                    &[
-                        0x4c, 0, 0, 0, 1, 0x14, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46
-                    ][..]
-                )
-            );
-            let expected: Vec<u8> = format!("--open-table {payload}")
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect();
+            assert_eq!(bytes.get(..20), Some(&[0x4c, 0, 0, 0, 1, 0x14, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46][..]));
+            let expected: Vec<u8> = format!("--open-table {payload}").encode_utf16().flat_map(u16::to_le_bytes).collect();
             assert!(bytes.windows(expected.len()).any(|w| w == expected));
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert!(
-                String::from_utf8(bytes)
-                    .unwrap()
-                    .contains(&format!("--open-table '{payload}'"))
-            );
-            assert_ne!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o100,
-                0
-            );
+            assert!(String::from_utf8(bytes).unwrap().contains(&format!("--open-table '{payload}'")));
+            assert_ne!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o100, 0);
         }
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         std::fs::remove_file(&path).unwrap();
@@ -374,17 +237,11 @@ mod tests {
 
     #[test]
     fn failed_shortcut_validation_preserves_existing_destination() {
-        let root =
-            std::env::temp_dir().join(format!("dc-launcher-failure-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("dc-launcher-failure-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join(format!("table.{}", extension()));
         std::fs::write(&path, b"preserve me").unwrap();
-        let target = Target {
-            connection: 1,
-            database: "db".into(),
-            schema: "".into(),
-            table: "invalid\0name".into(),
-        };
+        let target = Target { connection: 1, database: "db".into(), schema: "".into(), table: "invalid\0name".into() };
         assert!(create(&path, &target).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"preserve me");
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
@@ -394,19 +251,13 @@ mod tests {
 
     #[test]
     fn failed_publication_removes_staging_and_preserves_destination() {
-        let root =
-            std::env::temp_dir().join(format!("dc-launcher-publish-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("dc-launcher-publish-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let destination = root.join(format!("table.{}", extension()));
         std::fs::create_dir(&destination).unwrap();
         let sentinel = destination.join("preserve.txt");
         std::fs::write(&sentinel, b"preserve me").unwrap();
-        let target = Target {
-            connection: 1,
-            database: "db".into(),
-            schema: "s".into(),
-            table: "t".into(),
-        };
+        let target = Target { connection: 1, database: "db".into(), schema: "s".into(), table: "t".into() };
         assert!(create(&destination, &target).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve me");
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
@@ -426,10 +277,7 @@ mod tests {
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let launcher = root.join("launcher.sh");
         write_native(&launcher, &executable, "safe_payload-0123").unwrap();
-        let output = std::process::Command::new(&launcher)
-            .current_dir(&root)
-            .output()
-            .unwrap();
+        let output = std::process::Command::new(&launcher).current_dir(&root).output().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"--open-table\nsafe_payload-0123\n");
         assert!(!root.join("INJECTED").exists());

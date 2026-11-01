@@ -33,7 +33,7 @@ const HIDDEN_DATABASES: [&str; 2] = ["information_schema", "performance_schema"]
 const SYSTEM_DATABASES: [&str; 2] = ["mysql", "sys"];
 
 pub struct MySession {
-    pub(super) conn: Conn,
+    conn: Conn,
     /// Options the connection was opened with (to open the one that cancels its queries).
     opts: OptsBuilder,
     /// Set on I/O or protocol errors: the connection is no longer usable.
@@ -162,6 +162,35 @@ impl MySession {
     /// Options and server thread id to `KILL QUERY` this session's running statement.
     pub fn cancel_target(&self) -> (OptsBuilder, u32) {
         (self.opts.clone().db_name(None::<String>), self.conn.id())
+    }
+
+    /// Stream full native values without exposing the driver connection.
+    pub(super) async fn export_rows(
+        &mut self,
+        sql: &str,
+        columns: &[ColumnInfo],
+        driver: super::Driver,
+        sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
+        progress: &std::sync::Arc<super::table_export::ExportProgress>,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use super::table_export::{Message, cancelled, mysql_value};
+        use mysql_async::prelude::Queryable;
+        let mut rows = self.conn.query_iter(sql).await?;
+        let metadata = rows.columns().context(tr("Missing export column metadata"))?;
+        while let Some(row) = rows.next().await? {
+            cancelled(progress)?;
+            let values = columns
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let value = row.as_ref(i).context(tr("Missing export cell"))?;
+                    mysql_value(value, metadata.get(i).context(tr("Missing export column metadata"))?, c, driver)
+                })
+                .collect::<anyhow::Result<_>>()?;
+            sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+        }
+        Ok(())
     }
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {

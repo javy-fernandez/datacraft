@@ -25,7 +25,7 @@ use super::{ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, Tab
 use crate::i18n::{tr, trf};
 
 pub struct PgSession {
-    pub(super) client: Client,
+    client: Client,
     /// Also for the cancel requests, which go over a connection of their own.
     tls: PgTls,
 }
@@ -199,6 +199,27 @@ impl PgSession {
     pub async fn tls_description(&mut self) -> Option<String> {
         let row = self.client.query_opt("SELECT version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl", &[]).await.ok()??;
         Some(format!("{} {}", row.get::<_, String>(0), row.get::<_, String>(1)))
+    }
+
+    /// Stream full native values without exposing the driver connection.
+    pub(super) async fn export_rows(
+        &mut self,
+        sql: &str,
+        columns: &[ColumnInfo],
+        sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
+        progress: &std::sync::Arc<super::table_export::ExportProgress>,
+    ) -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use super::table_export::{Message, cancelled, from_text};
+        let mut rows = std::pin::pin!(self.client.simple_query_raw(sql).await?);
+        while let Some(item) = rows.try_next().await? {
+            cancelled(progress)?;
+            if let tokio_postgres::SimpleQueryMessage::Row(row) = item {
+                let values = columns.iter().enumerate().map(|(i, c)| from_text(row.try_get(i)?, c, super::Driver::Postgres)).collect::<anyhow::Result<_>>()?;
+                sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
