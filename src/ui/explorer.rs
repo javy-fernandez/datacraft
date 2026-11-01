@@ -95,6 +95,7 @@ pub enum ExplorerAction {
     GenerateSelect(TableRef),
     GenerateInsert(TableRef),
     GenerateDdl(TableRef),
+    TableModel(Vec<TableRef>),
     /// Load (or reload) the "Users" / "Roles" folder.
     LoadUsers(ConnId),
     NewUser(ConnId),

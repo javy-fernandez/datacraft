@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "対応していない SQL リテラルの方言です",
     "Wait for the current table operation to finish": "現在のテーブル操作が完了するまでお待ちください",
     "{n} rows processed": "{n} 行処理済み",
+    "A selected table was not found in the catalog": "選択したテーブルがカタログに見つかりません",
+    "Choose an existing destination directory": "既存の保存先フォルダーを選択",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "テーブルをドラッグしてモデルを配置します。線は定義された外部キーを表します。",
+    "Export SVG…": "SVG をエクスポート…",
+    "No declared foreign keys were found for these tables.": "これらのテーブルに定義された外部キーは見つかりませんでした。",
+    "Reverse Tables to Model…": "テーブルからモデルを生成…",
+    "Save model…": "モデルを保存…",
+    "Select tables in one database": "同じデータベース内のテーブルを選択",
+    "Select tables to model": "モデルに含めるテーブルを選択",
+    "Table Model": "テーブルモデル",
+    "The foreign key catalog is too large to model completely": "外部キーのカタログが大きすぎるため、完全なモデルを作成できません",
+    "The table catalog is too large to model completely": "テーブルカタログが大きすぎるため、完全なモデルを作成できません",
     "Could not remove the incomplete duplicate": "未完成の複製を削除できませんでした",
     "Duplicate Table": "テーブルを複製",
     "Faithful table duplication is not available for {engine}": "{engine} ではテーブルを忠実に複製できません",
@@ -1431,5 +1443,8 @@
     "Use the table owner role to edit Snowflake table grants": "Snowflake のテーブル権限を編集するには、テーブルの所有者ロールを使用してください",
     "Viewing all table grants requires VIEW DEFINITION on the database": "すべてのテーブル権限を表示するには、データベースに対する VIEW DEFINITION 権限が必要です",
     "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "この ClickHouse バージョンではワイルドカード権限のメタデータが提供されません。SQL エディターを使用してください"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "テーブルの列メタデータが不完全です"
   }
 }

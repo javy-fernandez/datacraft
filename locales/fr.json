@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "Dialecte de littéral SQL non pris en charge",
     "Wait for the current table operation to finish": "Attendez la fin de l’opération en cours sur la table",
     "{n} rows processed": "{n} lignes traitées",
+    "A selected table was not found in the catalog": "Une table sélectionnée est introuvable dans le catalogue",
+    "Choose an existing destination directory": "Choisissez un dossier de destination existant",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "Faites glisser les tables pour organiser le modèle. Les lignes représentent les clés étrangères déclarées.",
+    "Export SVG…": "Exporter en SVG…",
+    "No declared foreign keys were found for these tables.": "Aucune clé étrangère déclarée n’a été trouvée pour ces tables.",
+    "Reverse Tables to Model…": "Créer un modèle à partir des tables…",
+    "Save model…": "Enregistrer le modèle…",
+    "Select tables in one database": "Sélectionnez des tables dans une seule base de données",
+    "Select tables to model": "Sélectionnez les tables à modéliser",
+    "Table Model": "Modèle de tables",
+    "The foreign key catalog is too large to model completely": "Le catalogue des clés étrangères est trop volumineux pour être entièrement modélisé",
+    "The table catalog is too large to model completely": "Le catalogue des tables est trop volumineux pour être entièrement modélisé",
     "Could not remove the incomplete duplicate": "Impossible de supprimer la copie incomplète",
     "Duplicate Table": "Dupliquer la table",
     "Faithful table duplication is not available for {engine}": "La duplication fidèle de tables n’est pas disponible pour {engine}",
@@ -1431,5 +1443,8 @@
     "Use the table owner role to edit Snowflake table grants": "Utilisez le rôle propriétaire de la table pour modifier les droits sur une table Snowflake",
     "Viewing all table grants requires VIEW DEFINITION on the database": "L’affichage de tous les droits sur les tables nécessite VIEW DEFINITION sur la base de données",
     "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "Cette version de ClickHouse n’expose pas les métadonnées des droits avec caractères génériques ; utilisez l’éditeur SQL"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "Métadonnées des colonnes de table incomplètes"
   }
 }

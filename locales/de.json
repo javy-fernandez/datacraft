@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "Nicht unterstützter SQL-Literaldialekt",
     "Wait for the current table operation to finish": "Warten Sie, bis der aktuelle Tabellenvorgang abgeschlossen ist",
     "{n} rows processed": "{n} Zeilen verarbeitet",
+    "A selected table was not found in the catalog": "Eine ausgewählte Tabelle wurde im Katalog nicht gefunden",
+    "Choose an existing destination directory": "Vorhandenen Zielordner auswählen",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "Ziehen Sie die Tabellen, um das Modell anzuordnen. Linien stellen deklarierte Fremdschlüssel dar.",
+    "Export SVG…": "SVG exportieren…",
+    "No declared foreign keys were found for these tables.": "Für diese Tabellen wurden keine deklarierten Fremdschlüssel gefunden.",
+    "Reverse Tables to Model…": "Modell aus Tabellen erstellen…",
+    "Save model…": "Modell speichern…",
+    "Select tables in one database": "Tabellen aus einer Datenbank auswählen",
+    "Select tables to model": "Tabellen für das Modell auswählen",
+    "Table Model": "Tabellenmodell",
+    "The foreign key catalog is too large to model completely": "Der Fremdschlüsselkatalog ist zu groß, um ihn vollständig zu modellieren",
+    "The table catalog is too large to model completely": "Der Tabellenkatalog ist zu groß, um ihn vollständig zu modellieren",
     "Could not remove the incomplete duplicate": "Das unvollständige Duplikat konnte nicht entfernt werden",
     "Duplicate Table": "Tabelle duplizieren",
     "Faithful table duplication is not available for {engine}": "Originalgetreue Tabellenduplizierung ist für {engine} nicht verfügbar",
@@ -1431,5 +1443,8 @@
     "Use the table owner role to edit Snowflake table grants": "Verwenden Sie die Eigentümerrolle der Tabelle, um Snowflake-Tabellenberechtigungen zu bearbeiten",
     "Viewing all table grants requires VIEW DEFINITION on the database": "Zum Anzeigen aller Tabellenberechtigungen ist VIEW DEFINITION für die Datenbank erforderlich",
     "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "Diese ClickHouse-Version stellt keine Metadaten für Platzhalterberechtigungen bereit; verwenden Sie den SQL-Editor"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "Unvollständige Spaltenmetadaten der Tabelle"
   }
 }

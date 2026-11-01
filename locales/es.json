@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "Dialecto de literal SQL no compatible",
     "Wait for the current table operation to finish": "Espera a que termine la operación de tabla actual",
     "{n} rows processed": "{n} filas procesadas",
+    "A selected table was not found in the catalog": "No se encontró una de las tablas seleccionadas en el catálogo",
+    "Choose an existing destination directory": "Elige una carpeta de destino existente",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "Arrastra las tablas para organizar el modelo. Las líneas representan las claves foráneas declaradas.",
+    "Export SVG…": "Exportar SVG…",
+    "No declared foreign keys were found for these tables.": "No se encontraron claves foráneas declaradas para estas tablas.",
+    "Reverse Tables to Model…": "Crear modelo a partir de tablas…",
+    "Save model…": "Guardar modelo…",
+    "Select tables in one database": "Selecciona tablas de una sola base de datos",
+    "Select tables to model": "Selecciona las tablas para el modelo",
+    "Table Model": "Modelo de tablas",
+    "The foreign key catalog is too large to model completely": "El catálogo de claves foráneas es demasiado grande para modelarlo por completo",
+    "The table catalog is too large to model completely": "El catálogo de tablas es demasiado grande para modelarlo por completo",
     "Could not remove the incomplete duplicate": "No se pudo eliminar la copia incompleta",
     "Duplicate Table": "Duplicar tabla",
     "Faithful table duplication is not available for {engine}": "La duplicación fiel de tablas no está disponible para {engine}",
@@ -1431,5 +1443,8 @@
     "Use the table owner role to edit Snowflake table grants": "Usa el rol propietario de la tabla para editar sus permisos de Snowflake",
     "Viewing all table grants requires VIEW DEFINITION on the database": "Ver todos los permisos de tabla requiere VIEW DEFINITION en la base de datos",
     "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "Esta versión de ClickHouse no expone los metadatos de permisos con comodines; usa el editor SQL"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "Metadatos de columnas de tabla incompletos"
   }
 }

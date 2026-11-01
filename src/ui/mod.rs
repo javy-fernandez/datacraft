@@ -18,6 +18,7 @@ pub mod filter_sort;
 pub mod explorer;
 pub mod icons;
 pub mod object_browser;
+pub mod table_model;
 pub mod table_menu;
 pub mod object_organization;
 pub mod performance;

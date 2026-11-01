@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "Nieobsługiwany dialekt literału SQL",
     "Wait for the current table operation to finish": "Poczekaj na zakończenie bieżącej operacji na tabeli",
     "{n} rows processed": "Przetworzono {n} wierszy",
+    "A selected table was not found in the catalog": "Nie znaleziono wybranej tabeli w katalogu",
+    "Choose an existing destination directory": "Wybierz istniejący katalog docelowy",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "Przeciągaj tabele, aby rozmieścić je w modelu. Linie przedstawiają zadeklarowane klucze obce.",
+    "Export SVG…": "Eksportuj SVG…",
+    "No declared foreign keys were found for these tables.": "Nie znaleziono zadeklarowanych kluczy obcych dla tych tabel.",
+    "Reverse Tables to Model…": "Utwórz model na podstawie tabel…",
+    "Save model…": "Zapisz model…",
+    "Select tables in one database": "Wybierz tabele z jednej bazy danych",
+    "Select tables to model": "Wybierz tabele do modelu",
+    "Table Model": "Model tabel",
+    "The foreign key catalog is too large to model completely": "Katalog kluczy obcych jest zbyt duży, aby utworzyć pełny model",
+    "The table catalog is too large to model completely": "Katalog tabel jest zbyt duży, aby utworzyć pełny model",
     "Could not remove the incomplete duplicate": "Nie udało się usunąć niekompletnej kopii",
     "Duplicate Table": "Duplikuj tabelę",
     "Faithful table duplication is not available for {engine}": "Wierne duplikowanie tabel nie jest dostępne dla {engine}",
@@ -1431,5 +1443,8 @@
     "Use the table owner role to edit Snowflake table grants": "Użyj roli właściciela tabeli, aby edytować uprawnienia do tabeli Snowflake",
     "Viewing all table grants requires VIEW DEFINITION on the database": "Wyświetlenie wszystkich uprawnień do tabel wymaga VIEW DEFINITION w bazie danych",
     "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "Ta wersja ClickHouse nie udostępnia metadanych uprawnień z symbolami wieloznacznymi; użyj edytora SQL"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "Niekompletne metadane kolumn tabeli"
   }
 }

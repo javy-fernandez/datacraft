@@ -17,6 +17,7 @@ pub mod kusto;
 pub mod mongo;
 pub mod mssql;
 pub mod object_info;
+pub mod table_model;
 pub mod schema_search;
 pub mod script;
 pub mod subset;

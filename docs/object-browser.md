@@ -42,6 +42,25 @@ fallback scripts and the status message identify that cached columns were used.
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
 
+## Model declared relationships
+
+Choose **Reverse Tables to Model…** for one or more SQL tables. The model includes
+selected tables, directly related accessible catalog tables, columns, primary keys
+and declared foreign-key column mappings. No relationships are inferred from names.
+Drag tables to arrange them; **Save model…** writes JSON and **Export SVG…** writes a
+standalone vector image. These files contain schema metadata, not credentials or row data.
+
+Catalog reads run in the background with cancellation and stale-response protection.
+Only the FK inventory spans the accessible scope; column metadata is fetched for
+selected tables and their direct neighbors. Relation endpoints are cached once and
+follow card positions without searching table names on every frame.
+Read-only connections are supported. The existing FK readers cover SQLite, PostgreSQL,
+SQL Server, MySQL/MariaDB, Oracle and Snowflake; ClickHouse and NoSQL actions are gated
+because this workflow has no complete relationship reader for them. Missing permissions
+can limit the accessible catalog. Oracle/Snowflake reads follow the selected schema
+scopes, so incoming links owned by other schemas may be absent. SQLite generated columns and implicit composite-key
+references retain their catalog definition and declared key order.
+
 **Duplicate Table** offers structure-only and structure-and-data copies into the
 same schema on SQLite, PostgreSQL, MySQL/MariaDB, SQL Server and Snowflake. Choose a
 new name and preview the SQL before applying it. Existing destination objects are

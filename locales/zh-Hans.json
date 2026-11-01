@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "不支持的 SQL 字面量方言",
     "Wait for the current table operation to finish": "请等待当前表操作完成",
     "{n} rows processed": "已处理 {n} 行",
+    "A selected table was not found in the catalog": "在目录中找不到所选表",
+    "Choose an existing destination directory": "选择现有的目标目录",
+    "Drag tables to arrange the model. Lines represent declared foreign keys.": "拖动表以排列模型。连线表示已声明的外键。",
+    "Export SVG…": "导出 SVG…",
+    "No declared foreign keys were found for these tables.": "未找到这些表已声明的外键。",
+    "Reverse Tables to Model…": "从表生成模型…",
+    "Save model…": "保存模型…",
+    "Select tables in one database": "选择同一数据库中的表",
+    "Select tables to model": "选择要建模的表",
+    "Table Model": "表模型",
+    "The foreign key catalog is too large to model completely": "外键目录过大，无法完整建模",
+    "The table catalog is too large to model completely": "表目录过大，无法完整建模",
     "Could not remove the incomplete duplicate": "无法删除不完整的副本",
     "Duplicate Table": "复制表",
     "Faithful table duplication is not available for {engine}": "{engine} 不支持完整复制表",
@@ -1431,5 +1443,8 @@
     "Use the table owner role to edit Snowflake table grants": "请使用表所有者角色编辑 Snowflake 表授权",
     "Viewing all table grants requires VIEW DEFINITION on the database": "查看所有表授权需要数据库的 VIEW DEFINITION 权限",
     "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "此 ClickHouse 版本不提供通配符授权元数据；请使用 SQL 编辑器"
+  },
+  "table_tools": {
+    "Incomplete table column metadata": "表列元数据不完整"
   }
 }
