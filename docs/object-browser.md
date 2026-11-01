@@ -35,11 +35,28 @@ connection, rename, empty/truncate, drop, refresh and object information. Openin
 data and copying names support multiple selections; single-object dialogs require
 exactly one supported object. Connection state and read-only mode gate writes.
 
-**Show DDL** remains available from cached column metadata, including unsupported
-catalog readers and offline connections. It generates the existing local definition.
+**Show DDL** reads catalog definitions for supported live SQL tables. Cached column
+metadata remains available for unsupported/offline readers and catalog failures;
+fallback scripts and the status message identify that cached columns were used.
 **Empty Table** uses DELETE; **Truncate** uses the engine's operation. SQLite uses
 DELETE and preserves its sequence. Destructive actions preview their SQL. Save or
 discard pending edits in the affected table's data editor before changing it.
+
+**Duplicate Table** offers structure-only and structure-and-data copies into the
+same schema on SQLite, PostgreSQL, MySQL/MariaDB, SQL Server and Snowflake. Choose a
+new name and preview the SQL before applying it. Existing destination objects are
+never overwritten. The background operation can be cancelled; transactional DDL
+rolls back, while nontransactional engines remove only a successfully created
+incomplete destination. Data copies retain complete values, including binary data,
+and apply foreign keys after copying where the dialect permits it.
+If CREATE has an unconfirmed outcome, the target may exist: the error names it for
+manual inspection, and it is never removed without confirmed ownership.
+
+Definitions that cannot be copied faithfully, such as tables with triggers or
+specialized storage features, return an error. MySQL/MariaDB require direct trigger
+catalog access. PostgreSQL catalog scripts preserve supported core schema and
+values but omit table/column comments, custom column storage/compression settings,
+and unlogged persistence for owned serial sequences.
 
 **Export Table** writes CSV, TSV or JSON from the complete table on a separate
 background connection, independently of the data editor's page and filters. It
@@ -83,6 +100,11 @@ editor for those cases. Before applying, it reloads grants and provenance and
 rejects a changed snapshot or preview. Work uses a cancellable private session.
 Some engines commit each statement independently; after cancellation or an error,
 use **Reload privileges** to inspect the actual state before making more changes.
+
+ClickHouse ignores wildcard grants outside the selected database/table scope and
+refuses matching prefix grants. Exact grants work on pre-24.10 catalogs without
+`is_wildcard`; prefix-capable versions that omit this metadata require the SQL
+editor because exact and prefix provenance cannot be distinguished safely.
 
 ## Row counts and timestamps
 

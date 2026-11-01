@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "Nieobsługiwany dialekt literału SQL",
     "Wait for the current table operation to finish": "Poczekaj na zakończenie bieżącej operacji na tabeli",
     "{n} rows processed": "Przetworzono {n} wierszy",
+    "Could not remove the incomplete duplicate": "Nie udało się usunąć niekompletnej kopii",
+    "Duplicate Table": "Duplikuj tabelę",
+    "Faithful table duplication is not available for {engine}": "Wierne duplikowanie tabel nie jest dostępne dla {engine}",
+    "New table name": "Nazwa nowej tabeli",
+    "Preview SQL": "Podgląd SQL",
+    "The destination table or object already exists": "Docelowa tabela lub obiekt już istnieje",
+    "The duplicate needs a different table name": "Kopia musi mieć inną nazwę tabeli",
+    "The existing table is preserved. The destination must not exist.": "Istniejąca tabela zostanie zachowana. Tabela docelowa nie może istnieć.",
+    "The table definition changed. Preview the operation again.": "Definicja tabeli uległa zmianie. Ponownie wyświetl podgląd operacji.",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Ten silnik natychmiast zatwierdza utworzenie tabeli. Jeśli kolejna instrukcja się nie powiedzie, nowo utworzona tabela musi zostać usunięta.",
+    "Showing DDL from cached columns because the catalog definition is unavailable.": "Wyświetlanie DDL z kolumn zapisanych w pamięci podręcznej, ponieważ definicja z katalogu jest niedostępna.",
+    "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "Nie potwierdzono CREATE; {target} może istnieć. Sprawdź obiekt docelowy przed ponowną próbą. Nie został automatycznie usunięty.",
     "Ambiguous principal name": "Niejednoznaczna nazwa użytkownika lub roli",
     "Could not read explicit table grants; catalog access is required": "Nie udało się odczytać jawnych uprawnień do tabeli; wymagany jest dostęp do katalogu",
     "Could not read table grant principals; catalog access is required": "Nie udało się odczytać użytkowników i ról uprawnień do tabeli; wymagany jest dostęp do katalogu",
@@ -1380,6 +1392,7 @@
     "This principal has grant options, column permissions, ownership, or grants from another grantor; edit these grants in the SQL editor": "Ten użytkownik lub rola ma opcję nadawania uprawnień, uprawnienia do kolumn, własność albo uprawnienia od innego nadawcy; edytuj je w edytorze SQL",
     "Unsupported table privilege": "Nieobsługiwane uprawnienie do tabeli",
     "Use the table owner role to edit Snowflake table grants": "Użyj roli właściciela tabeli, aby edytować uprawnienia do tabeli Snowflake",
-    "Viewing all table grants requires VIEW DEFINITION on the database": "Wyświetlenie wszystkich uprawnień do tabel wymaga VIEW DEFINITION w bazie danych"
+    "Viewing all table grants requires VIEW DEFINITION on the database": "Wyświetlenie wszystkich uprawnień do tabel wymaga VIEW DEFINITION w bazie danych",
+    "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "Ta wersja ClickHouse nie udostępnia metadanych uprawnień z symbolami wieloznacznymi; użyj edytora SQL"
   }
 }

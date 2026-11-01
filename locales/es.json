@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "Dialecto de literal SQL no compatible",
     "Wait for the current table operation to finish": "Espera a que termine la operación de tabla actual",
     "{n} rows processed": "{n} filas procesadas",
+    "Could not remove the incomplete duplicate": "No se pudo eliminar la copia incompleta",
+    "Duplicate Table": "Duplicar tabla",
+    "Faithful table duplication is not available for {engine}": "La duplicación fiel de tablas no está disponible para {engine}",
+    "New table name": "Nombre de la nueva tabla",
+    "Preview SQL": "Vista previa del SQL",
+    "The destination table or object already exists": "La tabla o el objeto de destino ya existe",
+    "The duplicate needs a different table name": "La copia debe tener un nombre de tabla distinto",
+    "The existing table is preserved. The destination must not exist.": "La tabla existente se conserva. El destino no debe existir.",
+    "The table definition changed. Preview the operation again.": "La definición de la tabla ha cambiado. Vuelve a previsualizar la operación.",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "Este motor confirma la creación de la tabla inmediatamente. Si falla una sentencia posterior, debe eliminarse la tabla recién creada.",
+    "Showing DDL from cached columns because the catalog definition is unavailable.": "Se muestra el DDL de las columnas en caché porque la definición del catálogo no está disponible.",
+    "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "No se confirmó CREATE; {target} puede existir. Revise el destino antes de reintentar. No se eliminó automáticamente.",
     "Ambiguous principal name": "Nombre de usuario o rol ambiguo",
     "Could not read explicit table grants; catalog access is required": "No se pudieron leer los permisos explícitos de la tabla; se necesita acceso al catálogo",
     "Could not read table grant principals; catalog access is required": "No se pudieron leer los usuarios o roles de los permisos de la tabla; se necesita acceso al catálogo",
@@ -1380,6 +1392,7 @@
     "This principal has grant options, column permissions, ownership, or grants from another grantor; edit these grants in the SQL editor": "Este usuario o rol tiene opciones de concesión, permisos de columna, propiedad o permisos de otro otorgante; edítalos en el editor SQL",
     "Unsupported table privilege": "Permiso de tabla no compatible",
     "Use the table owner role to edit Snowflake table grants": "Usa el rol propietario de la tabla para editar sus permisos de Snowflake",
-    "Viewing all table grants requires VIEW DEFINITION on the database": "Ver todos los permisos de tabla requiere VIEW DEFINITION en la base de datos"
+    "Viewing all table grants requires VIEW DEFINITION on the database": "Ver todos los permisos de tabla requiere VIEW DEFINITION en la base de datos",
+    "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "Esta versión de ClickHouse no expone los metadatos de permisos con comodines; usa el editor SQL"
   }
 }

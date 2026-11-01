@@ -1359,6 +1359,18 @@
     "Unsupported SQL literal dialect": "対応していない SQL リテラルの方言です",
     "Wait for the current table operation to finish": "現在のテーブル操作が完了するまでお待ちください",
     "{n} rows processed": "{n} 行処理済み",
+    "Could not remove the incomplete duplicate": "未完成の複製を削除できませんでした",
+    "Duplicate Table": "テーブルを複製",
+    "Faithful table duplication is not available for {engine}": "{engine} ではテーブルを忠実に複製できません",
+    "New table name": "新しいテーブル名",
+    "Preview SQL": "SQL をプレビュー",
+    "The destination table or object already exists": "複製先のテーブルまたはオブジェクトはすでに存在します",
+    "The duplicate needs a different table name": "複製先には別のテーブル名が必要です",
+    "The existing table is preserved. The destination must not exist.": "既存のテーブルは保持されます。複製先のテーブルは存在していてはいけません。",
+    "The table definition changed. Preview the operation again.": "テーブル定義が変更されています。操作をもう一度プレビューしてください。",
+    "This engine commits table creation immediately. If a later statement fails, the newly created table must be removed.": "このエンジンはテーブルの作成を即座にコミットします。後続の文が失敗した場合、新しく作成したテーブルを削除する必要があります。",
+    "Showing DDL from cached columns because the catalog definition is unavailable.": "カタログ定義を取得できないため、キャッシュされた列から DDL を表示しています。",
+    "CREATE was not confirmed; {target} may exist. Inspect the target before retrying. It was not removed automatically.": "CREATE の完了を確認できなかったため、{target} が存在する可能性があります。再試行する前に作成先を確認してください。自動削除は行われていません。",
     "Ambiguous principal name": "ユーザーまたはロールの名前が曖昧です",
     "Could not read explicit table grants; catalog access is required": "テーブルへの明示的な権限付与を読み取れませんでした。カタログへのアクセスが必要です",
     "Could not read table grant principals; catalog access is required": "テーブル権限のユーザーとロールを読み取れませんでした。カタログへのアクセスが必要です",
@@ -1380,6 +1392,7 @@
     "This principal has grant options, column permissions, ownership, or grants from another grantor; edit these grants in the SQL editor": "このユーザーまたはロールには、権限付与オプション、列権限、所有権、または別の付与者からの権限があります。SQL エディターで編集してください",
     "Unsupported table privilege": "対応していないテーブル権限です",
     "Use the table owner role to edit Snowflake table grants": "Snowflake のテーブル権限を編集するには、テーブルの所有者ロールを使用してください",
-    "Viewing all table grants requires VIEW DEFINITION on the database": "すべてのテーブル権限を表示するには、データベースに対する VIEW DEFINITION 権限が必要です"
+    "Viewing all table grants requires VIEW DEFINITION on the database": "すべてのテーブル権限を表示するには、データベースに対する VIEW DEFINITION 権限が必要です",
+    "This ClickHouse version lacks wildcard grant metadata; use the SQL editor": "この ClickHouse バージョンではワイルドカード権限のメタデータが提供されません。SQL エディターを使用してください"
   }
 }

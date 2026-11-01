@@ -189,8 +189,12 @@ pub fn statements(driver: Driver, schema: &str, table: &str, principal: &Princip
 }
 
 fn field<'a>(rs: &ResultSet, row: &'a [Option<String>], name: &str) -> anyhow::Result<&'a str> {
+    nullable_field(rs, row, name)?.context(tr("Incomplete table grant metadata"))
+}
+
+fn nullable_field<'a>(rs: &ResultSet, row: &'a [Option<String>], name: &str) -> anyhow::Result<Option<&'a str>> {
     let index = rs.columns.iter().position(|c| c.eq_ignore_ascii_case(name)).context(tr("Incomplete table grant metadata"))?;
-    row.get(index).and_then(|c| c.as_deref()).context(tr("Incomplete table grant metadata"))
+    row.get(index).map(|value| value.as_deref()).context(tr("Incomplete table grant metadata"))
 }
 
 fn checked_grants(driver: Driver, rs: &ResultSet) -> anyhow::Result<Vec<String>> {
@@ -280,12 +284,53 @@ fn grants_sql(driver: Driver, schema: &str, table: &str, p: &Principal) -> Strin
              UNION ALL SELECT privilege, 0 FROM dba_col_privs WHERE owner = {s} AND table_name = {t} AND grantee = {name}"
         ),
         Driver::Snowflake => format!("SHOW GRANTS ON TABLE {}", Session::quote_table(driver, schema, table)),
-        Driver::ClickHouse => format!(
-            "SELECT toString(access_type) AS privilege, if(grant_option = 0 AND is_partial_revoke = 0 AND is_wildcard = 0 AND `column` IS NULL AND database = {s} AND `table` = {t}, 1, 0) AS editable \
-             FROM system.grants WHERE (user_name = {name} OR role_name = {name}) AND (is_wildcard = 1 OR ((database = {s} OR database IS NULL) AND (`table` = {t} OR `table` IS NULL)))"
-        ),
+        // Read the actual column list: older catalogs do not expose is_wildcard.
+        Driver::ClickHouse => format!("SELECT * FROM system.grants WHERE user_name = {name} OR role_name = {name}"),
         _ => String::new(),
     }
+}
+
+fn clickhouse_snapshot(rs: &ResultSet, schema: &str, table: &str, legacy_version: Option<&str>) -> anyhow::Result<ResultSet> {
+    anyhow::ensure!(!rs.truncated, tr("Table grant metadata was truncated"));
+    for name in ["access_type", "database", "table", "column", "is_partial_revoke", "grant_option"] {
+        anyhow::ensure!(rs.columns.iter().any(|column| column.eq_ignore_ascii_case(name)), tr("Incomplete table grant metadata"));
+    }
+    let has_wildcard = rs.columns.iter().any(|column| column.eq_ignore_ascii_case("is_wildcard"));
+    if !has_wildcard {
+        let mut version = legacy_version.context(tr("Incomplete table grant metadata"))?.split('.');
+        let major: u32 = version.next().context(tr("Incomplete table grant metadata"))?.parse().context(tr("Incomplete table grant metadata"))?;
+        let minor: u32 = version.next().context(tr("Incomplete table grant metadata"))?.parse().context(tr("Incomplete table grant metadata"))?;
+        // Prefix grants exist since 24.10, including releases whose catalog loses the prefix flag.
+        anyhow::ensure!((major, minor) < (24, 10), tr("This ClickHouse version lacks wildcard grant metadata; use the SQL editor"));
+    }
+    let mut result = ResultSet { columns: vec!["privilege".into(), "editable".into()], ..Default::default() };
+    for row in &rs.rows {
+        let wildcard = if has_wildcard {
+            match field(rs, row, "is_wildcard")? {
+                "0" => false,
+                "1" => true,
+                _ => anyhow::bail!(tr("Incomplete table grant metadata")),
+            }
+        } else {
+            false
+        };
+        let database = nullable_field(rs, row, "database")?;
+        let grant_table = nullable_field(rs, row, "table")?;
+        // The prefix flag applies to the last specified path component: db*.* or db.table*.
+        let database_matches = database.is_none_or(|name| if wildcard && grant_table.is_none() { schema.starts_with(name) } else { schema == name });
+        let table_matches = grant_table.is_none_or(|name| if wildcard { table.starts_with(name) } else { table == name });
+        if !database_matches || !table_matches {
+            continue;
+        }
+        let editable = !wildcard
+            && database == Some(schema)
+            && grant_table == Some(table)
+            && nullable_field(rs, row, "column")?.is_none()
+            && field(rs, row, "is_partial_revoke")? == "0"
+            && field(rs, row, "grant_option")? == "0";
+        result.rows.push(vec![Some(field(rs, row, "access_type")?.into()), Some(if editable { "1" } else { "0" }.into())]);
+    }
+    Ok(result)
 }
 
 /// Requires catalog visibility; a missing permission is an error, never an empty grant list.
@@ -324,7 +369,15 @@ pub async fn load(session: &mut Session, driver: Driver, schema: &str, table: &s
         anyhow::ensure!(principals.contains(p), tr("The principal no longer exists or is not visible"));
         let raw =
             query(session, &grants_sql(driver, schema, table, p)).await.context(tr("Could not read explicit table grants; catalog access is required"))?;
-        let raw = if driver == Driver::Snowflake {
+        let raw = if driver == Driver::ClickHouse {
+            let version = if raw.columns.iter().any(|column| column.eq_ignore_ascii_case("is_wildcard")) {
+                None
+            } else {
+                let version = query(session, "SELECT version() AS version").await?;
+                Some(field(&version, version.rows.first().context(tr("Incomplete table grant metadata"))?, "version")?.to_string())
+            };
+            clickhouse_snapshot(&raw, schema, table, version.as_deref())?
+        } else if driver == Driver::Snowflake {
             // SHOW GRANTS hides grant options in managed access schemas.
             let schema_state = query(
                 session,
@@ -371,6 +424,122 @@ mod tests {
 
     fn rights(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| (*v).into()).collect()
+    }
+
+    type ClickHouseGrant<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a str>, &'a str, u8, u8, u8);
+
+    fn clickhouse_catalog(rows: &[ClickHouseGrant<'_>], wildcard_column: bool) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!("ATTACH ':memory:' AS system; CREATE TABLE system.grants(user_name TEXT,role_name TEXT,access_type TEXT,database TEXT,\"table\" TEXT,\"column\" TEXT,is_partial_revoke INTEGER,grant_option INTEGER{});", if wildcard_column { ",is_wildcard INTEGER" } else { "" })).unwrap();
+        for &(database, table, column, privilege, wildcard, grant_option, partial_revoke) in rows {
+            db.execute("INSERT INTO system.grants(user_name,access_type,database,\"table\",\"column\",is_partial_revoke,grant_option) VALUES('reader',?1,?2,?3,?4,?5,?6)", rusqlite::params![privilege,database,table,column,partial_revoke,grant_option]).unwrap();
+            if wildcard_column {
+                db.execute("UPDATE system.grants SET is_wildcard=?1 WHERE rowid=last_insert_rowid()", [wildcard]).unwrap();
+            }
+        }
+        db
+    }
+
+    fn clickhouse_fixture_query(db: &rusqlite::Connection, schema: &str, table: &str) -> ResultSet {
+        // Adapt only ClickHouse's scalar aliases; execute the production scope predicate unchanged.
+        let sql = grants_sql(Driver::ClickHouse, schema, table, &principal("reader", ""))
+            .replace("toString(access_type)", "CAST(access_type AS TEXT)")
+            .replace("if(", "iif(");
+        let mut stmt = db.prepare(&sql).unwrap();
+        let columns = stmt.column_names().into_iter().map(String::from).collect();
+        let rows = stmt
+            .query_map([], |row| {
+                (0..row.as_ref().column_count())
+                    .map(|index| {
+                        Ok(match row.get_ref(index)? {
+                            rusqlite::types::ValueRef::Null => None,
+                            rusqlite::types::ValueRef::Text(value) => Some(String::from_utf8(value.to_vec()).unwrap()),
+                            rusqlite::types::ValueRef::Integer(value) => Some(value.to_string()),
+                            _ => panic!("unexpected catalog fixture type"),
+                        })
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        ResultSet { columns, rows, ..Default::default() }
+    }
+
+    #[test]
+    fn clickhouse_ignores_unrelated_wildcard_scopes() {
+        let db = clickhouse_catalog(
+            &[
+                (Some("sales"), Some("orders"), None, "SELECT", 0, 0, 0),
+                (Some("archive"), None, None, "ALL", 1, 0, 0),
+                (Some("sales"), Some("archive"), None, "INSERT", 1, 0, 0),
+                (Some("sal"), Some("ord"), None, "SELECT", 1, 0, 0),
+                (Some("sal%"), None, None, "SELECT", 1, 0, 0),
+                (Some("sales"), Some("ord_"), None, "UPDATE", 1, 0, 0),
+            ],
+            true,
+        );
+        db.execute("INSERT INTO system.grants(user_name,access_type,database,\"table\",is_partial_revoke,grant_option,is_wildcard) VALUES('someone_else','UPDATE','sales','orders',0,1,0)", []).unwrap();
+        let raw = clickhouse_fixture_query(&db, "sales", "orders");
+        let snapshot = clickhouse_snapshot(&raw, "sales", "orders", None).unwrap();
+        assert_eq!(checked_grants(Driver::ClickHouse, &snapshot).unwrap(), ["SELECT"]);
+    }
+
+    #[test]
+    fn clickhouse_rejects_matching_broad_scopes_and_grant_metadata() {
+        for row in [
+            (Some("sal"), None, None, "SELECT", 1, 0, 0),
+            (Some("sales"), Some("ord"), None, "SELECT", 1, 0, 0),
+            (Some("sales"), Some("orders"), None, "SELECT", 1, 0, 0),
+            (None, None, None, "SELECT", 0, 0, 0),
+            (Some("sales"), None, None, "SELECT", 0, 0, 0),
+            (Some("sales"), Some("orders"), Some("id"), "SELECT", 0, 0, 0),
+            (Some("sales"), Some("orders"), None, "SELECT", 0, 1, 0),
+            (Some("sales"), Some("orders"), None, "SELECT", 0, 0, 1),
+        ] {
+            let db = clickhouse_catalog(&[row], true);
+            let raw = clickhouse_fixture_query(&db, "sales", "orders");
+            let snapshot = clickhouse_snapshot(&raw, "sales", "orders", None).unwrap();
+            assert!(checked_grants(Driver::ClickHouse, &snapshot).is_err(), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn clickhouse_legacy_exact_grants_do_not_require_wildcard_column() {
+        for (schema, table) in [("sales", "orders"), ("sa*les", "ord_ers%")] {
+            let db = clickhouse_catalog(&[(Some(schema), Some(table), None, "SELECT", 0, 0, 0)], false);
+            let raw = clickhouse_fixture_query(&db, schema, table);
+            let snapshot = clickhouse_snapshot(&raw, schema, table, Some("24.9.3.128")).unwrap();
+            assert_eq!(checked_grants(Driver::ClickHouse, &snapshot).unwrap(), ["SELECT"]);
+        }
+    }
+
+    #[test]
+    fn clickhouse_legacy_prefix_capable_catalogs_fail_closed() {
+        let raw = ResultSet {
+            columns: ["user_name", "role_name", "access_type", "database", "table", "column", "is_partial_revoke", "grant_option"].map(String::from).into(),
+            rows: vec![],
+            ..Default::default()
+        };
+        assert!(clickhouse_snapshot(&raw, "sales", "orders", Some("24.10.1.2812")).is_err());
+        assert!(clickhouse_snapshot(&raw, "sales", "orders", Some("unknown")).is_err());
+        assert!(clickhouse_snapshot(&raw, "sales", "orders", None).is_err());
+    }
+
+    #[test]
+    fn clickhouse_malformed_catalogs_never_become_editable_snapshots() {
+        let db = clickhouse_catalog(&[(Some("sales"), Some("orders"), None, "SELECT", 0, 0, 0)], true);
+        let raw = clickhouse_fixture_query(&db, "sales", "orders");
+        let mut bad = raw.clone();
+        bad.truncated = true;
+        assert!(clickhouse_snapshot(&bad, "sales", "orders", None).is_err());
+        bad = raw.clone();
+        bad.columns.retain(|name| name != "grant_option");
+        assert!(clickhouse_snapshot(&bad, "sales", "orders", None).is_err());
+        bad = raw;
+        let wildcard = bad.columns.iter().position(|name| name == "is_wildcard").unwrap();
+        bad.rows[0][wildcard] = Some("2".into());
+        assert!(clickhouse_snapshot(&bad, "sales", "orders", None).is_err());
     }
 
     #[test]
