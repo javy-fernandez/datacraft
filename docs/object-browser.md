@@ -60,9 +60,17 @@ and unlogged persistence for owned serial sequences.
 
 **Export Table** writes CSV, TSV or JSON from the complete table on a separate
 background connection, independently of the data editor's page and filters. It
-supports read-only sources, row progress and cancellation. **Replace file?** is
+supports read-only sources, row progress and cancellation. **Choose folder…**
+selects the destination folder; the full file path and suggested table filename
+remain editable. There is no native save-file overwrite prompt. **Replace file?** is
 explicit: an existing destination is replaced only after the export succeeds.
-Errors and cancellation preserve the previous file.
+Changing the destination clears that consent. Errors and cancellation preserve
+the previous file. Completed files are published with a native no-replace rename,
+so a competing export cannot overwrite the winner and hard links are not required.
+If the operating system, kernel or filesystem lacks the required atomic operation,
+publication fails safely; there is no partial-copy or check-then-rename fallback.
+Row streaming has no overall time limit. Connection/catalog setup and cleanup
+remain bounded, and cancellation remains available throughout the export.
 
 **Dump SQL File** offers structure and data, structure only, or data only. Data
 exports support SQLite, PostgreSQL, SQL Server, MySQL and MariaDB; structure-only
@@ -71,6 +79,9 @@ generated columns from INSERTs. Data-only dumps require an existing target schem
 and any external parent tables. Non-SQLite self-referencing foreign keys require
 Structure and Data so constraints can be added after the rows. Unsupported
 definition features return an error instead of producing incomplete DDL.
+Data-only SQL Server exports inspect catalog capabilities, omitting references
+to post-2014 catalog fields on older servers while retaining generated/hidden
+column filters whenever those fields are available.
 SQL Server uses snapshot isolation when enabled, otherwise READ COMMITTED, where
 concurrent changes can be visible during the export.
 

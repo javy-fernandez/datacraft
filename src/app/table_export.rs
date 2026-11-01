@@ -37,6 +37,34 @@ enum Intent {
 }
 
 impl Dialog {
+    fn choose_folder(&mut self, folder: PathBuf) {
+        let filename = std::path::Path::new(self.path.trim()).file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_else(|| {
+            let stem = self
+                .table
+                .table
+                .chars()
+                .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+                .collect::<String>();
+            let mut stem = stem.trim_matches([' ', '.']).to_string();
+            if stem.is_empty() {
+                stem = "table".into();
+            }
+            let device = stem.split('.').next().unwrap_or("").to_ascii_uppercase();
+            if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || ["COM", "LPT"]
+                    .iter()
+                    .any(|prefix| device.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")))
+            {
+                stem.insert(0, '_');
+            }
+            format!("{stem}.{}", extension(self.kind)).into()
+        });
+        let path = folder.join(filename).to_string_lossy().into_owned();
+        if path != self.path {
+            self.overwrite = false;
+        }
+        self.path = path;
+    }
     fn title(&self) -> &'static str {
         tr(match self.kind {
             ExportKind::Print { .. } => "Print Table",
@@ -78,14 +106,13 @@ impl Dialog {
                     ui.add_space(10.0);
                     ui.label(tr("Destination file"));
                     ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut self.path).desired_width((ui.available_width() - 90.0).max(40.0)));
-                        if ui.button(tr("Browse…")).clicked()
-                            && let Some(path) = rfd::FileDialog::new()
-                                .add_filter(format_name(self.kind), &[extension(self.kind)])
-                                .set_file_name(format!("{}.{}", self.table.table, extension(self.kind)))
-                                .save_file()
+                        if ui.add(egui::TextEdit::singleline(&mut self.path).desired_width((ui.available_width() - 150.0).max(40.0))).changed() {
+                            self.overwrite = false;
+                        }
+                        if ui.button(tr("Choose folder…")).clicked()
+                            && let Some(folder) = rfd::FileDialog::new().set_title(tr("Choose folder…")).pick_folder()
                         {
-                            self.path = path.to_string_lossy().into_owned();
+                            self.choose_folder(folder);
                         }
                     });
                     ui.checkbox(&mut self.overwrite, tr("Replace file?"))
@@ -244,6 +271,26 @@ impl DataCraftApp {
 mod tests {
     use super::*;
     use egui_kittest::kittest::NodeT;
+
+    #[test]
+    fn review_folder_selection_keeps_a_filename_and_does_not_grant_replacement_consent() {
+        let (mut app, table) = app_and_table();
+        app.open_table_export(table, ExportKind::Csv);
+        let dialog = app.table_export.dialog.as_mut().unwrap();
+        let folder = std::env::temp_dir().join("chosen export folder");
+        dialog.choose_folder(folder.clone());
+        assert_eq!(PathBuf::from(&dialog.path), folder.join("notes.csv"));
+        assert!(!dialog.overwrite);
+        dialog.path = "custom.json".into();
+        dialog.overwrite = true;
+        dialog.choose_folder(folder.clone());
+        assert_eq!(PathBuf::from(&dialog.path), folder.join("custom.json"));
+        assert!(!dialog.overwrite);
+        dialog.table.table = "../outside".into();
+        dialog.path.clear();
+        dialog.choose_folder(folder.clone());
+        assert_eq!(std::path::Path::new(&dialog.path).parent(), Some(folder.as_path()));
+    }
 
     fn app_and_table() -> (DataCraftApp, TableRef) {
         let mut app = super::super::tests::tabs_app();

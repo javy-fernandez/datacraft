@@ -536,15 +536,8 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                 Some(cfg) => {
                     let password = cfg.password.clone();
                     // Composed native driver futures otherwise exhaust the Tokio worker's stack.
-                    let mut operation = Box::pin(crate::db::table_export::export(cfg, &db, *request, Arc::clone(&progress)));
-                    let result = match tokio::time::timeout(std::time::Duration::from_secs(1800), &mut operation).await {
-                        Ok(result) => result,
-                        Err(_) => {
-                            progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), &mut operation).await;
-                            Err(anyhow::anyhow!(tr("Table operation timed out")))
-                        }
-                    };
+                    // Streaming has no total deadline; setup/cleanup bounds and cancellation live in the exporter.
+                    let result = Box::pin(crate::db::table_export::export(cfg, &db, *request, progress)).await;
                     result.map(|rows| (path, rows)).map_err(|error| {
                         let message = format!("{error:#}");
                         if password.is_empty() { message } else { message.replace(&password, "[redacted]") }
