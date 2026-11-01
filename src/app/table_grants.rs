@@ -16,6 +16,12 @@ pub(super) struct State {
     next_request: u64,
 }
 
+impl State {
+    pub(super) fn is_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+}
+
 struct Dialog {
     id: u64,
     table: TableRef,
@@ -461,5 +467,31 @@ mod tests {
         app.open_table_grants(table);
         assert!(app.table_grants.dialog.is_none());
         assert!(app.consoles[index].has_pending_edits());
+    }
+
+    #[test]
+    fn grants_modal_blocks_actual_run_shortcut_until_closed() {
+        for pending in [false, true] {
+            let (mut app, table) = super::super::tests::table_menu_app(Driver::Postgres, true);
+            app.object_browser.active = false;
+            let active = app.active;
+            app.consoles[active].conn = Some(7);
+            app.consoles[active].text = "SELECT 1".into();
+            let mut dialog = Dialog::new(table, Driver::Postgres);
+            dialog.pending = pending;
+            app.table_grants.dialog = Some(dialog);
+            // Exercise the real global routing before dialog rendering, as in the app frame.
+            let mut harness = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut DataCraftApp| app.shortcuts(ui.ctx()), app);
+            harness.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+            harness.run_steps(2);
+            assert!(!harness.state().consoles[active].running, "hidden SQL ran with pending={pending}");
+            assert!(harness.state().consoles[active].last_statements.is_empty());
+            harness.state_mut().table_grants.dialog = None;
+            assert!(!harness.state().modal_open());
+            harness.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+            harness.run_steps(2);
+            assert!(harness.state().consoles[active].running);
+            assert_eq!(harness.state().consoles[active].last_statements, ["SELECT 1"]);
+        }
     }
 }

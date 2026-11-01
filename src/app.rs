@@ -2503,6 +2503,7 @@ impl DataCraftApp {
             || self.confirm_analyze.is_some()
             || self.create.is_some()
             || self.views.dialog.is_some()
+            || self.table_grants.is_open()
             || self.routines.is_open()
             || self.drop.is_some()
             || self.import.is_some()
