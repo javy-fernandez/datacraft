@@ -21,7 +21,9 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
     macro_rules! button {
         ($ui:expr, $enabled:expr, $label:expr, $action:expr) => {{
             if $ui.add_enabled($enabled, egui::Button::new(tr($label))).clicked() {
-                if let Some(t) = tables.first() { actions.push($action(t)); }
+                if let Some(t) = tables.first() {
+                    actions.push($action(t));
+                }
                 $ui.close();
             }
         }};
@@ -70,7 +72,9 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
             ui.menu_button(tr("Duplicate Table"), |ui| {
                 for (data, label) in [(true, "Structure and Data"), (false, "Structure Only")] {
                     if ui.button(tr(label)).clicked() {
-                        if let Some(table) = tables.first() { actions.push(ExplorerAction::DuplicateTable(table.clone(), data)); }
+                        if let Some(table) = tables.first() {
+                            actions.push(ExplorerAction::DuplicateTable(table.clone(), data));
+                        }
                         ui.close();
                     }
                 }
@@ -90,7 +94,9 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         button!(cx.connected && single, "Generate SELECT", &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone()));
         button!(cx.connected && table, "Generate INSERT", &|t: &TableRef| ExplorerAction::GenerateInsert(t.clone()));
     }
-    button!(single, "Show DDL", &|t: &TableRef| ExplorerAction::GenerateDdl(t.clone()));
+    if sql || cx.driver == Driver::Kusto {
+        button!(single, "Show DDL", &|t: &TableRef| ExplorerAction::GenerateDdl(t.clone()));
+    }
     if cx.driver.can_copy() {
         button!(cx.connected && single, "Copy Table To…", &|t: &TableRef| ExplorerAction::CopyTable(t.clone()));
     }
@@ -106,6 +112,71 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
     button!(cx.connected && single, "Object Information", &|t: &TableRef| ExplorerAction::ObjectInformation(t.clone()));
     if sql {
         ui.separator();
-        button!(writable && single, "Drop…", &|t: &TableRef| ExplorerAction::DropObject(t.clone(), kind.unwrap_or(ObjectKind::Table)));
+        let response = ui.add_enabled(writable && single, egui::Button::new(egui::RichText::new(tr("Drop…")).color(crate::ui::theme::pal(ui).error)));
+        let response = response.on_disabled_hover_text(if !cx.connected {
+            tr("The connection is not open")
+        } else if cx.read_only {
+            tr("Read-only connection")
+        } else {
+            tr("Select one supported table")
+        });
+        if response.clicked() {
+            if let Some(t) = tables.first() {
+                actions.push(ExplorerAction::DropObject(t.clone(), kind.unwrap_or(ObjectKind::Table)));
+            }
+            ui.close();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::{Harness, kittest::Queryable};
+
+    #[test]
+    fn ddl_is_offered_for_sql_and_kusto_but_not_other_nosql_objects() {
+        for driver in Driver::ALL {
+            for connected in [false, true] {
+                let h = Harness::new_ui(|ui| {
+                    let table = TableRef { conn: 1, db: "db".into(), schema: "s".into(), table: "t".into() };
+                    show(ui, &[table], Some(ObjectKind::Table), TableContext { driver, connected, read_only: false }, &mut vec![]);
+                });
+                let expected = !matches!(driver, Driver::Redis | Driver::MongoDb | Driver::InfluxDb);
+                assert_eq!(h.query_by_label("Show DDL").is_some(), expected, "{driver:?}, connected={connected}");
+            }
+        }
+    }
+
+    #[test]
+    fn drop_action_is_painted_with_the_theme_error_color() {
+        fn drop_color(shape: &egui::Shape) -> Option<egui::Color32> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Drop…" => text.override_text_color.or_else(|| {
+                    text.galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|section| if section.format.color == egui::Color32::PLACEHOLDER { text.fallback_color } else { section.format.color })
+                }),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(drop_color),
+                _ => None,
+            }
+        }
+        for dark in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let mut expected = egui::Color32::TRANSPARENT;
+            let mut output = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 1400.0))), ..Default::default() },
+                |ui| {
+                    expected = crate::ui::theme::pal(ui).error;
+                    let table = TableRef { conn: 1, db: "db".into(), schema: "s".into(), table: "t".into() };
+                    show(ui, &[table], Some(ObjectKind::Table), TableContext { driver: Driver::Sqlite, connected: true, read_only: false }, &mut vec![]);
+                },
+            );
+            output.textures_delta.clear();
+            assert_eq!(output.shapes.iter().find_map(|shape| drop_color(&shape.shape)), Some(expected));
+        }
     }
 }
