@@ -17,6 +17,7 @@ pub type ConnId = u64;
 pub type ConsoleId = u64;
 
 pub enum Request {
+    TableShortcut { path: std::path::PathBuf, target: crate::table_shortcut::Target },
     TableDuplicate { conn: ConnId, db: String, request_id: u64, operation: Box<crate::db::table_duplicate::Operation>, progress: Arc<crate::db::table_duplicate::Progress> },
     ExportTable { conn: ConnId, db: String, request_id: u64, request: Box<crate::db::table_export::ExportRequest>, progress: Arc<crate::db::table_export::ExportProgress> },
     OpenTableReport { request_id: u64, path: std::path::PathBuf },
@@ -104,6 +105,7 @@ pub enum Request {
 }
 
 pub enum Response {
+    TableShortcut { result: Result<std::path::PathBuf, String> },
     TableDuplicate { conn: ConnId, request_id: u64, result: Result<crate::db::table_duplicate::Outcome, String> },
     TableExported { conn: ConnId, request_id: u64, result: Result<(std::path::PathBuf, u64), String> },
     TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
@@ -512,6 +514,10 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
 
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
+        Request::TableShortcut { path, target } => {
+            let result = tokio::task::spawn_blocking(move || crate::table_shortcut::create(&path, &target).map(|_| path)).await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| format!("{e:#}")));
+            vec![Response::TableShortcut { result }]
+        }
         Request::TableDuplicate { conn, db, request_id, operation, progress } => {
             let cfg = state.live.lock().await.get(&conn).map(|live| live.cfg.clone());
             let result = match cfg {

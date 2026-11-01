@@ -66,6 +66,7 @@ mod routines;
 mod table_duplicate;
 mod views;
 mod table_export;
+mod table_shortcuts;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -360,6 +361,7 @@ pub struct DataCraftApp {
     status_msg: Option<(String, bool)>,
     /// Last connection id handed out (so ids are monotonic).
     last_conn_id: u64,
+    startup_table: Option<crate::table_shortcut::Target>,
     /// Demo mode: open the first table's data editor on connect.
     demo_pending: bool,
     /// Demo mode: simulated changes to apply when the data editor loads.
@@ -454,6 +456,7 @@ impl DataCraftApp {
             auto_complete: persisted.auto_complete,
             status_msg: None,
             last_conn_id,
+            startup_table: None,
             demo_pending: false,
             demo_edit: None,
             zoom: clamp_zoom(persisted.zoom),
@@ -662,6 +665,7 @@ impl DataCraftApp {
 
     fn disconnect(&mut self, id: ConnId) {
         self.cancel_table_duplicate(id);
+        self.cancel_startup_table(id);
         if let Some(c) = self.conn_mut(id) {
             c.status = ConnStatus::Disconnected;
             c.clear();
@@ -702,6 +706,7 @@ impl DataCraftApp {
                         }
                     }
                     self.recheck_edit_targets(conn);
+                    self.open_startup_table(conn);
                     if self.demo_pending {
                         self.demo_pending = false;
                         if std::env::var("DATACRAFT_DEMO_USERS").is_ok() {
@@ -801,6 +806,7 @@ impl DataCraftApp {
                 }
                 Response::ConnectFailed { conn, error } => {
                     self.cancel_table_duplicate(conn);
+                    self.cancel_startup_table(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
                     if let Some(c) = self.conn_mut(conn) {
                         // Also if it was connected: the session is lost and the next run
@@ -871,6 +877,7 @@ impl DataCraftApp {
                     self.attach_edit_targets(console);
                     self.apply_demo_edit(console);
                 }
+                Response::TableShortcut { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
@@ -1631,6 +1638,7 @@ impl DataCraftApp {
                 ExplorerAction::PrintTable(t) => self.open_table_export(t, crate::db::table_export::ExportKind::Print { data: false }),
                 ExplorerAction::CopyTable(t) => self.open_copy(t),
                 ExplorerAction::RenameTable(t) => self.open_object_dialog(t, DropKind::Rename),
+                ExplorerAction::TableShortcut(t) => self.create_table_shortcut(t),
                 ExplorerAction::ModifyTable(t) => self.open_modify_table(t),
                 ExplorerAction::NewConsole(id, db) => {
                     let i = self.new_console(Some(id), None, String::new());
@@ -2343,6 +2351,7 @@ impl DataCraftApp {
     }
 
     fn delete_connection(&mut self, id: ConnId) {
+        self.cancel_startup_table(id);
         self.worker.send(Request::Disconnect(id));
         self.conns.retain(|c| c.cfg.id != id);
         self.object_browser.organizations.retain(|o| o.conn != id);
@@ -3609,7 +3618,7 @@ impl DataCraftApp {
                     self.persist_connections();
                     self.connect(id);
                 }
-                Some(false) => self.ask_password = None,
+                Some(false) => { self.ask_password = None; self.cancel_startup_table(id); }
                 None => {}
             }
         }
@@ -4403,6 +4412,7 @@ mod tests {
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
+            startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
             modify: None,

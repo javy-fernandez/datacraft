@@ -82,6 +82,7 @@ pub enum ExplorerAction {
     /// "Copy Table To…" another connection, database or schema.
     CopyTable(TableRef),
     RenameTable(TableRef),
+    TableShortcut(TableRef),
     /// "Modify Table…": columns, primary key, indexes and name.
     ModifyTable(TableRef),
     /// Load a database's schema when it is expanded.
