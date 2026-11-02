@@ -21,7 +21,8 @@ const TOOLTIP_CHARS: usize = 2000;
 #[derive(Debug, PartialEq, Eq)]
 pub enum MonitorAction {
     Refresh,
-    Act(Action),
+    /// The action, and the epoch of the list its session was picked from.
+    Act(Action, u64),
     Close,
 }
 
@@ -32,6 +33,8 @@ pub struct SessionMonitor {
     /// Connection name.
     pub name: String,
     list: Option<SessionList>,
+    /// The connection epoch the list was read in.
+    epoch: u64,
     error: Option<String>,
     /// Local time of the last list.
     updated: Option<String>,
@@ -59,6 +62,7 @@ impl SessionMonitor {
             read_only,
             name,
             list: None,
+            epoch: 0,
             error: None,
             updated: None,
             last: None,
@@ -88,8 +92,14 @@ impl SessionMonitor {
         self.outcome = None;
     }
 
+    /// The connection was closed or opened again: what was listed (and picked from it) is gone,
+    /// and a new list is read once it is connected.
+    pub fn reset(&mut self) {
+        *self = Self { auto: self.auto, hide_idle: self.hide_idle, filter: std::mem::take(&mut self.filter), ..Self::new(self.conn, self.driver, self.read_only, std::mem::take(&mut self.name)) };
+    }
+
     /// A list reply; stale ones (an older refresh) are ignored.
-    pub fn receive_list(&mut self, request_id: u64, result: Result<SessionList, String>) {
+    pub fn receive_list(&mut self, request_id: u64, epoch: u64, result: Result<SessionList, String>) {
         if self.pending != Some(request_id) {
             return;
         }
@@ -101,6 +111,7 @@ impl SessionMonitor {
                     self.selected = None;
                 }
                 self.list = Some(list);
+                self.epoch = epoch;
                 self.error = None;
                 self.updated = Some(chrono::Local::now().format("%H:%M:%S").to_string());
             }
@@ -122,14 +133,17 @@ impl SessionMonitor {
     #[cfg(all(test, target_os = "windows"))]
     pub(crate) fn show_list(&mut self, list: SessionList, updated: &str, selected: &str) {
         self.refresh_sent(0);
-        self.receive_list(0, Ok(list));
+        self.receive_list(0, 1, Ok(list));
         self.updated = Some(updated.into());
         self.selected = Some(selected.into());
     }
 
+    /// The selected row, while the filters show it (a hidden row is never acted on).
     fn selected_row(&self) -> Option<&SessionRow> {
         let selected = self.selected.as_ref()?;
-        self.list.as_ref()?.rows.iter().find(|r| r.label() == *selected)
+        let rows = &self.list.as_ref()?.rows;
+        let row = rows.iter().find(|r| r.label() == *selected)?;
+        sessions::visible(row, &self.filter.trim().to_lowercase(), self.hide_idle, &sessions::blockers(rows)).then_some(row)
     }
 
     /// Why `kind` can't be done on the selected session (None when it can).
@@ -150,6 +164,9 @@ impl SessionMonitor {
         let Some(row) = self.selected_row() else { return Some(tr("Select a session")) };
         if row.own {
             return Some(tr("This is the monitor's own session"));
+        }
+        if row.restricted {
+            return Some(tr("This session's details are hidden, so it can't be identified safely"));
         }
         if self.acting.is_some() {
             return Some(tr("Wait for the current action to finish"));
@@ -386,7 +403,7 @@ impl SessionMonitor {
                     }
                     row.col(|ui| {
                         cell(ui);
-                        let mut state = session.state.clone();
+                        let mut state = if session.restricted { tr("insufficient privilege").to_string() } else { session.state.clone() };
                         if session.in_transaction {
                             state = format!("{state} · {}", tr("in transaction"));
                         }
@@ -543,7 +560,7 @@ impl SessionMonitor {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let danger = egui::Button::new(RichText::new(button).color(Color32::WHITE)).fill(p.stop).stroke(Stroke::new(1.0, p.stop)).corner_radius(6).min_size(vec2(72.0, 28.0));
                 if ui.add_enabled(sql.is_ok(), danger).clicked() {
-                    actions.push(MonitorAction::Act(action.clone()));
+                    actions.push(MonitorAction::Act(action.clone(), self.epoch));
                     close = true;
                 }
                 if theme::secondary_button(ui, tr("Go Back")).clicked() {
@@ -599,7 +616,9 @@ mod tests {
     fn monitor(driver: Driver, read_only: bool) -> SessionMonitor {
         let mut m = SessionMonitor::new(1, driver, read_only, "local".into());
         m.refresh_sent(7);
-        m.receive_list(7, Ok(SessionList { rows: vec![session("10", "active", false), session("11", "idle", false), session("12", "active", true)], notice: None }));
+        let mut hidden = session("13", "", false);
+        hidden.restricted = true;
+        m.receive_list(7, 3, Ok(SessionList { rows: vec![session("10", "active", false), session("11", "idle", false), session("12", "active", true), hidden], notice: None }));
         m
     }
 
@@ -615,6 +634,8 @@ mod tests {
         assert_eq!(m.disabled_reason(ActionKind::Terminate, true), None);
         m.selected = Some("12".into());
         assert_eq!(m.disabled_reason(ActionKind::Terminate, true), Some(tr("This is the monitor's own session")));
+        m.selected = Some("13".into());
+        assert_eq!(m.disabled_reason(ActionKind::Terminate, true), Some(tr("This session's details are hidden, so it can't be identified safely")));
 
         let mut ro = monitor(Driver::Postgres, true);
         ro.selected = Some("10".into());
@@ -626,14 +647,43 @@ mod tests {
     }
 
     #[test]
+    fn hidden_rows_are_never_acted_on() {
+        let mut m = monitor(Driver::Postgres, false);
+        m.selected = Some("11".into());
+        assert_eq!(m.disabled_reason(ActionKind::Terminate, true), None);
+        m.hide_idle = true;
+        assert_eq!(m.disabled_reason(ActionKind::Terminate, true), Some(tr("Select a session")), "hidden by Hide idle sessions");
+        m.hide_idle = false;
+        m.filter = "no such session".into();
+        assert!(m.selected_row().is_none(), "hidden by the filter");
+        m.filter.clear();
+        assert_eq!(m.selected_row().map(|r| r.id.as_str()), Some("11"), "shown again, selected again");
+    }
+
+    #[test]
+    fn a_reconnect_clears_the_list_and_actions_carry_its_epoch() {
+        let mut m = monitor(Driver::Postgres, false);
+        assert_eq!(m.epoch, 3);
+        m.selected = Some("10".into());
+        m.confirm = Some((Action::new(ActionKind::Cancel, &session("10", "active", false)), session("10", "active", false)));
+        m.hide_idle = true;
+        m.refresh_sent(9);
+        m.reset();
+        assert!(m.list.is_none() && m.selected.is_none() && m.confirm.is_none() && m.pending.is_none() && m.last.is_none());
+        assert!(m.hide_idle, "the view settings stay");
+        m.receive_list(9, 3, Ok(SessionList::default()));
+        assert!(m.list.is_none(), "a reply to a request from before the reset is ignored");
+    }
+
+    #[test]
     fn stale_replies_are_ignored_and_actions_refresh() {
         let mut m = monitor(Driver::Postgres, false);
         m.refresh_sent(8);
-        m.receive_list(7, Err("old".into()));
+        m.receive_list(7, 3, Err("old".into()));
         assert!(m.error.is_none() && m.pending == Some(8));
-        m.receive_list(8, Err("permission denied for pg_stat_activity".into()));
+        m.receive_list(8, 3, Err("permission denied for pg_stat_activity".into()));
         assert_eq!(m.error.as_deref(), Some("permission denied for pg_stat_activity"));
-        assert_eq!(m.list.as_ref().map(|l| l.rows.len()), Some(3), "the last list stays");
+        assert_eq!(m.list.as_ref().map(|l| l.rows.len()), Some(4), "the last list stays");
         let action = Action::new(ActionKind::Terminate, &session("10", "active", false));
         m.action_sent(9, action);
         m.receive_action(3, Ok(()));

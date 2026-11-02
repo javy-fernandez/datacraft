@@ -1508,6 +1508,12 @@
     "in transaction": "事务中",
     "monitor": "监视器",
     "{n} blocked": "{n} 个被阻塞",
-    "{shown} of {total} sessions": "{shown} / {total} 个会话"
+    "{shown} of {total} sessions": "{shown} / {total} 个会话",
+    "The session changed since the list was read; refresh and try again": "读取列表后会话已发生变化；请刷新后重试",
+    "{n} sessions of other roles show no details: grant pg_read_all_stats to see them": "其他角色的 {n} 个会话不显示详细信息：授予 pg_read_all_stats 后即可查看",
+    "The query cannot be cancelled ({status})": "无法取消该查询（{status}）",
+    "The list is from an earlier connection; refresh and try again": "该列表来自之前的连接；请刷新后重试",
+    "This session's details are hidden, so it can't be identified safely": "此会话的详细信息被隐藏，无法安全地识别它",
+    "insufficient privilege": "权限不足"
   }
 }

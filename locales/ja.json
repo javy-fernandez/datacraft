@@ -1508,6 +1508,12 @@
     "in transaction": "トランザクション中",
     "monitor": "モニター",
     "{n} blocked": "{n} 件ブロック中",
-    "{shown} of {total} sessions": "{total} 件中 {shown} 件のセッション"
+    "{shown} of {total} sessions": "{total} 件中 {shown} 件のセッション",
+    "The session changed since the list was read; refresh and try again": "一覧を読み取った後にセッションが変わりました。更新してからもう一度お試しください",
+    "{n} sessions of other roles show no details: grant pg_read_all_stats to see them": "他のロールの {n} 件のセッションは詳細が表示されません。表示するには pg_read_all_stats を付与してください",
+    "The query cannot be cancelled ({status})": "クエリをキャンセルできません ({status})",
+    "The list is from an earlier connection; refresh and try again": "この一覧は以前の接続のものです。更新してからもう一度お試しください",
+    "This session's details are hidden, so it can't be identified safely": "このセッションの詳細は非表示のため、安全に特定できません",
+    "insufficient privilege": "権限不足"
   }
 }

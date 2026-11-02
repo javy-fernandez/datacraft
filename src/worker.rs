@@ -111,7 +111,10 @@ pub enum Request {
     /// Session Monitor: the server's sessions, on the connection's monitor session.
     Sessions { conn: ConnId, request_id: u64 },
     /// Session Monitor: cancels a query or terminates a session, on the monitor session.
-    SessionAction { conn: ConnId, request_id: u64, action: crate::db::sessions::Action },
+    /// `epoch`: that of the list the session was picked from (refused after a reconnect).
+    SessionAction { conn: ConnId, request_id: u64, epoch: u64, action: crate::db::sessions::Action },
+    /// The last Session Monitor window of the connection closed: its session is closed too.
+    CloseSessionMonitor(ConnId),
 }
 
 pub enum Response {
@@ -172,7 +175,8 @@ pub enum Response {
     DatabaseChoices { conn: ConnId, result: Result<crate::db::create_db::DatabaseChoices, String> },
     /// Result of `Users`.
     Users { conn: ConnId, result: Result<crate::db::users::UsersReply, String> },
-    Sessions { conn: ConnId, request_id: u64, result: Result<crate::db::sessions::SessionList, String> },
+    /// `epoch`: the connection's when the list was read, to send back with an action.
+    Sessions { conn: ConnId, request_id: u64, epoch: u64, result: Result<crate::db::sessions::SessionList, String> },
     SessionAction { conn: ConnId, request_id: u64, result: Result<(), String> },
 }
 
@@ -278,7 +282,7 @@ impl State {
             Request::Connect(cfg) => cfg.id,
             Request::Disconnect(conn) => *conn,
             // Stamp queued grant writes so they cannot cross a disconnect/reconnect.
-            Request::TableGrants { conn, .. } | Request::SessionAction { conn, .. } => return self.current_epoch(*conn),
+            Request::TableGrants { conn, .. } => return self.current_epoch(*conn),
             _ => return 0,
         };
         let mut epochs = self.epochs.lock().unwrap_or_else(|e| e.into_inner());
@@ -705,19 +709,27 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
         }
         Request::Users { conn, request } => vec![Response::Users { conn, result: fetch_users(state, conn, &request).await }],
         Request::Sessions { conn, request_id } => {
+            let epoch = state.current_epoch(conn);
             let result = on_monitor(state, conn, |s, driver| Box::pin(crate::db::sessions::list(s, driver))).await;
-            vec![Response::Sessions { conn, request_id, result }]
+            vec![Response::Sessions { conn, request_id, epoch, result }]
         }
-        Request::SessionAction { conn, request_id, action } => {
+        Request::SessionAction { conn, request_id, epoch, action } => {
             let read_only = state.live.lock().await.get(&conn).is_none_or(|l| l.cfg.read_only);
+            // The ids of a list read before a reconnect may name other sessions by now.
             let result = if state.current_epoch(conn) != epoch {
-                Err(tr("The connection is not open").into())
+                Err(tr("The list is from an earlier connection; refresh and try again").into())
             } else if read_only {
                 Err(tr("Read-only connection").into())
             } else {
                 on_monitor(state, conn, move |s, driver| Box::pin(async move { crate::db::sessions::act(s, driver, &action).await })).await
             };
             vec![Response::SessionAction { conn, request_id, result }]
+        }
+        Request::CloseSessionMonitor(conn) => {
+            if let Some(l) = state.live.lock().await.get_mut(&conn) {
+                l.monitor = None;
+            }
+            Vec::new()
         }
         Request::RunScript { conn, db, files, run } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
@@ -1262,6 +1274,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_actions_need_the_list_epoch_and_closing_drops_the_monitor_session() {
+        use crate::db::sessions::{Action, ActionKind};
+        let state = State::default();
+        let path = std::env::temp_dir().join(format!("datacraft-monitor-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&path).unwrap();
+        let mut cfg = ConnectionConfig::new(8, Driver::Sqlite);
+        cfg.file_path = path.display().to_string();
+        let monitor = Arc::new(Mutex::new(Session::connect(&cfg).await.unwrap()));
+        state.live.lock().await.insert(8, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: Some(monitor) });
+        state.bump_if_lifecycle(&Request::Disconnect(8));
+        let action = Action { kind: ActionKind::Terminate, id: "1".into(), serial: None, started: None, user: String::new(), client: String::new() };
+        let stale = Request::SessionAction { conn: 8, request_id: 1, epoch: 0, action };
+        let responses = Box::pin(handle(stale, 0, &state)).await;
+        let [Response::SessionAction { result: Err(error), .. }] = responses.as_slice() else { panic!("expected a refusal") };
+        assert_eq!(error, tr("The list is from an earlier connection; refresh and try again"));
+        assert!(Box::pin(handle(Request::CloseSessionMonitor(8), 0, &state)).await.is_empty());
+        assert!(state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_none()));
+        state.live.lock().await.clear();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
     async fn grants_worker_rejects_read_only_and_invalidated_connection_requests() {
         use crate::db::table_privileges::{Edit, Principal, Request as GrantsRequest};
         let state = State::default();
@@ -1453,11 +1487,13 @@ mod tests {
         wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
         w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select pg_sleep(30) /* dc monitor test */".into()], max_rows: 10 });
         let started = Instant::now();
-        let mut row = None;
+        let (mut row, mut epoch, mut monitor_pid) = (None, 0, String::new());
         for request_id in 1..=50 {
             w.send(Request::Sessions { conn: 33, request_id });
-            let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: id, .. } if *id == request_id)) else { unreachable!() };
-            row = result.unwrap().rows.into_iter().find(|r| r.query.contains("dc monitor test") && r.state == "active" && !r.own);
+            let Response::Sessions { result, epoch: listed, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: id, .. } if *id == request_id)) else { unreachable!() };
+            let rows = result.unwrap().rows;
+            (epoch, monitor_pid) = (listed, rows.iter().find(|r| r.own).map(|r| r.id.clone()).unwrap_or_default());
+            row = rows.into_iter().find(|r| r.query.contains("dc monitor test") && r.state == "active" && !r.own);
             if row.is_some() {
                 break;
             }
@@ -1465,7 +1501,7 @@ mod tests {
         }
         let row = row.expect("the console's query is listed while it runs");
         assert!(started.elapsed() < Duration::from_secs(10), "the list did not wait for the console");
-        w.send(Request::SessionAction { conn: 33, request_id: 900, action: Action::new(ActionKind::Cancel, &row) });
+        w.send(Request::SessionAction { conn: 33, request_id: 900, epoch, action: Action::new(ActionKind::Cancel, &row) });
         // Both replies, in whichever order they arrive.
         let (mut cancelled, mut executed) = (None, None);
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -1485,14 +1521,41 @@ mod tests {
         let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 330, .. })) else { unreachable!() };
         assert_eq!((error, results[0].rows[0][0].as_deref()), (None, Some("1")), "the console's session survived");
 
+        // Closing the last monitor window closes its session on the server.
+        w.send(Request::CloseSessionMonitor(33));
+        let mut probe = cfg.clone();
+        probe.id = 37;
+        w.send(Request::Connect(probe));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 37, .. }));
+        let mut gone = false;
+        for request_id in 100..150 {
+            w.send(Request::Sessions { conn: 37, request_id });
+            let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: id, .. } if *id == request_id)) else { unreachable!() };
+            gone = !result.unwrap().rows.iter().any(|r| r.id == monitor_pid);
+            if gone {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(gone && !monitor_pid.is_empty(), "the monitor session {monitor_pid} was closed");
+
+        // After a reconnect, an action from the earlier list is refused.
+        w.send(Request::Disconnect(33));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(33)));
+        w.send(Request::Connect(cfg.clone()));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        w.send(Request::SessionAction { conn: 33, request_id: 901, epoch, action: Action::new(ActionKind::Terminate, &row) });
+        let Response::SessionAction { result, .. } = wait_for(&w, |r| matches!(r, Response::SessionAction { request_id: 901, .. })) else { unreachable!() };
+        assert_eq!(result, Err(tr("The list is from an earlier connection; refresh and try again").into()));
+
         cfg.id = 34;
         cfg.read_only = true;
         w.send(Request::Connect(cfg));
         wait_for(&w, |r| matches!(r, Response::Connected { conn: 34, .. }));
         w.send(Request::Sessions { conn: 34, request_id: 1 });
-        let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { conn: 34, .. })) else { unreachable!() };
+        let Response::Sessions { result, epoch, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { conn: 34, .. })) else { unreachable!() };
         let own = result.unwrap().rows.into_iter().find(|r| r.own).expect("listed on a read-only connection");
-        w.send(Request::SessionAction { conn: 34, request_id: 2, action: Action::new(ActionKind::Terminate, &own) });
+        w.send(Request::SessionAction { conn: 34, request_id: 2, epoch, action: Action::new(ActionKind::Terminate, &own) });
         let Response::SessionAction { result, .. } = wait_for(&w, |r| matches!(r, Response::SessionAction { conn: 34, .. })) else { unreachable!() };
         assert_eq!(result, Err(tr("Read-only connection").into()));
     }

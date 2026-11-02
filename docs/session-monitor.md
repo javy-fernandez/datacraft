@@ -30,7 +30,8 @@ Select a session and choose **Cancel Query…** to stop its running statement (t
 session and its transaction stay open) or **Terminate Session…** to disconnect it (its
 open transaction is rolled back). Both ask for confirmation and show the statement that
 will run. The monitor's own session can't be cancelled or terminated, and a session that
-isn't running a query can't be cancelled. On read-only connections the list is
+isn't running a query can't be cancelled. Actions only apply to a selected row that the
+filter and **Hide idle sessions** still show. On read-only connections the list is
 available, but both actions are disabled.
 
 ![Terminate Session confirmation](screenshots/session-monitor/session-monitor-terminate-dark.png)
@@ -39,26 +40,46 @@ available, but both actions are disabled.
 | --- | --- | --- | --- | --- |
 | PostgreSQL | `pg_stat_activity` (client backends and autovacuum workers) | `pg_blocking_pids` | `pg_cancel_backend` | `pg_terminate_backend` |
 | MySQL / MariaDB | `information_schema.PROCESSLIST` | `sys.innodb_lock_waits`, or the InnoDB lock views, when available | `KILL QUERY` | `KILL` |
-| SQL Server | `sys.dm_exec_sessions`, `sys.dm_exec_requests`, `sys.dm_exec_sql_text` | `blocking_session_id` | Not available | `KILL` |
+| SQL Server | `sys.dm_exec_sessions`, `sys.dm_exec_requests`, `sys.dm_exec_sql_text` | `blocking_session_id` | Not available | `KILL`, only if `login_time` is unchanged |
 | Oracle | `v$session`, `v$sql` | `blocking_session` | `ALTER SYSTEM CANCEL SQL` (18c and later) | `ALTER SYSTEM KILL SESSION … IMMEDIATE` |
 | ClickHouse | `system.processes` (running queries, not sessions) | — | `KILL QUERY` | Not available |
 
 SQLite, Snowflake and the NoSQL engines have no Session Monitor.
 
-On PostgreSQL an action only reaches the backend that was listed: if the process ended
-and its id was reused, the action fails with "The session has already ended". Session
-ids always come from the listed rows and are checked to be numbers (a ClickHouse query
-id is escaped) before they are written into a statement.
+Session ids are reused, so an action checks that the id still names the session that was
+listed:
+
+- PostgreSQL matches the backend start time in the same statement; if the process ended
+  and its PID was reused, the action fails with "The session has already ended".
+- SQL Server kills only if the SPID's `login_time` is unchanged, in the same batch;
+  otherwise it reports that the session changed and asks for a refresh.
+- MySQL and MariaDB read the thread's account and client (`USER`, `HOST` with the port)
+  right before `KILL` and refuse on a mismatch. The check and `KILL` are two statements,
+  so a thread that ends and whose id is reused in between can still be hit; refresh
+  before acting on an old list.
+- Oracle identifies a session by SID and SERIAL#, and ClickHouse by query id.
+
+An action is also refused when the list was read before the connection was closed or
+opened again, and the window clears its list, selection and any open confirmation when
+that happens. ClickHouse reports whether `KILL QUERY` reached the query: a query that
+already finished, or that can't be cancelled, is reported as such.
+
+Session ids always come from the listed rows and are checked to be numbers (a ClickHouse
+query id is escaped, a SQL Server login time must have its exact format) before they are
+written into a statement.
 
 ## Permissions and errors
 
-The monitor uses a database session of its own, opened on first use and kept until the
-connection is closed, so it doesn't wait behind a running console query and never cancels
-or takes down a console's session. Each request is limited to 15 seconds.
+The monitor uses a database session of its own, opened on first use and closed with the
+window (or the connection), so it doesn't wait behind a running console query and never
+cancels or takes down a console's session. Each request is limited to 15 seconds.
 
-What the list contains depends on the account. PostgreSQL shows other users' query text
-only to superusers and members of `pg_read_all_stats`; cancelling or terminating another
-role's session needs `pg_signal_backend` or superuser. MySQL lists other accounts'
+What the list contains depends on the account. PostgreSQL shows the details of other
+roles' sessions only to superusers and members of `pg_read_all_stats`: without it those
+sessions are listed with their id, user, database and application, their state reads
+*insufficient privilege*, a note above the table counts them, and they can't be cancelled
+or terminated from the monitor (their start time, which identifies them, is hidden too).
+Cancelling or terminating another role's session needs `pg_signal_backend` or superuser. MySQL lists other accounts'
 threads with `PROCESS` and kills them with `CONNECTION_ADMIN` (or `SUPER`). SQL Server
 needs `VIEW SERVER STATE` (`VIEW SERVER PERFORMANCE STATE` on 2022) to see other sessions
 and `ALTER ANY CONNECTION` to kill them. Oracle needs access to `v$session` and `v$sql`
@@ -66,9 +87,13 @@ and `ALTER SYSTEM`. Errors, such as a missing permission, appear in the window a
 table; the last list stays visible. On MySQL and MariaDB a note explains when lock waits
 can't be read.
 
-The PostgreSQL queries, cancel, terminate and the lock-wait display are covered by tests
-against a live PostgreSQL 16 server. The other engines' queries and statements have unit
-tests but were not run against live servers.
+Oracle reads `v$session` of the instance it is connected to: on RAC, sessions of the other
+instances are not listed.
+
+The PostgreSQL queries, cancel, terminate, the lock-wait display, the restricted rows of a
+role without `pg_read_all_stats`, closing the monitor session and refusing an action after
+a reconnect are covered by tests against a live PostgreSQL 16 server. The other engines'
+queries and statements have unit tests but were not run against live servers.
 
 References: [pg_stat_activity](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW),
 [PostgreSQL signaling functions](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-SIGNAL),

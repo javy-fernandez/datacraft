@@ -1508,6 +1508,12 @@
     "in transaction": "dans une transaction",
     "monitor": "moniteur",
     "{n} blocked": "{n} bloquées",
-    "{shown} of {total} sessions": "{shown} sur {total} sessions"
+    "{shown} of {total} sessions": "{shown} sur {total} sessions",
+    "The session changed since the list was read; refresh and try again": "La session a changé depuis la lecture de la liste ; actualisez et réessayez",
+    "{n} sessions of other roles show no details: grant pg_read_all_stats to see them": "{n} sessions d’autres rôles n’affichent aucun détail : accordez pg_read_all_stats pour les voir",
+    "The query cannot be cancelled ({status})": "La requête ne peut pas être annulée ({status})",
+    "The list is from an earlier connection; refresh and try again": "La liste provient d’une connexion précédente ; actualisez et réessayez",
+    "This session's details are hidden, so it can't be identified safely": "Les détails de cette session sont masqués : elle ne peut pas être identifiée de façon sûre",
+    "insufficient privilege": "privilèges insuffisants"
   }
 }

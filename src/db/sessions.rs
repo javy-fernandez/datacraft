@@ -46,8 +46,9 @@ pub struct SessionRow {
     pub id: String,
     /// Oracle: the SERIAL# that `ALTER SYSTEM` needs with the SID.
     pub serial: Option<String>,
-    /// PostgreSQL: when the backend started (µs since the epoch), so an action can't reach a
-    /// new session that reused the PID.
+    /// When the session started, so an action can't reach a new session that reused the id:
+    /// PostgreSQL's backend start (µs since the epoch), SQL Server's `login_time`
+    /// (`yyyy-mm-dd hh:mi:ss.mmm`).
     pub started: Option<String>,
     pub user: String,
     pub database: String,
@@ -69,6 +70,9 @@ pub struct SessionRow {
     pub own: bool,
     /// A DataCraft session (by its application name).
     pub datacraft: bool,
+    /// PostgreSQL: another role's session whose details the account may not read (only its id,
+    /// user, database and application are known).
+    pub restricted: bool,
 }
 
 impl SessionRow {
@@ -111,11 +115,14 @@ pub struct Action {
     pub id: String,
     pub serial: Option<String>,
     pub started: Option<String>,
+    /// MySQL / MariaDB: the account and client the thread had, checked again before KILL.
+    pub user: String,
+    pub client: String,
 }
 
 impl Action {
     pub fn new(kind: ActionKind, row: &SessionRow) -> Self {
-        Self { kind, id: row.id.clone(), serial: row.serial.clone(), started: row.started.clone() }
+        Self { kind, id: row.id.clone(), serial: row.serial.clone(), started: row.started.clone(), user: row.user.clone(), client: row.client.clone() }
     }
 
     pub fn label(&self) -> String {
@@ -188,8 +195,10 @@ pub fn list_sql(driver: Driver, nonce: &str) -> Option<String> {
              array_to_string(pg_blocking_pids(pid), ',') AS s_blocked, query AS s_query, \
              CASE WHEN state = 'idle' THEN '1' ELSE '0' END AS s_idle, \
              CASE WHEN pid = pg_backend_pid() THEN '1' ELSE '0' END AS s_own, \
-             CASE WHEN application_name = 'DataCraft' THEN '1' ELSE '0' END AS s_dc \
-             FROM pg_stat_activity WHERE backend_type IN ('client backend', 'autovacuum worker') ORDER BY pid"
+             CASE WHEN application_name = 'DataCraft' THEN '1' ELSE '0' END AS s_dc, \
+             CASE WHEN backend_type IS NULL THEN '1' ELSE '0' END AS s_restricted \
+             FROM pg_stat_activity WHERE backend_type IN ('client backend', 'autovacuum worker') \
+             OR (backend_type IS NULL AND datid IS NOT NULL) ORDER BY pid"
         ),
         Driver::MySql | Driver::MariaDb => format!(
             "SELECT /* {MARKER} */ CAST(ID AS CHAR) AS s_id, USER AS s_user, DB AS s_db, HOST AS s_client, COMMAND AS s_state, \
@@ -199,7 +208,8 @@ pub fn list_sql(driver: Driver, nonce: &str) -> Option<String> {
              FROM information_schema.PROCESSLIST ORDER BY ID"
         ),
         Driver::MsSql => format!(
-            "SELECT /* {MARKER} */ CAST(s.session_id AS varchar(10)) AS s_id, s.login_name AS s_user, \
+            "SELECT /* {MARKER} */ CAST(s.session_id AS varchar(10)) AS s_id, CONVERT(varchar(23), s.login_time, 121) AS s_started, \
+             s.login_name AS s_user, \
              DB_NAME(COALESCE(r.database_id, s.database_id)) AS s_db, c.client_net_address AS s_client, s.program_name AS s_app, \
              COALESCE(r.status, s.status) AS s_state, \
              CASE WHEN r.session_id IS NOT NULL THEN {} WHEN s.open_transaction_count > 0 THEN {} END AS s_ms, \
@@ -247,7 +257,7 @@ fn column(rs: &ResultSet, name: &str) -> Option<usize> {
 pub fn parse(driver: Driver, rs: &ResultSet, nonce: &str) -> anyhow::Result<Vec<SessionRow>> {
     let id = column(rs, "s_id").context(tr("Incomplete session metadata"))?;
     let index: Vec<Option<usize>> =
-        ["s_serial", "s_started", "s_user", "s_db", "s_client", "s_app", "s_state", "s_ms", "s_wait", "s_blocked", "s_query", "s_idle", "s_tx", "s_own", "s_dc"]
+        ["s_serial", "s_started", "s_user", "s_db", "s_client", "s_app", "s_state", "s_ms", "s_wait", "s_blocked", "s_query", "s_idle", "s_tx", "s_own", "s_dc", "s_restricted"]
             .iter()
             .map(|name| column(rs, name))
             .collect();
@@ -273,6 +283,7 @@ pub fn parse(driver: Driver, rs: &ResultSet, nonce: &str) -> anyhow::Result<Vec<
             in_transaction: flag(12),
             own: flag(13),
             datacraft: flag(14),
+            restricted: flag(15),
             id,
             query,
         };
@@ -298,6 +309,20 @@ fn number(v: &str) -> anyhow::Result<&str> {
     Ok(v)
 }
 
+/// A SQL Server `login_time` as `CONVERT(varchar(23), …, 121)` writes it.
+fn mssql_time(v: &str) -> anyhow::Result<&str> {
+    let ok = v.len() == 23
+        && v.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            10 => b == b' ',
+            13 | 16 => b == b':',
+            19 => b == b'.',
+            _ => b.is_ascii_digit(),
+        });
+    anyhow::ensure!(ok, tr("Incomplete session metadata"));
+    Ok(v)
+}
+
 /// A ClickHouse string literal.
 fn ch_literal(v: &str) -> anyhow::Result<String> {
     anyhow::ensure!(!v.is_empty() && !v.contains('\0'), trf("Invalid session id: {id}", &[("id", &v)]));
@@ -319,7 +344,15 @@ pub fn action_sql(driver: Driver, action: &Action) -> anyhow::Result<String> {
         }
         (Driver::MySql | Driver::MariaDb, ActionKind::Cancel) => format!("KILL QUERY {}", number(id)?),
         (Driver::MySql | Driver::MariaDb, ActionKind::Terminate) => format!("KILL {}", number(id)?),
-        (Driver::MsSql, ActionKind::Terminate) => format!("KILL {}", number(id)?),
+        // Only the session that logged in when the listed one did: SPIDs are reused at once.
+        (Driver::MsSql, ActionKind::Terminate) => {
+            let id = number(id)?;
+            let login = mssql_time(action.started.as_deref().context(tr("Incomplete session metadata"))?)?;
+            format!(
+                "IF EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE session_id = {id} AND session_id <> @@SPID AND CONVERT(varchar(23), login_time, 121) = '{login}') \
+                 BEGIN KILL {id}; SELECT 'killed' AS s_result; END ELSE SELECT 'changed' AS s_result"
+            )
+        }
         (Driver::Oracle, kind) => {
             let serial = action.serial.as_deref().map(number).transpose()?.context(tr("Incomplete session metadata"))?;
             match kind {
@@ -343,14 +376,22 @@ pub async fn list(session: &mut Session, driver: Driver) -> anyhow::Result<Sessi
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let sql = list_sql(driver, &nonce).context(tr("Session monitoring is not available for this engine"))?;
     let rs = query(session, &sql, MAX_ROWS).await.context(tr("Could not read the server's sessions"))?;
-    let mut list = SessionList { rows: parse(driver, &rs, &nonce)?, notice: None };
+    let mut rows = parse(driver, &rs, &nonce)?;
+    let mut notices = Vec::new();
     if matches!(driver, Driver::MySql | Driver::MariaDb) {
-        list.notice = my_locks(session, &rs, &mut list.rows).await;
+        notices.extend(my_locks(session, &rs, &mut rows).await);
     }
+    notices.extend(restricted_notice(&rows));
     if rs.truncated {
-        list.notice = Some(trf("Only the first {n} sessions are shown", &[("n", &MAX_ROWS)]));
+        notices.push(trf("Only the first {n} sessions are shown", &[("n", &MAX_ROWS)]));
     }
-    Ok(list)
+    Ok(SessionList { rows, notice: (!notices.is_empty()).then(|| notices.join("\n")) })
+}
+
+/// PostgreSQL without `pg_read_all_stats`: how many sessions show no details.
+pub fn restricted_notice(rows: &[SessionRow]) -> Option<String> {
+    let n = rows.iter().filter(|r| r.restricted).count();
+    (n > 0).then(|| trf("{n} sessions of other roles show no details: grant pg_read_all_stats to see them", &[("n", &n)]))
 }
 
 /// MySQL / MariaDB: open transactions and lock waits, from whichever views the server has. Their
@@ -397,16 +438,50 @@ async fn my_locks(session: &mut Session, rs: &ResultSet, rows: &mut [SessionRow]
     None
 }
 
-/// Cancels or terminates; fails when the server says the session or query is already gone.
+/// MySQL / MariaDB: the thread's account and client right before KILL.
+fn my_identity_sql(action: &Action) -> anyhow::Result<String> {
+    Ok(format!("SELECT USER AS s_user, HOST AS s_client FROM information_schema.PROCESSLIST WHERE ID = {}", number(&action.id)?))
+}
+
+/// The thread still belongs to the account and client that were listed (thread ids start over
+/// after a server restart).
+fn my_identity_matches(action: &Action, rs: &ResultSet) -> anyhow::Result<()> {
+    let row = rs.rows.first().context(tr("The session has already ended"))?;
+    let get = |name| column(rs, name).and_then(|c| row.get(c)).cloned().flatten().unwrap_or_default();
+    anyhow::ensure!(get("s_user") == action.user && get("s_client") == action.client, tr("The session changed since the list was read; refresh and try again"));
+    Ok(())
+}
+
+/// The `kill_status` of `KILL QUERY … ASYNC`: `waiting` means the query was told to stop.
+fn ch_kill_status(rs: &ResultSet) -> anyhow::Result<()> {
+    let row = rs.rows.first().context(tr("The query has already finished"))?;
+    let status = row.get(column(rs, "kill_status").unwrap_or(0)).cloned().flatten().unwrap_or_default();
+    match status.as_str() {
+        "waiting" => Ok(()),
+        "finished" => anyhow::bail!(tr("The query has already finished")),
+        other => anyhow::bail!(trf("The query cannot be cancelled ({status})", &[("status", &other)])),
+    }
+}
+
+/// The first value of the first row.
+fn first(rs: &ResultSet) -> Option<&str> {
+    rs.rows.first()?.first()?.as_deref()
+}
+
+/// Cancels or terminates; fails when the server says the session or query is already gone, or
+/// that the id now belongs to another session.
 pub async fn act(session: &mut Session, driver: Driver, action: &Action) -> anyhow::Result<()> {
     let sql = action_sql(driver, action)?;
+    if matches!(driver, Driver::MySql | Driver::MariaDb) {
+        // Not atomic: the thread could still end and its id be reused between the check and KILL.
+        my_identity_matches(action, &query(session, &my_identity_sql(action)?, 1).await?)?;
+    }
     let rs = query(session, &sql, 10).await?;
     match driver {
         // No row: the backend (or the one with that start time) is gone; false: it could not be signalled.
-        Driver::Postgres => {
-            anyhow::ensure!(rs.rows.first().and_then(|r| r.first()).and_then(|v| v.as_deref()) == Some("true"), tr("The session has already ended"))
-        }
-        Driver::ClickHouse => anyhow::ensure!(!rs.rows.is_empty(), tr("The query has already finished")),
+        Driver::Postgres => anyhow::ensure!(first(&rs) == Some("true"), tr("The session has already ended")),
+        Driver::MsSql => anyhow::ensure!(first(&rs) == Some("killed"), tr("The session changed since the list was read; refresh and try again")),
+        Driver::ClickHouse => ch_kill_status(&rs)?,
         _ => {}
     }
     Ok(())
@@ -491,7 +566,7 @@ mod tests {
     }
 
     fn action(kind: ActionKind, id: &str) -> Action {
-        Action { kind, id: id.into(), serial: None, started: None }
+        Action { kind, id: id.into(), serial: None, started: None, user: String::new(), client: String::new() }
     }
 
     #[test]
@@ -506,7 +581,17 @@ mod tests {
         assert!(action_sql(Driver::Postgres, &pg).unwrap().starts_with("SELECT pg_terminate_backend(pid)::text"));
         assert_eq!(action_sql(Driver::MySql, &action(ActionKind::Cancel, "7")).unwrap(), "KILL QUERY 7");
         assert_eq!(action_sql(Driver::MariaDb, &action(ActionKind::Terminate, "7")).unwrap(), "KILL 7");
-        assert_eq!(action_sql(Driver::MsSql, &action(ActionKind::Terminate, "53")).unwrap(), "KILL 53");
+        let ms = Action { started: Some("2026-11-02 09:56:30.123".into()), ..action(ActionKind::Terminate, "53") };
+        assert_eq!(
+            action_sql(Driver::MsSql, &ms).unwrap(),
+            "IF EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE session_id = 53 AND session_id <> @@SPID AND CONVERT(varchar(23), login_time, 121) = '2026-11-02 09:56:30.123') \
+             BEGIN KILL 53; SELECT 'killed' AS s_result; END ELSE SELECT 'changed' AS s_result"
+        );
+        assert!(action_sql(Driver::MsSql, &action(ActionKind::Terminate, "53")).is_err(), "SQL Server needs the login time");
+        for login in ["2026-11-02 09:56:30.12", "2026-11-02 09:56:30.12'", "2026-11-02' OR 1=1 --x", "2026/11/02 09:56:30.123"] {
+            let bad = Action { started: Some(login.into()), ..ms.clone() };
+            assert!(action_sql(Driver::MsSql, &bad).is_err(), "{login:?}");
+        }
         assert!(action_sql(Driver::MsSql, &action(ActionKind::Cancel, "53")).is_err());
         let ora = Action { serial: Some("6789".into()), ..action(ActionKind::Cancel, "45") };
         assert_eq!(action_sql(Driver::Oracle, &ora).unwrap(), "ALTER SYSTEM CANCEL SQL '45,6789'");
@@ -529,6 +614,46 @@ mod tests {
         assert!(action_sql(Driver::Postgres, &started).is_err());
         let serial = Action { serial: Some("1' IMMEDIATE --".into()), ..action(ActionKind::Terminate, "45") };
         assert!(action_sql(Driver::Oracle, &serial).is_err());
+    }
+
+    #[test]
+    fn mysql_kill_rechecks_the_account_and_client() {
+        let target = Action { user: "app".into(), client: "10.0.0.5:51544".into(), ..action(ActionKind::Terminate, "7") };
+        assert_eq!(my_identity_sql(&target).unwrap(), "SELECT USER AS s_user, HOST AS s_client FROM information_schema.PROCESSLIST WHERE ID = 7");
+        let found = |user: &str, host: &str| rs(&["S_USER", "S_CLIENT"], &[&[Some(user), Some(host)]]);
+        assert!(my_identity_matches(&target, &found("app", "10.0.0.5:51544")).is_ok());
+        let changed = my_identity_matches(&target, &found("app", "10.0.0.9:40000")).unwrap_err().to_string();
+        assert_eq!(changed, "The session changed since the list was read; refresh and try again");
+        assert!(my_identity_matches(&target, &found("root", "10.0.0.5:51544")).is_err());
+        assert_eq!(my_identity_matches(&target, &rs(&["S_USER", "S_CLIENT"], &[])).unwrap_err().to_string(), "The session has already ended");
+    }
+
+    #[test]
+    fn clickhouse_kill_reports_its_status() {
+        let status = |s: &str| ch_kill_status(&rs(&["kill_status", "query_id", "user", "query"], &[&[Some(s), Some("q1"), Some("default"), Some("SELECT 1")]]));
+        assert!(status("waiting").is_ok());
+        assert_eq!(status("finished").unwrap_err().to_string(), "The query has already finished");
+        assert_eq!(status("cant_cancel").unwrap_err().to_string(), "The query cannot be cancelled (cant_cancel)");
+        assert_eq!(ch_kill_status(&rs(&["kill_status"], &[])).unwrap_err().to_string(), "The query has already finished");
+    }
+
+    #[test]
+    fn postgres_rows_of_other_roles_are_kept_and_counted() {
+        let rs = rs(
+            &["s_id", "s_started", "s_user", "s_db", "s_state", "s_query", "s_idle", "s_own", "s_restricted"],
+            &[
+                &[Some("200"), Some("1790000000000000"), Some("me"), Some("shop"), Some("active"), Some("select 1"), Some("0"), Some("1"), Some("0")],
+                &[Some("201"), None, Some("postgres"), Some("shop"), None, Some("<insufficient privilege>"), Some("0"), Some("0"), Some("1")],
+                &[Some("202"), None, Some("billing"), Some("billing"), None, Some("<insufficient privilege>"), Some("0"), Some("0"), Some("1")],
+            ],
+        );
+        let rows = parse(Driver::Postgres, &rs, "").unwrap();
+        assert_eq!(rows.iter().map(|r| r.restricted).collect::<Vec<_>>(), [false, true, true]);
+        assert!(!rows[1].idle && rows[1].started.is_none(), "unknown, so never hidden as idle");
+        assert_eq!(restricted_notice(&rows).as_deref(), Some("2 sessions of other roles show no details: grant pg_read_all_stats to see them"));
+        assert_eq!(restricted_notice(&rows[..1]), None);
+        let sql = list_sql(Driver::Postgres, "n").unwrap();
+        assert!(sql.contains("OR (backend_type IS NULL AND datid IS NOT NULL)"), "{sql}");
     }
 
     fn row(id: &str, blocked_by: &[&str], idle: bool) -> SessionRow {
@@ -656,5 +781,26 @@ mod tests {
         let v = query(&mut sleeper, &format!("select v::text from {table}"), 1).await.unwrap();
         assert_eq!(v.rows[0][0].as_deref(), Some("10"), "A's update was rolled back");
         sleeper.execute(&format!("drop table {table}"), 0).await.unwrap();
+
+        // A role without pg_read_all_stats still sees the other sessions, marked restricted.
+        let role = format!("dc_session_monitor_{own}");
+        sleeper.execute(&format!("drop role if exists {role}; create role {role} login"), 0).await.unwrap();
+        let mut limited_cfg = cfg.clone();
+        limited_cfg.user = role.clone();
+        let listed = match Session::connect(&limited_cfg).await {
+            Ok(mut limited) => Some(list(&mut limited, Driver::Postgres).await.unwrap()),
+            // Servers that require a password for new roles skip this part.
+            Err(e) => {
+                eprintln!("could not sign in as {role}: {e:#}");
+                None
+            }
+        };
+        sleeper.execute(&format!("drop role {role}"), 0).await.unwrap();
+        if let Some(listed) = listed {
+            let other = listed.rows.iter().find(|r| r.id == sleeper_pid).expect("another role's session is listed");
+            assert!(other.restricted && other.started.is_none() && !other.idle);
+            assert!(listed.rows.iter().any(|r| r.own && !r.restricted));
+            assert!(listed.notice.as_deref().is_some_and(|n| n.contains("pg_read_all_stats")), "{:?}", listed.notice);
+        }
     }
 }

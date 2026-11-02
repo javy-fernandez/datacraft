@@ -32,22 +32,33 @@ impl DataCraftApp {
                         monitor.refresh_sent(request_id);
                         self.worker.send(Request::Sessions { conn, request_id });
                     }
-                    MonitorAction::Act(action) => {
+                    MonitorAction::Act(action, epoch) => {
                         monitor.action_sent(request_id, action.clone());
-                        self.worker.send(Request::SessionAction { conn, request_id, action });
+                        self.worker.send(Request::SessionAction { conn, request_id, epoch, action });
                     }
                     MonitorAction::Close => closed.push(conn),
                 }
             }
         }
-        // A deleted connection takes its monitor with it.
+        // The last window of a connection closes its monitor session; a deleted connection takes
+        // its monitor with it (and the disconnect its session).
+        for conn in &closed {
+            self.worker.send(Request::CloseSessionMonitor(*conn));
+        }
         let conns: Vec<ConnId> = self.conns.iter().map(|c| c.cfg.id).collect();
         self.session_monitors.retain(|m| !closed.contains(&m.conn) && conns.contains(&m.conn));
     }
 
-    pub(super) fn session_list_received(&mut self, conn: ConnId, request_id: u64, result: Result<crate::db::sessions::SessionList, String>) {
+    /// The connection was closed, lost or opened again: its monitor forgets the old list.
+    pub(super) fn reset_session_monitor(&mut self, conn: ConnId) {
         if let Some(m) = self.session_monitors.iter_mut().find(|m| m.conn == conn) {
-            m.receive_list(request_id, result);
+            m.reset();
+        }
+    }
+
+    pub(super) fn session_list_received(&mut self, conn: ConnId, request_id: u64, epoch: u64, result: Result<crate::db::sessions::SessionList, String>) {
+        if let Some(m) = self.session_monitors.iter_mut().find(|m| m.conn == conn) {
+            m.receive_list(request_id, epoch, result);
         }
     }
 

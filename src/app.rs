@@ -699,6 +699,7 @@ impl DataCraftApp {
                 }
                 Response::TableReportOpened { request_id, result } => self.table_report_opened(request_id, result),
                 Response::Connected { conn, databases } => {
+                    self.reset_session_monitor(conn);
                     // Stale response: the connection was disconnected, edited or deleted while connecting.
                     if !self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connecting) {
                         self.worker.send(Request::Disconnect(conn));
@@ -817,6 +818,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::ConnectFailed { conn, error } => {
+                    self.reset_session_monitor(conn);
                     self.cancel_table_duplicate(conn);
                     self.cancel_startup_table(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
@@ -847,6 +849,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::Disconnected(conn) => {
+                    self.reset_session_monitor(conn);
                     if let Some(c) = self.conn_mut(conn)
                         && c.status != ConnStatus::Connecting
                     {
@@ -895,7 +898,7 @@ impl DataCraftApp {
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
-                Response::Sessions { conn, request_id, result } => self.session_list_received(conn, request_id, result),
+                Response::Sessions { conn, request_id, epoch, result } => self.session_list_received(conn, request_id, epoch, result),
                 Response::SessionAction { conn, request_id, result } => self.session_action_done(conn, request_id, result),
                 Response::InspectTable { console, generation, page_rows, result } => {
                     if let Some(index) = self.consoles.iter().position(|c| c.id == console) {
