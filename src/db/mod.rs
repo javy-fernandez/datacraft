@@ -11,6 +11,7 @@ pub mod copy;
 pub mod create_db;
 pub mod datagrip;
 pub mod backup;
+pub mod restore;
 pub mod clickhouse;
 pub mod influx;
 pub mod kusto;

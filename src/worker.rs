@@ -26,6 +26,9 @@ pub enum Request {
     /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
+    /// Reads a backup's format and contents (SQL Server: on a private session) without restoring.
+    InspectRestore { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest> },
+    Restore { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, progress: Arc<crate::db::restore::RestoreProgress> },
     InspectTable { conn: ConnId, db: String, schema: String, table: String, console: ConsoleId, generation: u64, count_rows: bool, page_filter: Option<String> },
     /// Foreign keys of one table for grid navigation, on the metadata session of `db`.
     ForeignKeys { conn: ConnId, db: String, schema: String, table: String, request_id: u64 },
@@ -144,6 +147,8 @@ pub enum Response {
     TableExported { conn: ConnId, request_id: u64, result: Result<(std::path::PathBuf, u64), String> },
     TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
+    RestoreInspected { id: uuid::Uuid, result: Result<crate::db::restore::RestorePreview, String> },
+    Restored { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, result: Result<(), String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
     ForeignKeys { conn: ConnId, db: String, schema: String, table: String, request_id: u64, result: Result<crate::db::fk_nav::TableKeys, String> },
     ReferenceCounts { request_id: u64, result: Result<Vec<Result<u64, String>>, String> },
@@ -824,6 +829,31 @@ fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<s
     result?; Ok(path)
 }
 
+async fn inspect_restore(state: &State, conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>) -> Vec<Response> {
+    // Bound first: a guard in the match scrutinee would hold `live` for the whole inspection.
+    let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+    let result = match cfg {
+        Some(cfg) => {
+            let password = cfg.password.clone();
+            Box::pin(crate::db::restore::inspect(cfg, *request)).await.map_err(|error| redact(format!("{error:#}"), &password))
+        }
+        None => Err(tr("The connection is not open").into()),
+    };
+    vec![Response::RestoreInspected { id, result }]
+}
+
+async fn restore(state: &State, conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, progress: Arc<crate::db::restore::RestoreProgress>) -> Vec<Response> {
+    let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+    let result = match cfg {
+        Some(cfg) => {
+            let password = cfg.password.clone();
+            Box::pin(crate::db::restore::run(cfg, *request.clone(), progress)).await.map_err(|error| redact(format!("{error:#}"), &password))
+        }
+        None => Err(tr("The connection is not open").into()),
+    };
+    vec![Response::Restored { conn, id, request, result }]
+}
+
 type CompareFuture = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(crate::db::schema_compare::SchemaModel, crate::db::schema_compare::SchemaModel)>> + Send>>;
 
 /// The comparison's large future is built in this frame and boxed, not in `handle`'s poll
@@ -982,6 +1012,9 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             };
             vec![Response::Backup { conn, id, request, result }]
         }
+        // Boxed: their state would otherwise enlarge every request's stack frame.
+        Request::InspectRestore { conn, id, request } => Box::pin(inspect_restore(state, conn, id, request)).await,
+        Request::Restore { conn, id, request, progress } => Box::pin(restore(state, conn, id, request, progress)).await,
         Request::InspectTable { conn, db, schema, table, console, generation, count_rows, page_filter } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             let result = match cfg {
@@ -1930,6 +1963,32 @@ mod tests {
         w.send(Request::Disconnect(71));
         wait_for(&w, |r| matches!(r, Response::Disconnected(71)));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_requests_leave_the_connections_unlocked_while_they_run() {
+        use crate::db::restore::{RestoreFormat, RestoreRequest};
+        // A server that accepts and never answers keeps the request waiting inside the restore code.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let state = State::default();
+        let mut cfg = ConnectionConfig::new(72, Driver::MsSql);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = listener.local_addr().unwrap().port();
+        state.live.lock().await.insert(72, Live { cfg, default_db: "master".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None, monitor_closes: 0 });
+        let mut request = RestoreRequest::new("shop".into());
+        request.source = r"C:\backups\shop.bak".into();
+        let inspect = Request::InspectRestore { conn: 72, id: uuid::Uuid::new_v4(), request: Box::new(request.clone()) };
+        request.format = Some(RestoreFormat::MsSql);
+        request.position = 1;
+        let restore = Request::Restore { conn: 72, id: uuid::Uuid::new_v4(), request: Box::new(request), progress: Arc::default() };
+        for req in [inspect, restore] {
+            let mut running = Box::pin(handle(req, 0, &state));
+            let _socket = tokio::select! {
+                accepted = listener.accept() => accepted.unwrap(),
+                responses = &mut running => panic!("the request ended early: {}", responses.len()),
+            };
+            assert!(state.live.try_lock().is_ok(), "a running restore request holds the connection list");
+        }
     }
 
     #[tokio::test]
