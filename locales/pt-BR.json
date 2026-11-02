@@ -1446,5 +1446,28 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "Metadados incompletos das colunas da tabela"
+  },
+  "safety": {
+    "environment|None": "Nenhum",
+    "Development": "Desenvolvimento",
+    "Staging": "Homologação",
+    "Production": "Produção",
+    "Environment:": "Ambiente:",
+    "Badge color": "Cor do selo",
+    "Confirm dangerous statements": "Confirmar instruções perigosas",
+    "The console asks before UPDATE or DELETE without WHERE, TRUNCATE and DROP": "O console pergunta antes de UPDATE ou DELETE sem WHERE, TRUNCATE e DROP",
+    "Statements that change data and grid saves ask for confirmation first": "Instruções que alteram dados e salvamentos da grade pedem confirmação antes",
+    "Environment of the data source": "Ambiente da fonte de dados",
+    "Change Production data?": "Alterar dados de produção?",
+    "Run dangerous statements?": "Executar instruções perigosas?",
+    "{name} is a Production data source, and these statements change data.": "{name} é uma fonte de dados de produção, e estas instruções alteram dados.",
+    "{name} is a Production data source, and saving writes the pending grid changes to it.": "{name} é uma fonte de dados de produção, e salvar grava nela as alterações pendentes da grade.",
+    "These statements act on whole tables:": "Estas instruções agem sobre tabelas inteiras:",
+    "no WHERE: changes every row": "sem WHERE: altera todas as linhas",
+    "no WHERE: deletes every row": "sem WHERE: exclui todas as linhas",
+    "removes every row": "remove todas as linhas",
+    "removes the object and its data": "remove o objeto e seus dados",
+    "…and {n} more": "…e mais {n}",
+    "Turn this check off in the data source's Options tab.": "Desative esta verificação na aba Opções da fonte de dados."
   }
 }

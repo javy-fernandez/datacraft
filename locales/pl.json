@@ -1446,5 +1446,28 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "Niekompletne metadane kolumn tabeli"
+  },
+  "safety": {
+    "environment|None": "Brak",
+    "Development": "Deweloperskie",
+    "Staging": "Testowe (staging)",
+    "Production": "Produkcyjne",
+    "Environment:": "Środowisko:",
+    "Badge color": "Kolor znacznika",
+    "Confirm dangerous statements": "Potwierdzaj niebezpieczne instrukcje",
+    "The console asks before UPDATE or DELETE without WHERE, TRUNCATE and DROP": "Konsola pyta przed UPDATE lub DELETE bez WHERE, TRUNCATE i DROP",
+    "Statements that change data and grid saves ask for confirmation first": "Instrukcje zmieniające dane i zapisy z siatki wymagają najpierw potwierdzenia",
+    "Environment of the data source": "Środowisko źródła danych",
+    "Change Production data?": "Zmienić dane produkcyjne?",
+    "Run dangerous statements?": "Uruchomić niebezpieczne instrukcje?",
+    "{name} is a Production data source, and these statements change data.": "{name} to produkcyjne źródło danych, a te instrukcje zmieniają dane.",
+    "{name} is a Production data source, and saving writes the pending grid changes to it.": "{name} to produkcyjne źródło danych, a zapis prześle do niego oczekujące zmiany z siatki.",
+    "These statements act on whole tables:": "Te instrukcje działają na całych tabelach:",
+    "no WHERE: changes every row": "brak WHERE: zmienia każdy wiersz",
+    "no WHERE: deletes every row": "brak WHERE: usuwa każdy wiersz",
+    "removes every row": "usuwa każdy wiersz",
+    "removes the object and its data": "usuwa obiekt razem z danymi",
+    "…and {n} more": "…i {n} więcej",
+    "Turn this check off in the data source's Options tab.": "Tę kontrolę można wyłączyć w zakładce Opcje źródła danych."
   }
 }

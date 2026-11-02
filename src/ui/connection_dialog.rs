@@ -6,7 +6,7 @@ use crate::db::datagrip;
 use crate::db::url::{apply_url, jdbc_url};
 use crate::db::ssh::{self, SshAuth};
 use crate::db::tls::{self, TlsMode};
-use crate::db::{AuthMode, ConnectionConfig, Driver, is_secret_property, snowflake};
+use crate::db::{AuthMode, ConnectionConfig, Driver, Environment, is_secret_property, snowflake};
 use crate::i18n::{tr, trf};
 use crate::ui::icons::{self, Ico};
 use crate::ui::theme::{self, Palette, palette};
@@ -510,6 +510,36 @@ impl ConnectionDialog {
         let cfg = &mut self.items[self.selected].cfg;
         ui.checkbox(&mut cfg.read_only, tr("Read-only"))
             .on_hover_text(tr("Only queries can run; the data editor and the create, drop and rename actions are disabled"));
+        ui.add_space(6.0);
+        ui.checkbox(&mut cfg.confirm_dangerous, tr("Confirm dangerous statements"))
+            .on_hover_text(tr("The console asks before UPDATE or DELETE without WHERE, TRUNCATE and DROP"));
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.label(tr("Environment:"));
+            egui::ComboBox::from_id_salt("ds_environment").selected_text(theme::environment_name(cfg.environment)).show_ui(ui, |ui| {
+                for env in Environment::ALL {
+                    ui.selectable_value(&mut cfg.environment, env, theme::environment_name(env));
+                }
+            });
+            if let Some((env, _)) = theme::environment(cfg) {
+                let own = env.default_color();
+                let mut rgb = cfg.environment_color.unwrap_or(own);
+                if ui.color_edit_button_srgb(&mut rgb).on_hover_text(tr("Badge color")).changed() {
+                    cfg.environment_color = (rgb != own).then_some(rgb);
+                }
+                if cfg.environment_color.is_some() && ui.small_button(tr("Reset")).clicked() {
+                    cfg.environment_color = None;
+                }
+                if let Some((env, color)) = theme::environment(cfg) {
+                    ui.add_space(6.0);
+                    theme::environment_badge(ui, env, color);
+                }
+            }
+        });
+        if cfg.environment == Environment::Production {
+            ui.add_space(4.0);
+            ui.label(RichText::new(tr("Statements that change data and grid saves ask for confirmation first")).small().color(theme::pal(ui).muted));
+        }
         if cfg.driver == Driver::MsSql {
             ui.add_space(6.0);
             ui.checkbox(&mut cfg.trust_cert, tr("Trust server certificate"));

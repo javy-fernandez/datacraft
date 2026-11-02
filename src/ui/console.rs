@@ -1200,9 +1200,32 @@ impl Console {
                 theme::Side::Right => {
                 ui.add_space(4.0);
                 self.connection_selector(ui, cx, actions);
+                self.environment_badge(ui, cx);
                 }
             });
         });
+        self.environment_strip(ui, cx, ui.cursor().top());
+    }
+
+    /// The data source's environment, if it has one.
+    fn environment(&self, cx: &ConsoleCtx<'_>) -> Option<(crate::db::Environment, egui::Color32)> {
+        self.conn.and_then(|id| cx.connections.iter().find(|c| c.id == id)).and_then(|c| c.environment)
+    }
+
+    /// Environment pill next to the data source selector (right-to-left toolbar side).
+    fn environment_badge(&self, ui: &mut Ui, cx: &ConsoleCtx<'_>) {
+        if let Some((env, color)) = self.environment(cx) {
+            ui.add_space(4.0);
+            theme::environment_badge(ui, env, color).on_hover_text(tr("Environment of the data source"));
+        }
+    }
+
+    /// Line in the environment's colour along the bottom of the toolbar that ends at `bottom`.
+    fn environment_strip(&self, ui: &mut Ui, cx: &ConsoleCtx<'_>, bottom: f32) {
+        if let Some((_, color)) = self.environment(cx) {
+            let x = ui.max_rect().x_range();
+            ui.painter().hline(egui::Rangef::new(x.min + 8.0, x.max - 8.0), bottom - 1.0, egui::Stroke::new(2.0, color));
+        }
     }
 
     fn table_toolbar(&mut self, ui: &mut Ui, cx: &ConsoleCtx<'_>, actions: &mut Vec<ConsoleAction>) {
@@ -1283,9 +1306,11 @@ impl Console {
                         }
                     }
                 });
+                self.environment_badge(ui, cx);
                 }
             });
         });
+        self.environment_strip(ui, cx, ui.cursor().top());
     }
 
     fn table_footer(&mut self, ui: &mut Ui, cx: &ConsoleCtx<'_>, actions: &mut Vec<ConsoleAction>) {
@@ -2678,7 +2703,7 @@ mod tests {
         let mut cfg = ConnectionConfig::new(1, Driver::MariaDb); cfg.name = "Development".into(); cfg.database = "shop".into();
         let mut conn = ConnState::new(cfg); conn.status = ConnStatus::Connected;
         conn.databases = vec![DatabaseInfo { name: "shop".into(), current: true, schemas: Some(schemas) }, DatabaseInfo { name: "analytics".into(), current: false, schemas: None }];
-        let connections = vec![ConnSummary { id: 1, name: "Development".into(), driver: Driver::MariaDb, status: ConnStatusKind::Connected, databases: vec!["shop".into()], default_db: Some("shop".into()) }];
+        let connections = vec![ConnSummary { id: 1, name: "Development".into(), driver: Driver::MariaDb, status: ConnStatusKind::Connected, databases: vec!["shop".into()], default_db: Some("shop".into()), environment: None }];
         let mut explorer = ExplorerState::default(); explorer.expanded.extend(["c:1".into(), "d:1:shop".into()]);
         let mut first = true;
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1600.0, 1050.0)).build_ui_state(move |ui, console: &mut Console| {
@@ -2711,7 +2736,7 @@ mod tests {
     #[test]
     #[ignore = "Requires a GPU; writes the completion list opened while typing to target/completion-snapshots"]
     fn render_completion_while_typing() {
-        let connections = vec![ConnSummary { id: 1, name: "Development".into(), driver: Driver::Postgres, status: ConnStatusKind::Connected, databases: vec!["shop".into()], default_db: Some("shop".into()) }];
+        let connections = vec![ConnSummary { id: 1, name: "Development".into(), driver: Driver::Postgres, status: ConnStatusKind::Connected, databases: vec!["shop".into()], default_db: Some("shop".into()), environment: None }];
         let col = |name: &str, ty: &str| ColumnInfo { name: name.into(), data_type: ty.into(), nullable: true, primary_key: false };
         let table = |name: &str, kind| TableInfo { name: name.into(), kind, columns: vec![col("id", "integer"), col("fecha", "date"), col("cliente", "text")] };
         let schemas = vec![SchemaInfo {

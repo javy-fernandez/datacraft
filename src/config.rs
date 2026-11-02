@@ -307,4 +307,19 @@ mod tests {
         let old: ConnectionConfig = serde_json::from_str(r#"{"id": 3, "driver": "Postgres", "host": "db"}"#).unwrap();
         assert!(!old.ssh.enabled);
     }
+
+    #[test]
+    fn environment_and_guard_round_trip_and_default_for_old_files() {
+        let old: ConnectionConfig = serde_json::from_str(r#"{"id": 3, "driver": "MySql", "host": "db", "read_only": false}"#).unwrap();
+        assert_eq!((old.environment, old.environment_color, old.confirm_dangerous), (crate::db::Environment::None, None, true));
+        assert_eq!(old.environment_badge(), None);
+        let mut cfg = ConnectionConfig::new(4, crate::db::Driver::Postgres);
+        cfg.environment = crate::db::Environment::Production;
+        cfg.confirm_dangerous = false;
+        assert_eq!(cfg.environment_badge(), Some((crate::db::Environment::Production, crate::db::Environment::Production.default_color())));
+        cfg.environment_color = Some([1, 2, 3]);
+        let loaded: ConnectionConfig = serde_json::from_str(&serde_json::to_string(&cfg.without_secrets()).unwrap()).unwrap();
+        assert_eq!((loaded.environment, loaded.environment_color, loaded.confirm_dangerous), (crate::db::Environment::Production, Some([1, 2, 3]), false));
+        assert_eq!(loaded.environment_badge(), Some((crate::db::Environment::Production, [1, 2, 3])));
+    }
 }

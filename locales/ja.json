@@ -1446,5 +1446,28 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "テーブルの列メタデータが不完全です"
+  },
+  "safety": {
+    "environment|None": "なし",
+    "Development": "開発",
+    "Staging": "ステージング",
+    "Production": "本番",
+    "Environment:": "環境:",
+    "Badge color": "バッジの色",
+    "Confirm dangerous statements": "危険なステートメントを確認する",
+    "The console asks before UPDATE or DELETE without WHERE, TRUNCATE and DROP": "WHERE のない UPDATE / DELETE、TRUNCATE、DROP の前にコンソールが確認します",
+    "Statements that change data and grid saves ask for confirmation first": "データを変更するステートメントとグリッドの保存は、先に確認を求めます",
+    "Environment of the data source": "データソースの環境",
+    "Change Production data?": "本番データを変更しますか?",
+    "Run dangerous statements?": "危険なステートメントを実行しますか?",
+    "{name} is a Production data source, and these statements change data.": "{name} は本番データソースで、これらのステートメントはデータを変更します。",
+    "{name} is a Production data source, and saving writes the pending grid changes to it.": "{name} は本番データソースで、保存すると保留中のグリッドの変更が書き込まれます。",
+    "These statements act on whole tables:": "これらのステートメントはテーブル全体に作用します:",
+    "no WHERE: changes every row": "WHERE なし: すべての行を変更",
+    "no WHERE: deletes every row": "WHERE なし: すべての行を削除",
+    "removes every row": "すべての行を削除",
+    "removes the object and its data": "オブジェクトとそのデータを削除",
+    "…and {n} more": "…ほか {n} 件",
+    "Turn this check off in the data source's Options tab.": "このチェックはデータソースの「オプション」タブでオフにできます。"
   }
 }

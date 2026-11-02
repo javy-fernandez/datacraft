@@ -54,6 +54,8 @@ pub struct ConnSummary {
     pub databases: Vec<String>,
     /// Default database of the connection (if connected).
     pub default_db: Option<String>,
+    /// Environment badge and its colour.
+    pub environment: Option<(crate::db::Environment, egui::Color32)>,
 }
 
 impl ConnSummary {

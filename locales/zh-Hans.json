@@ -1446,5 +1446,28 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "表列元数据不完整"
+  },
+  "safety": {
+    "environment|None": "无",
+    "Development": "开发",
+    "Staging": "预发布",
+    "Production": "生产",
+    "Environment:": "环境：",
+    "Badge color": "标记颜色",
+    "Confirm dangerous statements": "确认危险语句",
+    "The console asks before UPDATE or DELETE without WHERE, TRUNCATE and DROP": "在执行不带 WHERE 的 UPDATE 或 DELETE、TRUNCATE 和 DROP 之前，控制台会先询问",
+    "Statements that change data and grid saves ask for confirmation first": "更改数据的语句和网格保存都需要先确认",
+    "Environment of the data source": "数据源的环境",
+    "Change Production data?": "要更改生产数据吗？",
+    "Run dangerous statements?": "要运行危险语句吗？",
+    "{name} is a Production data source, and these statements change data.": "{name} 是生产数据源，这些语句会更改数据。",
+    "{name} is a Production data source, and saving writes the pending grid changes to it.": "{name} 是生产数据源，保存会将网格中待处理的更改写入其中。",
+    "These statements act on whole tables:": "这些语句会作用于整张表：",
+    "no WHERE: changes every row": "无 WHERE：更改每一行",
+    "no WHERE: deletes every row": "无 WHERE：删除每一行",
+    "removes every row": "删除每一行",
+    "removes the object and its data": "删除该对象及其数据",
+    "…and {n} more": "…以及另外 {n} 项",
+    "Turn this check off in the data source's Options tab.": "可在数据源的“选项”标签页中关闭此检查。"
   }
 }

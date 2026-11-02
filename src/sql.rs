@@ -5,6 +5,9 @@ use crate::db::Driver;
 use egui::Color32;
 use egui::text::{LayoutJob, TextFormat};
 
+mod guard;
+pub use guard::{Danger, Dangerous, dangerous_statements};
+
 /// Script fragment with its byte range within the original text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {

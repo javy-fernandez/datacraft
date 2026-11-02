@@ -2,6 +2,8 @@
 //! (`ManyIslandsLight.theme.json`, `ManyIslandsDark.theme.json` and the "Light" / "Dark"
 //! editor schemes), Inter + JetBrains Mono fonts and common painting helpers.
 
+use crate::db::{ConnectionConfig, Environment};
+use crate::i18n::{tr, tr_ctx};
 use crate::ui::icons::{self, Ico};
 use egui::{
     Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Rect, Response, Sense, Shadow,
@@ -552,6 +554,33 @@ pub fn paint_badge(ui: &Ui, left_center: egui::Pos2, text: &str) -> Rect {
     ui.painter().rect_filled(rect, 5.0, p.badge_bg);
     ui.painter().galley(egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0), galley, p.badge_fg);
     rect
+}
+
+/// Name of a data source environment.
+pub fn environment_name(env: Environment) -> &'static str {
+    match env {
+        Environment::None => tr_ctx("environment", "None"),
+        Environment::Development => tr("Development"),
+        Environment::Staging => tr("Staging"),
+        Environment::Production => tr("Production"),
+    }
+}
+
+/// Environment of a data source and its badge colour, if it has one.
+pub fn environment(cfg: &ConnectionConfig) -> Option<(Environment, Color32)> {
+    cfg.environment_badge().map(|(env, [r, g, b])| (env, Color32::from_rgb(r, g, b)))
+}
+
+/// Pill with the environment's name in its colour.
+pub fn environment_badge(ui: &mut Ui, env: Environment, color: Color32) -> Response {
+    let name = environment_name(env);
+    let galley = ui.painter().layout_no_wrap(name.to_owned(), bold(11.0), color);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 14.0, 20.0), Sense::hover());
+    // Painted text: spelled out for screen readers (and UI tests).
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+    ui.painter().rect(rect, 10.0, color.gamma_multiply(0.16), Stroke::new(1.0, color.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+    ui.painter().galley(egui::pos2(rect.left() + 7.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    resp
 }
 
 /// "Island" frame: rounded card with the tool window background.

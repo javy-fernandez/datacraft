@@ -69,6 +69,7 @@ mod views;
 mod table_export;
 mod table_shortcuts;
 mod table_grants;
+mod safety;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -190,6 +191,7 @@ impl ConnState {
             status: self.status.kind(),
             databases: self.databases.iter().map(|d| d.name.clone()).collect(),
             default_db: self.default_db().map(str::to_string),
+            environment: theme::environment(&self.cfg),
         }
     }
 }
@@ -375,6 +377,8 @@ pub struct DataCraftApp {
     applied_zoom: Option<f32>,
     preview: Option<PreviewState>,
     confirm_discard: Option<Discard>,
+    /// Dangerous statements or a Production write waiting for confirmation.
+    safety: safety::SafetyState,
     /// Demo mode: fixed Database Explorer width (`DATACRAFT_DEMO_EXPLORER_W`).
     demo_explorer_w: Option<f32>,
     /// Demo mode: window size to apply on the first frame (`DATACRAFT_DEMO_WINDOW`).
@@ -469,6 +473,7 @@ impl DataCraftApp {
             applied_zoom: None,
             preview: None,
             confirm_discard: None,
+            safety: Default::default(),
             demo_explorer_w: None,
             demo_window: None,
             lang: persisted.lang,
@@ -1095,16 +1100,23 @@ impl DataCraftApp {
                     self.error(err);
                 }
                 None => {
-                    self.submit_preview();
-                    // If it could not be sent (no connection, busy tab), report it and discard.
-                    if let Some(pv) = self.preview.as_ref().filter(|p| !p.visible && !p.applying) {
-                        let err = pv.error.clone().unwrap_or_default();
-                        self.preview = None;
-                        self.error(err);
-                    }
+                    self.submit_preview(false);
+                    self.report_hidden_submit();
                 }
             },
             _ => {}
+        }
+    }
+
+    /// A direct save that could not be sent (no connection, busy tab) is reported and
+    /// discarded; one waiting for confirmation stays.
+    fn report_hidden_submit(&mut self) {
+        if self.safety.confirm.is_none()
+            && let Some(pv) = self.preview.as_ref().filter(|p| !p.visible && !p.applying)
+        {
+            let err = pv.error.clone().unwrap_or_default();
+            self.preview = None;
+            self.error(err);
         }
     }
 
@@ -1152,8 +1164,9 @@ impl DataCraftApp {
         true
     }
 
-    /// Sends the preview's changes in a transaction.
-    fn submit_preview(&mut self) {
+    /// Sends the preview's changes in a transaction; on a Production data source, once
+    /// `confirmed`.
+    fn submit_preview(&mut self, confirmed: bool) {
         let Some(pv) = self.preview.as_ref() else { return };
         if pv.applying || pv.statements.is_empty() {
             return;
@@ -1166,10 +1179,12 @@ impl DataCraftApp {
         let (conn, db, busy) = (c.conn, c.db.clone(), c.is_busy());
         let connected = conn.and_then(|id| self.conn(id)).is_some_and(|c| matches!(c.status, ConnStatus::Connected));
         let read_only = conn.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.read_only);
+        let confirm = conn.filter(|_| connected && !confirmed && !read_only && !busy).and_then(|conn| self.changes_confirmation(conn, console));
         let Some(pv) = self.preview.as_mut() else { return };
         match conn {
             _ if read_only => pv.error = Some(tr("Read-only connection").into()),
             _ if busy => pv.error = Some(tr("The tab is running another operation").into()),
+            Some(_) if confirm.is_some() => self.safety.confirm = confirm,
             Some(conn) if connected => {
                 pv.applying = true;
                 pv.error = None;
@@ -1353,6 +1368,12 @@ impl DataCraftApp {
 
     /// Sends statements of tab `idx`, connecting first if needed.
     fn run_statements(&mut self, idx: usize, statements: Vec<String>) {
+        self.send_statements(idx, statements, false);
+    }
+
+    /// [`Self::run_statements`]; `confirmed`: the user already accepted them (dangerous
+    /// statements and writes on Production ask first).
+    fn send_statements(&mut self, idx: usize, statements: Vec<String>, confirmed: bool) {
         let Some(console) = self.consoles.get(idx) else { return };
         if console.is_busy() {
             return;
@@ -1393,6 +1414,12 @@ impl DataCraftApp {
                 is_error: true,
             });
             console.result_tab = ResultTab::Output;
+            return;
+        }
+        if !confirmed
+            && let Some(confirm) = self.run_confirmation(conn, self.consoles[idx].id, &statements)
+        {
+            self.safety.confirm = Some(confirm);
             return;
         }
         let Some(console) = self.consoles.get_mut(idx) else { return };
@@ -2555,6 +2582,7 @@ impl DataCraftApp {
             || self.show_settings
             || self.preview.as_ref().is_some_and(|p| p.visible)
             || self.confirm_discard.is_some()
+            || self.safety.confirm.is_some()
             || self.modify.is_some()
     }
 
@@ -3155,6 +3183,11 @@ impl DataCraftApp {
                                 c.title.clone()
                             };
                             let (resp, closed) = theme::tab(ui, !self.object_browser.active && i == self.active, Some(ico), &title, true);
+                            // The data source's environment, as a line under the tab.
+                            if let Some((_, color)) = c.conn.and_then(|id| self.conns.iter().find(|x| x.cfg.id == id)).and_then(|x| theme::environment(&x.cfg)) {
+                                let r = resp.rect;
+                                ui.painter().hline(egui::Rangef::new(r.left() + 8.0, r.right() - 8.0), r.bottom() - 1.0, egui::Stroke::new(2.0, color));
+                            }
                             if closed {
                                 close = Some(i);
                             } else if resp.clicked() {
@@ -3664,7 +3697,7 @@ impl DataCraftApp {
                 Some(true) => {
                     self.confirm_analyze = None;
                     if idx < self.consoles.len() && !self.consoles[idx].is_busy() {
-                        self.run_statements(idx, vec![explain]);
+                        self.send_statements(idx, vec![explain], true);
                     }
                 }
                 Some(false) => self.confirm_analyze = None,
@@ -3709,6 +3742,7 @@ impl DataCraftApp {
         }
 
         self.preview_dialog(ctx, frame);
+        self.confirm_dialog(ctx, frame);
 
         if self.show_shortcuts {
             let resp = egui::Modal::new(egui::Id::new("keyboard_shortcuts")).frame(frame).show(ctx, |ui| {
@@ -3993,13 +4027,13 @@ impl DataCraftApp {
                 });
             });
         });
-        if !applying && (resp.should_close() || ctx.input(|i| i.key_pressed(Key::Escape))) {
+        if !applying && self.safety.confirm.is_none() && (resp.should_close() || ctx.input(|i| i.key_pressed(Key::Escape))) {
             cancel = true;
         }
         if cancel {
             self.preview = None;
         } else if submit {
-            self.submit_preview();
+            self.submit_preview(false);
         }
     }
 }
@@ -4427,7 +4461,7 @@ mod tests {
             show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
-            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
+            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None, safety: Default::default(),
             startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),

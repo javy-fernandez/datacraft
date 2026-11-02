@@ -461,6 +461,8 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
         ConnStatus::Connected => (Some(p.ok), None),
         ConnStatus::Error(_) => (Some(p.error), Some((tr("error"), p.error))),
     };
+    let environment = theme::environment(&c.cfg);
+    let detail = detail.or(environment.map(|(env, color)| (theme::environment_name(env), color)));
     let badge = (!c.databases.is_empty()).then(|| c.databases.len().to_string());
     let row = tree_row(
         ui,
@@ -479,6 +481,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
         },
     );
     let mut resp = row.resp;
+    if let Some((_, color)) = environment {
+        let r = resp.rect;
+        ui.painter().vline(r.left() + 1.5, egui::Rangef::new(r.top() + 4.0, r.bottom() - 4.0), egui::Stroke::new(3.0, color));
+    }
     if let ConnStatus::Error(e) = &c.status {
         resp = resp.on_hover_text(RichText::new(e).color(p.error));
     } else {
