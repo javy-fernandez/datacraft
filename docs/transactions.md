@@ -43,7 +43,9 @@ several statements, check their effect and then decide whether to keep them.
   `CREATE DATABASE`, `CREATE INDEX CONCURRENTLY` on PostgreSQL; `VACUUM` and
   `ATTACH` on SQLite; `CREATE` / `ALTER DATABASE`, `BACKUP` and `RESTORE` on
   SQL Server) are not sent in Manual mode, so they don't abort the open
-  transaction: switch the console to Auto to run them.
+  transaction: switch the console to Auto to run them. The same goes for
+  setting SQLite's `pragma foreign_keys`, which does nothing inside a
+  transaction.
 - Each run starts in the console's database, as in Auto mode: a `USE` typed in
   the console lasts for that run only.
 - Result grids of a Manual console are read-only: change rows with SQL

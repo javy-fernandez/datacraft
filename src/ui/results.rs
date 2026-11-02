@@ -174,7 +174,7 @@ pub struct ResultView {
     pub readonly_reason: Option<String>,
     /// true once the app has decided whether it is editable.
     pub edit_checked: bool,
-    /// Foreign keys the grid can follow (Ctrl/⌘-click, row menu), set by the app.
+    /// Foreign keys the grid can follow (a key cell's follow button, row menu), set by the app.
     pub links: Option<std::sync::Arc<crate::ui::fk_nav::Links>>,
     /// true once the app has looked up the result's keys.
     pub links_checked: bool,
