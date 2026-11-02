@@ -277,6 +277,7 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Navigation and search](docs/navigation-search.md) | Table search, schema search, local groups/colors and tab management |
 | [Database backups](docs/database-backups.md) | Engine support, native utilities, destinations and cancellation |
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
+| [Manual transactions](docs/transactions.md) | Commit / Roll Back in the SQL console, failed transactions and the safeguards |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
 | [Low-power rendering](docs/low-power-rendering.md) | Software adapters, Remote Desktop and frame statistics |
