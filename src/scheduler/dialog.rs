@@ -191,7 +191,7 @@ impl Dialog {
                 c.id == self.draft.connection
                     && match &self.draft.backup {
                         Some(backup) => {
-                            !(c.read_only && !BackupRequest::local(c.driver))
+                            (!c.read_only || BackupRequest::local(c.driver))
                                 && (c.driver != Driver::Oracle || self.backup_database(c) == c.database)
                                 && backup.validate(c.driver, &self.backup_database(c)).is_ok()
                         }

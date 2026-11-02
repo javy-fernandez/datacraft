@@ -119,7 +119,7 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
     let value = |i: usize| values.get(i).unwrap_or(&blank);
     let input = |i: usize, p: &Param| -> Option<String> {
         let v = value(i);
-        (!(v.use_default && !p.default.trim().is_empty())).then(|| argument(driver, p, v))
+        (!v.use_default || p.default.trim().is_empty()).then(|| argument(driver, p, v))
     };
     let table = matches!(spec.returns.kind, ReturnKind::Table | ReturnKind::SetOf);
     match driver {

@@ -119,7 +119,7 @@ fn tokenize(text: &str, driver: Driver) -> Vec<Token> {
             out.push(Token { kind: Tok::Quoted, start, end: i.min(b.len()) });
             continue;
         }
-        if is_word_start(c) && !(c == b'@' && !b.get(i + 1).is_some_and(|&n| is_word_char(n))) {
+        if is_word_start(c) && (c != b'@' || b.get(i + 1).is_some_and(|&n| is_word_char(n))) {
             i += 1;
             while i < b.len() && is_word_char(b[i]) {
                 i += 1;

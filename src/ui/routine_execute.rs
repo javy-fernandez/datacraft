@@ -97,7 +97,7 @@ impl ExecuteDialog {
                                     let input = param.mode.takes_input() || driver == Driver::MsSql;
                                     let has_default = !param.default.trim().is_empty();
                                     if input {
-                                        let enabled = !v.null && !(v.use_default && has_default);
+                                        let enabled = !v.null && (!v.use_default || !has_default);
                                         let hint = if v.use_default && has_default { param.default.trim().to_string() } else { String::new() };
                                         let field = ui
                                             .add_enabled_ui(enabled, |ui| {

@@ -797,7 +797,7 @@ pub(super) fn tokens(sql: &str, driver: Driver) -> anyhow::Result<Vec<Token>> {
 fn object_name(ts: &[Token], i: usize) -> anyhow::Result<(usize, Option<&str>, &str)> {
     let first = ts.get(i).ok_or_else(|| anyhow::anyhow!(tr("Missing object name in table definition")))?;
     if ts.get(i + 1).is_some_and(|t| t.value == ".") {
-        anyhow::ensure!(!ts.get(i + 3).is_some_and(|t| t.value == "."), tr("Cross-database table definitions require a dedicated backup"));
+        anyhow::ensure!(ts.get(i + 3).is_none_or(|t| t.value != "."), tr("Cross-database table definitions require a dedicated backup"));
         let name = ts.get(i + 2).ok_or_else(|| anyhow::anyhow!(tr("Incomplete qualified table name")))?;
         Ok((i + 2, Some(&first.value), &name.value))
     } else {
