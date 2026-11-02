@@ -16,11 +16,20 @@ const HISTORY: usize = 50;
 
 type TableId = (ConnId, String, String, String);
 
+/// The keys of one table, as cached.
+enum Keys {
+    /// Request `id` is reading them: an older reply (e.g. from before a refresh) is ignored.
+    Loading(u64),
+    Ready(Arc<TableKeys>),
+    /// Reading them failed (reported once); a reload or schema refresh tries again.
+    Failed,
+}
+
 #[derive(Default)]
 pub(super) struct State {
-    /// Keys per (connection, database, schema, table): `None` while loading; a table whose keys
-    /// could not be read caches no keys. Dropped when the schema is refreshed.
-    cache: HashMap<TableId, Option<Arc<TableKeys>>>,
+    /// Keys per (connection, database, schema, table). Dropped when the schema is refreshed, the
+    /// table is reloaded or the connection closes.
+    cache: HashMap<TableId, Keys>,
     back: Vec<Place>,
     forward: Vec<Place>,
     dialog: Option<Dialog>,
@@ -90,6 +99,16 @@ fn filtered(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, c
     Some(Filtered { conn, db: db.into(), schema: schema.into(), table: table.into(), where_clause, order_by: String::new(), filter })
 }
 
+/// Which references the catalog readers of `driver` cannot see.
+fn scope_note(driver: Driver) -> Option<&'static str> {
+    match driver {
+        Driver::Oracle => Some(tr("Only references from tables of the same owner are listed.")),
+        Driver::MySql | Driver::MariaDb | Driver::Snowflake => Some(tr("Only references from tables of the same database are listed.")),
+        Driver::Sqlite => Some(tr("Only references between tables of the main schema are listed.")),
+        _ => None,
+    }
+}
+
 impl DataCraftApp {
     /// Follows the declared keys of a tab's new results, reading a table's keys once.
     pub(super) fn attach_key_links(&mut self, console: u64) {
@@ -125,23 +144,32 @@ impl DataCraftApp {
             };
             let id = (conn, db.clone(), schema.clone(), table.clone());
             match self.fk_nav.cache.get(&id) {
-                Some(Some(keys)) => {
+                Some(Keys::Ready(keys)) => {
                     view.links = Links::new(keys, &names).map(Arc::new);
                     view.links_checked = true;
                 }
-                Some(None) => {}
+                Some(Keys::Failed) => view.links_checked = true,
+                Some(Keys::Loading(_)) => {}
                 None => {
-                    self.fk_nav.cache.insert(id, None);
-                    self.worker.send(Request::ForeignKeys { conn, db: db.clone(), schema, table });
+                    self.fk_nav.next_request += 1;
+                    let request_id = self.fk_nav.next_request;
+                    self.fk_nav.cache.insert(id, Keys::Loading(request_id));
+                    self.worker.send(Request::ForeignKeys { conn, db: db.clone(), schema, table, request_id });
                 }
             }
         }
     }
 
-    pub(super) fn foreign_keys_received(&mut self, conn: ConnId, db: String, schema: String, table: String, result: Result<TableKeys, String>) {
-        // A refresh meanwhile dropped the entry: a newer request answers instead.
-        let Some(entry @ None) = self.fk_nav.cache.get_mut(&(conn, db, schema, table)) else { return };
-        *entry = Some(Arc::new(result.unwrap_or_default()));
+    pub(super) fn foreign_keys_received(&mut self, conn: ConnId, db: String, schema: String, table: String, request_id: u64, result: Result<TableKeys, String>) {
+        // Only the newest request of the table answers: a reply from before a refresh is stale.
+        let Some(entry) = self.fk_nav.cache.get_mut(&(conn, db, schema.clone(), table.clone())).filter(|e| matches!(e, Keys::Loading(id) if *id == request_id)) else { return };
+        match result {
+            Ok(keys) => *entry = Keys::Ready(Arc::new(keys)),
+            Err(error) => {
+                *entry = Keys::Failed;
+                self.error(trf("Could not read the foreign keys of {table}: {error}", &[("table", &format!("{schema}.{table}")), ("error", &error)]));
+            }
+        }
         let ids: Vec<u64> = self.consoles.iter().filter(|c| c.conn == Some(conn)).map(|c| c.id).collect();
         for id in ids {
             self.attach_key_links(id);
@@ -346,6 +374,8 @@ impl DataCraftApp {
                 }
                 if dialog.pending {
                     ui.label(RichText::new(tr("Counting referencing rows…")).color(p.muted));
+                } else if let Some(note) = scope_note(dialog.driver) {
+                    ui.add(egui::Label::new(RichText::new(note).small().color(p.muted)).wrap());
                 }
             });
         });
@@ -455,16 +485,32 @@ mod tests {
         assert_eq!(app.active, shops);
         pump(&mut app, |app| loaded(app, "shops"));
 
-        // Console results: a simple query over one table maps its columns; a join does not.
+        // Console results: a simple query over one table maps its columns; a join does not. A
+        // Manual transaction console keeps read-only grids, but its keys can still be followed.
         app.consoles[0].conn = Some(7);
+        app.consoles[0].manual_tx = true;
         app.run_statements(0, vec!["SELECT ID, region, shop FROM orders WHERE id = 1".into(), "SELECT o.id, o.shop FROM orders o JOIN shops s ON s.code = o.shop".into()]);
         pump(&mut app, |app| !app.consoles[0].is_busy() && app.consoles[0].results.len() == 2 && app.consoles[0].results.iter().all(|v| v.links_checked));
-        let simple = app.consoles[0].results[0].links.as_ref().expect("a simple query follows its keys");
+        let simple = app.consoles[0].results[0].links.clone().expect("a simple query follows its keys");
         assert_eq!(simple.outgoing[0].1, [2, 1]);
-        assert!(app.consoles[0].results[1].links.is_none());
+        assert!(app.consoles[0].results[0].edit.is_none() && app.consoles[0].results[1].links.is_none());
+        app.follow_key(0, simple.parent(0, &app.consoles[0].results[0].rs.rows[0]).unwrap());
+        assert_eq!((app.active, app.consoles[0].manual_tx), (shops, true), "the jump opens the table tab, the console keeps its transaction");
+        pump(&mut app, |app| loaded(app, "shops"));
+        app.key_history(false);
+        assert_eq!(app.active, 0);
 
         app.forget_keys(7, Some(("main", "main", "shops")));
-        assert!(!app.fk_nav.cache.contains_key(&(7, "main".into(), "main".into(), "shops".into())) || app.fk_nav.cache[&(7, "main".into(), "main".into(), "shops".into())].is_none());
+        let shops_id: TableId = (7, "main".into(), "main".into(), "shops".into());
+        let Some(&Keys::Loading(stale)) = app.fk_nav.cache.get(&shops_id) else { panic!("reload reads the keys again") };
+        // A reply to an older request of the table is ignored; a failure is reported once.
+        app.foreign_keys_received(7, "main".into(), "main".into(), "shops".into(), stale - 1, Ok(TableKeys::default()));
+        assert!(matches!(app.fk_nav.cache.get(&shops_id), Some(Keys::Loading(id)) if *id == stale));
+        let ghost: TableId = (7, "main".into(), "main".into(), "ghost".into());
+        app.fk_nav.cache.insert(ghost.clone(), Keys::Loading(999));
+        app.foreign_keys_received(7, "main".into(), "main".into(), "ghost".into(), 999, Err("timed out".into()));
+        assert!(matches!(app.fk_nav.cache.get(&ghost), Some(Keys::Failed)));
+        assert!(app.status_msg.as_ref().is_some_and(|(m, error)| *error && m.contains("main.ghost") && m.contains("timed out")));
         pump(&mut app, |app| loaded(app, "shops") && app.consoles[tab(app, "shops")].results.last().unwrap().links.is_some());
         app.worker.send(Request::Disconnect(7));
         pump(&mut app, |app| app.conn(7).is_some_and(|c| c.status == ConnStatus::Disconnected));
@@ -585,19 +631,20 @@ mod screenshots {
     fn render_fk_navigation_screenshots() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/fk-navigation-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
-        // A `customer_id` cell (logical points); DATACRAFT_FK_CELL=x,y overrides it.
+        // A `customer_id` cell (logical points); DATACRAFT_FK_CELL=x,y overrides it. Its value is
+        // numeric (right-aligned), so the follow button sits at the cell's left edge.
         let cell = std::env::var("DATACRAFT_FK_CELL")
             .ok()
             .and_then(|v| v.split_once(',').map(|(x, y)| egui::pos2(x.parse().unwrap(), y.parse().unwrap())))
-            .unwrap_or(egui::pos2(420.0, 226.0));
+            .unwrap_or(egui::pos2(480.0, 220.0));
         let mut h = harness();
-        h.render().unwrap().save(dir.join("grid-links.png")).unwrap();
-        // Ctrl/⌘ held over a key value: the link is emphasised.
-        h.event(egui::Event::ModifiersChanged(Modifiers::COMMAND));
+        // Hovering a key value shows its follow button; over the button, the value is a link.
         h.hover_at(cell);
         h.run_steps(2);
-        h.render().unwrap().save(dir.join("ctrl-hover.png")).unwrap();
-        h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+        h.hover_at(egui::pos2(418.0, cell.y + 6.0));
+        h.run_steps(30);
+        h.render().unwrap().save(dir.join("grid-links.png")).unwrap();
+        h.hover_at(cell);
         h.event(egui::Event::PointerButton { pos: cell, button: egui::PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
         h.event(egui::Event::PointerButton { pos: cell, button: egui::PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE });
         h.run_steps(3);

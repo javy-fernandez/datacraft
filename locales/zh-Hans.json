@@ -1455,7 +1455,13 @@
     "Forward (⌥→)": "前进 (⌥→)",
     "The result does not include the referenced columns": "结果中不包含被引用的列",
     "Open rows": "打开行",
-    "Counting referencing rows…": "正在统计引用它的行…"
+    "Counting referencing rows…": "正在统计引用它的行…",
+    "Counting timed out": "计数超时",
+    "Reading the foreign keys timed out": "读取外键超时",
+    "Could not read the foreign keys of {table}: {error}": "无法读取 {table} 的外键：{error}",
+    "Only references from tables of the same owner are listed.": "仅列出来自同一所有者的表的引用。",
+    "Only references from tables of the same database are listed.": "仅列出来自同一数据库的表的引用。",
+    "Only references between tables of the main schema are listed.": "仅列出 main 架构中表之间的引用。"
   },
   "session_monitor": {
     "Session Monitor…": "会话监视器…",

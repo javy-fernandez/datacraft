@@ -911,7 +911,7 @@ impl DataCraftApp {
                 Response::TransactionEnded { console, commit, result, tx, elapsed } => self.transaction_ended(console, commit, result, tx, elapsed),
                 Response::TableShortcut { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::TableModel { request_id, result } => self.table_model_received(request_id, result),
-                Response::ForeignKeys { conn, db, schema, table, result } => self.foreign_keys_received(conn, db, schema, table, result),
+                Response::ForeignKeys { conn, db, schema, table, request_id, result } => self.foreign_keys_received(conn, db, schema, table, request_id, result),
                 Response::ReferenceCounts { request_id, result } => self.reference_counts_received(request_id, result),
                 Response::ModelSaved { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),

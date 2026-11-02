@@ -1455,7 +1455,13 @@
     "Forward (⌥→)": "進む (⌥→)",
     "The result does not include the referenced columns": "結果に参照先の列が含まれていません",
     "Open rows": "行を開く",
-    "Counting referencing rows…": "参照している行を数えています…"
+    "Counting referencing rows…": "参照している行を数えています…",
+    "Counting timed out": "件数のカウントがタイムアウトしました",
+    "Reading the foreign keys timed out": "外部キーの読み込みがタイムアウトしました",
+    "Could not read the foreign keys of {table}: {error}": "{table} の外部キーを読み込めませんでした: {error}",
+    "Only references from tables of the same owner are listed.": "同じ所有者のテーブルからの参照のみを表示します。",
+    "Only references from tables of the same database are listed.": "同じデータベースのテーブルからの参照のみを表示します。",
+    "Only references between tables of the main schema are listed.": "main スキーマのテーブル間の参照のみを表示します。"
   },
   "session_monitor": {
     "Session Monitor…": "セッションモニター…",

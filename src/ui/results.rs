@@ -1165,6 +1165,12 @@ pub fn export_csv(view: &ResultView) -> Result<bool, String> {
 const ROW_H: f32 = 24.0;
 const HEADER_H: f32 = 30.0;
 
+/// The follow button of a foreign-key cell, at the edge away from the value.
+fn link_button(cell: Rect, numeric: bool) -> Rect {
+    let x = if numeric { cell.left() + 4.0 } else { cell.right() - 20.0 };
+    Rect::from_min_size(pos2(x, cell.center().y - 8.0), egui::vec2(16.0, 16.0))
+}
+
 fn is_numeric(v: &str) -> bool {
     let t = v.trim();
     !t.is_empty() && t.len() < 40 && t.parse::<f64>().is_ok()
@@ -1596,7 +1602,8 @@ pub fn show_result(
                             || inline.as_ref().is_some_and(|ed| editing_here && ed.changed);
                         // Keys follow the stored values, not pending edits.
                         let stored = match rref { RowRef::Existing(i) => view.rs.rows.get(i), RowRef::New(_) => None };
-                        let link = links.as_deref().zip(stored).and_then(|(l, row)| l.link_at(c, row));
+                        let link = links.as_deref().zip(stored).and_then(|(l, row)| l.link_at(c, row)).filter(|_| !deleted);
+                        let numeric = matches!(&value, Some(Some(v)) if is_numeric(v));
                         let (_, resp) = row.col(|ui| {
                             let r = ui.max_rect();
                             let bg = if modified && !deleted {
@@ -1645,8 +1652,9 @@ pub fn show_result(
                                 return;
                             }
                             let painter = ui.painter_at(r.shrink2(egui::vec2(6.0, 0.0)));
-                            // Ctrl/⌘ over a key value shows it as a link.
-                            let hot = link.is_some() && !deleted && ui.rect_contains_pointer(r) && ui.input(|i| i.modifiers.command);
+                            // Hovering a key value shows its follow button; over the button the value is a link.
+                            let button = link.filter(|_| ui.rect_contains_pointer(r)).map(|_| link_button(r, numeric));
+                            let hot = button.is_some_and(|b| ui.rect_contains_pointer(b));
                             let text_rect = match &value {
                                 Some(Some(v)) => {
                                     let shown: String =
@@ -1678,16 +1686,22 @@ pub fn show_result(
                             } else if link.is_some() {
                                 painter.hline(text_rect.x_range(), text_rect.bottom() + 0.5, Stroke::new(1.0, if hot { p.accent } else { p.accent.gamma_multiply(0.45) }));
                             }
+                            if let Some(b) = button {
+                                ui.painter().rect_filled(b.expand(2.0), 3.0, if hot { p.hover } else { bg.unwrap_or(p.island_bg) });
+                                icons::paint(ui.painter(), b, Ico::FollowKey, if hot { p.accent } else { p.icon }, &p, true);
+                            }
                         });
                         if editing_here {
                             continue;
                         }
                         if resp.drag_started() { actions.push(GridAction::DragStart(vr, c, ui_mods(&resp).command)); }
                         if view.drag_anchor.is_some() && resp.contains_pointer() && resp.ctx.input(|i| i.pointer.primary_down()) { actions.push(GridAction::DragTo(vr, c)); }
-                        if link.is_some() && resp.hovered() && resp.ctx.input(|i| i.modifiers.command) {
+                        let on_button = |pos: Option<egui::Pos2>| link.is_some() && pos.is_some_and(|pos| link_button(resp.rect, numeric).contains(pos));
+                        let over_button = resp.hovered() && on_button(resp.hover_pos());
+                        if over_button {
                             resp.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-                        let follow = link.filter(|_| resp.clicked() && ui_mods(&resp).command);
+                        let follow = link.filter(|_| resp.clicked() && on_button(resp.interact_pointer_pos()));
                         if let Some(jump) = follow.zip(links.as_deref().zip(stored)).and_then(|(k, (l, row))| l.parent(k, row)) {
                             actions.push(GridAction::Jump(jump));
                         } else if resp.clicked() || (resp.secondary_clicked() && !is_sel) {
@@ -1703,7 +1717,9 @@ pub fn show_result(
                         } else if resp.double_clicked() {
                             actions.push(GridAction::StartEdit(vr, c));
                         }
-                        let resp = if editable && !can_edit && resp.hovered() && edit.is_some_and(|e| !e.state.is_deleted(rref)) {
+                        let resp = if over_button {
+                            resp.on_hover_text(tr("Go to referenced row"))
+                        } else if editable && !can_edit && resp.hovered() && edit.is_some_and(|e| !e.state.is_deleted(rref)) {
                             resp.on_hover_text(tr("Read-only cell"))
                         } else {
                             resp
@@ -1750,7 +1766,7 @@ pub fn show_result(
                                 for k in l.keys_at(c) {
                                     let target = l.parent(k, row);
                                     let button = egui::Button::new(tr("Go to referenced row")).shortcut_text(l.outgoing[k].0.ref_table.as_str());
-                                    if ui.add_enabled(target.is_some(), button).on_hover_text(crate::shortcuts::format("⌘Click")).clicked() && let Some(target) = target {
+                                    if ui.add_enabled(target.is_some(), button).clicked() && let Some(target) = target {
                                         actions.push(GridAction::Jump(target));
                                         ui.close();
                                     }
@@ -2679,6 +2695,7 @@ mod keyboard_tests {
         auto_save: bool,
         submits: usize,
         enabled: bool,
+        jump: Option<crate::ui::fk_nav::Jump>,
     }
 
     fn harness(auto_save: bool, editing: bool) -> egui_kittest::Harness<'static, State> {
@@ -2707,12 +2724,14 @@ mod keyboard_tests {
                         .inner;
                     assert!(response.error.is_none());
                     state.submits += usize::from(response.submit);
+                    state.jump = response.jump.or(state.jump.take());
                 },
                 State {
                     view,
                     auto_save,
                     submits: 0,
                     enabled: true,
+                    jump: None,
                 },
             );
         h.run_steps(3);
@@ -2812,6 +2831,40 @@ mod keyboard_tests {
         h.run_steps(2);
         assert!(h.state().view.value_popup.is_none());
         assert!(h.state().view.is_dirty(), "Esc closed the popup only");
+    }
+
+    #[test]
+    fn key_values_follow_from_their_button_while_ctrl_click_keeps_selecting() {
+        use crate::ui::fk_nav::{Jump, Links};
+        let key = crate::db::subset::ForeignKey { schema: "main".into(), table: "notes".into(), columns: vec!["note".into()], ref_schema: "main".into(), ref_table: "texts".into(), ref_columns: vec!["code".into()] };
+        let mut view = view();
+        let keys = crate::db::fk_nav::TableKeys { outgoing: vec![key.clone()], incoming: Vec::new() };
+        view.links = Links::new(&keys, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
+        let mut h = harness_for(view, false);
+        // Ctrl/⌘-click on a key value adds it to the selection like any other cell.
+        click(&h, pos2(60.0, 98.0));
+        h.run_steps(2);
+        h.event(egui::Event::ModifiersChanged(Modifiers::COMMAND));
+        h.hover_at(pos2(160.0, 50.0));
+        h.run_steps(1);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::COMMAND });
+            h.run_steps(1);
+        }
+        h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(2);
+        assert_eq!((h.state().view.selected_cells.clone(), h.state().jump.is_none()), (BTreeSet::from([(0, 1), (2, 0)]), true));
+        // Only a click on the value's follow button asks for the parent row; the NULL key of the
+        // next row has no button.
+        let follow = |h: &mut egui_kittest::Harness<'static, State>, y: f32| {
+            (100..900).step_by(6).find_map(|x| {
+                click(h, pos2(x as f32, y));
+                h.run_steps(2);
+                h.state_mut().jump.take()
+            })
+        };
+        assert_eq!(follow(&mut h, 74.0), None);
+        assert_eq!(follow(&mut h, 50.0), Some(Jump::Parent { key, values: vec![Some("a".into())] }));
     }
 
     #[test]

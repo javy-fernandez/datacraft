@@ -143,7 +143,7 @@ async fn table_columns(session: &mut super::Session, driver: super::Driver, sche
     Ok(found.then(|| TableInfo { name: table.into(), kind: ObjectKind::Table, columns }))
 }
 
-pub(super) fn sqlite_fk_sql(tables: &std::collections::BTreeSet<(String, String)>, direct: bool) -> String {
+fn sqlite_fk_sql(tables: &std::collections::BTreeSet<(String, String)>, direct: bool) -> String {
     let names =
         tables.iter().filter(|(schema, _)| schema == "main").map(|(_, table)| super::table_definition::lit(super::Driver::Sqlite, table)).collect::<Vec<_>>();
     let names = if names.is_empty() { "NULL".into() } else { names.join(",") };

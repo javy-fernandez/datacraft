@@ -1455,7 +1455,13 @@
     "Forward (⌥→)": "Avançar (⌥→)",
     "The result does not include the referenced columns": "O resultado não inclui as colunas referenciadas",
     "Open rows": "Abrir linhas",
-    "Counting referencing rows…": "Contando as linhas que a referenciam…"
+    "Counting referencing rows…": "Contando as linhas que a referenciam…",
+    "Counting timed out": "A contagem excedeu o tempo limite",
+    "Reading the foreign keys timed out": "A leitura das chaves estrangeiras excedeu o tempo limite",
+    "Could not read the foreign keys of {table}: {error}": "Não foi possível ler as chaves estrangeiras de {table}: {error}",
+    "Only references from tables of the same owner are listed.": "Somente as referências de tabelas do mesmo proprietário são listadas.",
+    "Only references from tables of the same database are listed.": "Somente as referências de tabelas do mesmo banco de dados são listadas.",
+    "Only references between tables of the main schema are listed.": "Somente as referências entre tabelas do esquema main são listadas."
   },
   "session_monitor": {
     "Session Monitor…": "Monitor de sessões…",

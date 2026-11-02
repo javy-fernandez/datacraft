@@ -8,6 +8,8 @@ use std::time::Duration;
 
 /// Counts stop here: the dialog shows "1000+" instead of scanning a huge child table.
 pub const COUNT_LIMIT: u64 = 1000;
+/// Each count gets this long; a slow one (e.g. an unindexed key column) does not lose the others.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn supported(driver: Driver) -> bool {
     super::table_model::supported(driver)
@@ -55,20 +57,34 @@ pub fn key_filter(driver: Driver, columns: &[String], values: &[Cell]) -> Option
     Some(columns.iter().zip(values).map(|(c, v)| format!("{} = {}", driver.quote_ident(c), crate::edit::literal(driver, v))).collect::<Vec<_>>().join(" AND "))
 }
 
+/// SQLite keys of `main.table`. `pragma_foreign_key_list` keeps the names as written after
+/// REFERENCES, which SQLite matches case-insensitively: they are resolved to the declared table
+/// and column names (an omitted parent column list resolves to the primary key, in order).
+fn sqlite_keys_sql(table: &str) -> String {
+    let t = lit(Driver::Sqlite, table);
+    format!(
+        "WITH keys AS (SELECT m.name AS child,p.id,p.seq,p.\"from\" AS child_column,pm.name AS parent,nullif(p.\"to\",'') AS parent_column FROM main.sqlite_schema m JOIN pragma_foreign_key_list(m.name,'main') p JOIN main.sqlite_schema pm ON pm.type='table' AND pm.name=p.\"table\" COLLATE NOCASE WHERE m.type='table' AND (m.name={t} OR pm.name={t})) SELECT child||':'||id,'main',child,coalesce((SELECT name FROM pragma_table_xinfo(child,'main') WHERE name=child_column COLLATE NOCASE),child_column),'main',parent,coalesce((SELECT name FROM pragma_table_xinfo(parent,'main') WHERE name=parent_column COLLATE NOCASE),(SELECT name FROM pragma_table_xinfo(parent,'main') WHERE pk=seq+1 AND parent_column IS NULL)),seq FROM keys"
+    )
+}
+
 /// Catalog queries for the keys of `schema.table` only (the inventory readers of `subset`,
 /// narrowed to this table on the server).
 fn keys_sql(driver: Driver, db: &str, schema: &str, table: &str) -> Vec<String> {
     let (s, t) = (lit(driver, schema), lit(driver, table));
     let base = super::subset::fk_sql(driver, db, schema);
     match driver {
-        Driver::Postgres => vec![format!("{base} AND ((cn.nspname = {s} AND cl.relname = {t}) OR (pn.nspname = {s} AND pl.relname = {t}))")],
+        // PostgreSQL 11+ clones a key once per partition (`conparentid` <> 0): only the declared
+        // key between the partitioned tables is kept. Older servers have no such column.
+        Driver::Postgres => vec![format!(
+            "{base} AND coalesce((to_jsonb(con) ->> 'conparentid')::oid, 0) = 0 AND ((cn.nspname = {s} AND cl.relname = {t}) OR (pn.nspname = {s} AND pl.relname = {t}))"
+        )],
         Driver::MySql | Driver::MariaDb => vec![format!(
             "{base} AND ((TABLE_SCHEMA = {s} AND TABLE_NAME = {t}) OR (REFERENCED_TABLE_SCHEMA = {s} AND REFERENCED_TABLE_NAME = {t}))"
         )],
         Driver::MsSql => vec![format!("{base} WHERE (sch.name = {s} AND t.name = {t}) OR (rsch.name = {s} AND rt.name = {t})")],
         // The inventory is per owner: references from other owners are not listed.
         Driver::Oracle => vec![format!("{base} AND (c.table_name = {t} OR (r.owner = {s} AND r.table_name = {t}))")],
-        Driver::Sqlite => vec![super::table_model::sqlite_fk_sql(&[(schema.to_string(), table.to_string())].into_iter().collect(), true)],
+        Driver::Sqlite if schema == "main" => vec![sqlite_keys_sql(table)],
         Driver::Snowflake => {
             let name = format!("{}.{}", Session::quote_table(driver, db, schema), driver.quote_ident(table));
             vec![format!("SHOW IMPORTED KEYS IN TABLE {name}"), format!("SHOW EXPORTED KEYS IN TABLE {name}")]
@@ -81,12 +97,21 @@ pub async fn load(session: &mut Session, driver: Driver, db: &str, schema: &str,
     anyhow::ensure!(supported(driver), tr("Not available for this engine"));
     let mut keys = Vec::new();
     for sql in keys_sql(driver, db, schema, table) {
-        for rs in session.execute(&sql, 100_000).await? {
+        for mut rs in session.execute(&sql, 100_000).await? {
             anyhow::ensure!(!rs.truncated, tr("The foreign key catalog is too large to model completely"));
+            if driver == Driver::Snowflake {
+                same_database(&mut rs, db);
+            }
             keys.extend(super::subset::parse_fks(driver, &rs, &[]));
         }
     }
     Ok(TableKeys::of(keys, schema, table))
+}
+
+/// Snowflake: keys from or to other databases would open the wrong table, so they are left out.
+fn same_database(rs: &mut super::ResultSet, db: &str) {
+    let at: Vec<usize> = ["fk_database_name", "pk_database_name"].iter().filter_map(|n| rs.columns.iter().position(|c| c.eq_ignore_ascii_case(n))).collect();
+    rs.rows.retain(|row| at.iter().all(|&i| row.get(i).and_then(Option::as_deref) == Some(db)));
 }
 
 /// At most `COUNT_LIMIT + 1` matching rows are counted.
@@ -99,21 +124,41 @@ pub fn count_sql(driver: Driver, probe: &Probe) -> String {
     }
 }
 
-async fn counts(session: &mut Session, driver: Driver, probes: &[Probe], cancel: &AtomicBool) -> anyhow::Result<Vec<Result<u64, String>>> {
+/// Counts one probe at a time, each within `limit`: a probe that times out is interrupted and
+/// reported, and the next one runs (unless the interrupt did not stop it).
+async fn counts(session: &mut Session, driver: Driver, probes: &[Probe], cancel: &AtomicBool, limit: Duration) -> anyhow::Result<Vec<Result<u64, String>>> {
+    let handle = session.cancel_handle();
     let mut out = Vec::with_capacity(probes.len());
     for probe in probes {
         anyhow::ensure!(!cancel.load(Ordering::Relaxed), tr("Cancelled"));
-        let count = match session.execute(&count_sql(driver, probe), 1).await {
-            Ok(sets) => sets.iter().find_map(|rs| rs.rows.first()?.first().cloned().flatten()?.trim().parse::<u64>().ok()).ok_or_else(|| tr("Exact row count unavailable").to_string()),
-            Err(e) => Err(format!("{e:#}")),
+        let sql = count_sql(driver, probe);
+        let query = session.execute(&sql, 1);
+        tokio::pin!(query);
+        let count = tokio::select! {
+            result = &mut query => match result {
+                Ok(sets) => sets.iter().find_map(|rs| rs.rows.first()?.first().cloned().flatten()?.trim().parse::<u64>().ok()).ok_or_else(|| tr("Exact row count unavailable").to_string()),
+                Err(e) => Err(format!("{e:#}")),
+            },
+            _ = tokio::time::sleep(limit) => {
+                if let Some(handle) = &handle {
+                    let _ = tokio::time::timeout(Duration::from_secs(3), handle.cancel()).await;
+                }
+                let stopped = tokio::time::timeout(Duration::from_secs(3), &mut query).await.is_ok();
+                out.push(Err(tr("Counting timed out").to_string()));
+                if !stopped {
+                    break;
+                }
+                continue;
+            }
         };
         out.push(count);
     }
+    out.resize_with(probes.len(), || Err(tr("Counting timed out").to_string()));
     Ok(out)
 }
 
-/// Runs `work` on a session of its own: a timeout or `cancel` interrupts the native query
-/// before the session is dropped.
+/// Runs `work` on a session of its own: `cancel` interrupts the native query before the session
+/// is dropped.
 async fn on_session<T>(mut cfg: ConnectionConfig, db: &str, cancel: &AtomicBool, work: impl AsyncFnOnce(&mut Session) -> anyhow::Result<T>) -> anyhow::Result<T> {
     anyhow::ensure!(supported(cfg.driver), tr("Not available for this engine"));
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), tr("Cancelled"));
@@ -132,7 +177,6 @@ async fn on_session<T>(mut cfg: ConnectionConfig, db: &str, cancel: &AtomicBool,
     };
     let (result, abandoned) = tokio::select! {
         result = &mut query => (result, false),
-        _ = tokio::time::sleep(Duration::from_secs(30)) => (Err(anyhow::anyhow!(tr("Table operation timed out"))), true),
         _ = cancelled => (Err(anyhow::anyhow!(tr("Cancelled"))), true),
     };
     if abandoned && let Some(handle) = handle {
@@ -142,15 +186,10 @@ async fn on_session<T>(mut cfg: ConnectionConfig, db: &str, cancel: &AtomicBool,
     result
 }
 
-pub async fn read(cfg: ConnectionConfig, db: &str, schema: &str, table: &str) -> anyhow::Result<TableKeys> {
+/// One count per probe, in order, each within `limit`; a failed count does not stop the others.
+pub async fn count(cfg: ConnectionConfig, db: &str, probes: &[Probe], cancel: &AtomicBool, limit: Duration) -> anyhow::Result<Vec<Result<u64, String>>> {
     let driver = cfg.driver;
-    on_session(cfg, db, &AtomicBool::new(false), async |s: &mut Session| load(s, driver, db, schema, table).await).await
-}
-
-/// One count per probe, in order; a failed count does not stop the others.
-pub async fn count(cfg: ConnectionConfig, db: &str, probes: &[Probe], cancel: &AtomicBool) -> anyhow::Result<Vec<Result<u64, String>>> {
-    let driver = cfg.driver;
-    on_session(cfg, db, cancel, async |s: &mut Session| counts(s, driver, probes, cancel).await).await
+    on_session(cfg, db, cancel, async |s: &mut Session| counts(s, driver, probes, cancel, limit).await).await
 }
 
 #[cfg(test)]
@@ -202,35 +241,57 @@ mod tests {
             assert!(sql.contains("t''; DROP TABLE x; --") || driver == Driver::Snowflake, "{driver:?}: {sql}");
         }
         assert!(keys_sql(Driver::ClickHouse, "db", "s", "t").is_empty() && keys_sql(Driver::MongoDb, "db", "s", "t").is_empty());
+        // Partition clones are skipped; SQLite reads the main schema only.
+        assert!(keys_sql(Driver::Postgres, "db", "s", "t")[0].contains("'conparentid')::oid, 0) = 0"));
+        assert!(keys_sql(Driver::Sqlite, "main", "aux", "t").is_empty() && keys_sql(Driver::Sqlite, "main", "main", "t'x")[0].contains("'t''x'"));
+        let mut rs = super::super::ResultSet { columns: ["FK_DATABASE_NAME", "PK_DATABASE_NAME", "FK_NAME"].map(String::from).to_vec(), ..Default::default() };
+        rs.rows = [["SHOP", "SHOP", "a"], ["OTHER", "SHOP", "b"], ["SHOP", "OTHER", "c"]].iter().map(|r| r.iter().map(|v| Some(v.to_string())).collect()).collect();
+        same_database(&mut rs, "SHOP");
+        assert_eq!(rs.rows.iter().map(|r| r[2].clone().unwrap()).collect::<Vec<_>>(), ["a"]);
         let probe = Probe { schema: "s".into(), table: "t".into(), filter: "\"a\" = '1'".into() };
         assert_eq!(count_sql(Driver::Postgres, &probe), "SELECT COUNT(*) FROM (SELECT 1 AS x FROM \"s\".\"t\" WHERE \"a\" = '1' LIMIT 1001) q");
         assert!(count_sql(Driver::MsSql, &probe).contains("TOP (1001)"));
         assert!(count_sql(Driver::Oracle, &probe).ends_with("ROWNUM <= 1001"));
     }
 
-    #[tokio::test]
-    async fn sqlite_keys_and_counts_follow_composite_references() {
+    async fn sqlite_keys(path: &std::path::Path, table: &str) -> TableKeys {
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        let mut session = Session::connect(&cfg).await.unwrap();
+        load(&mut session, Driver::Sqlite, "main", "main", table).await.unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sqlite_keys_resolve_names_and_slow_counts_do_not_lose_the_others() {
         let path = std::env::temp_dir().join(format!("datacraft-fk-nav-{}.db", uuid::Uuid::new_v4()));
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
-            "CREATE TABLE parent(a INTEGER,b TEXT,PRIMARY KEY(b,a)); CREATE TABLE child(id INTEGER PRIMARY KEY,x INTEGER,y TEXT,FOREIGN KEY(x,y) REFERENCES parent(a,b));
-             CREATE TABLE implicit(id INTEGER PRIMARY KEY,pb TEXT,pa INTEGER,FOREIGN KEY(pb,pa) REFERENCES parent);
+            "CREATE TABLE parent(a INTEGER,b TEXT,PRIMARY KEY(b,a)); CREATE TABLE child(id INTEGER PRIMARY KEY,x INTEGER,y TEXT,FOREIGN KEY(X,Y) REFERENCES Parent(A,B));
+             CREATE TABLE implicit(id INTEGER PRIMARY KEY,pb TEXT,pa INTEGER,FOREIGN KEY(pb,pa) REFERENCES PARENT);
              INSERT INTO parent VALUES(1,'O''x'),(2,'b'); INSERT INTO child(x,y) VALUES(1,'O''x'),(1,'O''x'),(2,'b'),(NULL,'b');",
         )
         .unwrap();
         drop(db);
-        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
-        cfg.file_path = path.to_string_lossy().into_owned();
-        let keys = read(cfg.clone(), "main", "main", "parent").await.unwrap();
+        let keys = sqlite_keys(&path, "parent").await;
         assert!(keys.outgoing.is_empty());
         assert_eq!(keys.incoming.len(), 2);
+        // `REFERENCES Parent(A,B)` and `FOREIGN KEY(X,Y)` resolve to the declared names.
+        assert_eq!((keys.incoming[0].columns.clone(), keys.incoming[0].ref_table.as_str(), keys.incoming[0].ref_columns.clone()), (vec!["x".to_string(), "y".to_string()], "parent", vec!["a".to_string(), "b".to_string()]));
         assert_eq!(keys.incoming[1].ref_columns, ["b", "a"]);
+        assert_eq!(sqlite_keys(&path, "child").await.outgoing, keys.incoming[..1]);
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
         let filter = key_filter(Driver::Sqlite, &keys.incoming[0].columns, &[Some("1".into()), Some("O'x".into())]).unwrap();
-        let probes = [Probe { schema: "main".into(), table: "child".into(), filter }, Probe { schema: "main".into(), table: "child".into(), filter: "missing = 1".into() }];
-        let counted = count(cfg.clone(), "main", &probes, &AtomicBool::new(false)).await.unwrap();
-        assert_eq!(counted[0], Ok(2));
-        assert!(counted[1].is_err());
-        assert!(count(cfg, "main", &probes, &AtomicBool::new(true)).await.is_err());
+        let endless = "(WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT max(n) FROM r) > 0";
+        let probe = |filter: &str| Probe { schema: "main".into(), table: "child".into(), filter: filter.into() };
+        let probes = [probe(endless), probe(&filter), probe("missing = 1")];
+        let started = std::time::Instant::now();
+        let counted = count(cfg.clone(), "main", &probes, &AtomicBool::new(false), Duration::from_millis(300)).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(counted[0], Err(tr("Counting timed out").to_string()));
+        assert_eq!(counted[1], Ok(2));
+        assert!(counted[2].is_err());
+        assert!(count(cfg, "main", &probes, &AtomicBool::new(true), PROBE_TIMEOUT).await.is_err());
         std::fs::remove_file(path).unwrap();
     }
 
@@ -259,23 +320,42 @@ mod tests {
                  CREATE TABLE dc_fk_child.orders(id int PRIMARY KEY, shop text, region text, FOREIGN KEY(shop, region) REFERENCES \"dc fk\".\"Shops\"(code, region));
                  CREATE TABLE \"dc fk\".unrelated(id int PRIMARY KEY);
                  INSERT INTO \"dc fk\".\"Shops\" VALUES('N''1', 'north', 'O''Brien'), ('N''1', 'south', 'x');
-                 INSERT INTO dc_fk_child.orders VALUES(1, 'N''1', 'north'), (2, 'N''1', 'north'), (3, NULL, 'north');",
+                 INSERT INTO dc_fk_child.orders VALUES(1, 'N''1', 'north'), (2, 'N''1', 'north'), (3, NULL, 'north');
+                 CREATE TABLE \"dc fk\".customers(id int, region text, PRIMARY KEY(id, region)) PARTITION BY LIST(region);
+                 CREATE TABLE \"dc fk\".customers_p1 PARTITION OF \"dc fk\".customers FOR VALUES IN ('north');
+                 CREATE TABLE \"dc fk\".customers_p2 PARTITION OF \"dc fk\".customers FOR VALUES IN ('south');
+                 CREATE TABLE dc_fk_child.invoices(id int, region text, customer_id int, PRIMARY KEY(id, region), FOREIGN KEY(customer_id, region) REFERENCES \"dc fk\".customers) PARTITION BY LIST(region);
+                 CREATE TABLE dc_fk_child.invoices_p1 PARTITION OF dc_fk_child.invoices FOR VALUES IN ('north');
+                 CREATE TABLE dc_fk_child.invoices_p2 PARTITION OF dc_fk_child.invoices FOR VALUES IN ('south');
+                 INSERT INTO \"dc fk\".customers VALUES(7, 'north'); INSERT INTO dc_fk_child.invoices VALUES(1, 'north', 7), (2, 'north', 7);",
                 0,
             )
             .await
             .unwrap();
-        let parent = read(cfg.clone(), &db, "dc fk", "Shops").await.unwrap();
+        let parent = load(&mut session, Driver::Postgres, &db, "dc fk", "Shops").await.unwrap();
         assert!(parent.outgoing.is_empty());
         assert_eq!(parent.incoming.len(), 1);
         assert_eq!((parent.incoming[0].schema.as_str(), parent.incoming[0].columns.clone()), ("dc_fk_child", vec!["shop".to_string(), "region".to_string()]));
-        let child = read(cfg.clone(), &db, "dc_fk_child", "orders").await.unwrap();
+        let child = load(&mut session, Driver::Postgres, &db, "dc_fk_child", "orders").await.unwrap();
         assert_eq!(child.outgoing[0].ref_columns, ["code", "region"]);
         let key = &child.outgoing[0];
         let filter = key_filter(Driver::Postgres, &key.ref_columns, &[Some("N'1".into()), Some("north".into())]).unwrap();
         let rows = session.execute(&format!("SELECT name FROM \"dc fk\".\"Shops\" WHERE {filter}"), 10).await.unwrap();
         assert_eq!(rows[0].rows, [vec![Some("O'Brien".to_string())]]);
         let probe = Probe { schema: key.schema.clone(), table: key.table.clone(), filter: key_filter(Driver::Postgres, &key.columns, &[Some("N'1".into()), Some("north".into())]).unwrap() };
-        assert_eq!(count(cfg.clone(), &db, &[probe], &AtomicBool::new(false)).await.unwrap(), [Ok(2)]);
+        assert_eq!(count(cfg.clone(), &db, &[probe], &AtomicBool::new(false), PROBE_TIMEOUT).await.unwrap(), [Ok(2)]);
+        // Partitioned tables: one key between the partitioned tables, none per partition.
+        let customers = load(&mut session, Driver::Postgres, &db, "dc fk", "customers").await.unwrap();
+        assert_eq!(customers.incoming.iter().map(|k| k.table.as_str()).collect::<Vec<_>>(), ["invoices"]);
+        let invoices = load(&mut session, Driver::Postgres, &db, "dc_fk_child", "invoices").await.unwrap();
+        assert_eq!(invoices.outgoing.iter().map(|k| k.ref_table.as_str()).collect::<Vec<_>>(), ["customers"]);
+        let probe = Probe { schema: "dc_fk_child".into(), table: "invoices".into(), filter: key_filter(Driver::Postgres, &invoices.outgoing[0].columns, &[Some("7".into()), Some("north".into())]).unwrap() };
+        assert_eq!(count(cfg.clone(), &db, &[probe], &AtomicBool::new(false), PROBE_TIMEOUT).await.unwrap(), [Ok(2)]);
+        // A slow count is interrupted on the server and the next one still runs.
+        let slow = Probe { schema: "dc fk".into(), table: "Shops".into(), filter: "pg_sleep(30) IS NOT NULL".into() };
+        let quick = Probe { schema: "dc fk".into(), table: "Shops".into(), filter: "code = 'N''1'".into() };
+        let counted = count(cfg.clone(), &db, &[slow, quick], &AtomicBool::new(false), Duration::from_millis(500)).await.unwrap();
+        assert_eq!(counted, [Err(tr("Counting timed out").to_string()), Ok(2)]);
         session.execute("DROP SCHEMA \"dc fk\" CASCADE; DROP SCHEMA dc_fk_child CASCADE;", 0).await.unwrap();
     }
 }
