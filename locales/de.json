@@ -1466,7 +1466,7 @@
     "The transaction had failed, so it was rolled back; nothing was committed": "Die Transaktion war fehlgeschlagen und wurde daher zurückgerollt; nichts wurde committet",
     "The connection closed, so the open transaction was rolled back": "Die Verbindung wurde geschlossen, daher wurde die offene Transaktion zurückgerollt",
     "The session closed, so the open transaction was rolled back": "Die Sitzung wurde geschlossen, daher wurde die offene Transaktion zurückgerollt",
-    "The statement committed the open transaction implicitly": "Die Anweisung hat die offene Transaktion implizit committet",
+    "The statement committed the open transaction implicitly; the next statements run in a new one": "Die Anweisung hat die offene Transaktion implizit committet; die nächsten Anweisungen laufen in einer neuen",
     "The server rolled back the transaction after the error": "Der Server hat die Transaktion nach dem Fehler zurückgerollt",
     "Transaction committed in {time}": "Transaktion in {time} committet",
     "Transaction rolled back in {time}": "Transaktion in {time} zurückgerollt",
@@ -1481,6 +1481,12 @@
     "Open transaction": "Offene Transaktion",
     "Committing…": "Commit läuft…",
     "Transaction rolled back": "Transaktion zurückgerollt",
-    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "Die Bearbeitung im Raster ist im manuellen Transaktionsmodus deaktiviert: Ändern Sie Zeilen mit SQL-Anweisungen"
+    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "Die Bearbeitung im Raster ist im manuellen Transaktionsmodus deaktiviert: Ändern Sie Zeilen mit SQL-Anweisungen",
+    "The Snowflake session expired; a new session cannot continue the console's transaction": "Die Snowflake-Sitzung ist abgelaufen; eine neue Sitzung kann die Transaktion der Konsole nicht fortsetzen",
+    "Commit the changes or roll them back before the data source is saved or deleted.": "Committen Sie die Änderungen oder rollen Sie sie zurück, bevor die Datenquelle gespeichert oder gelöscht wird.",
+    "A statement is still running in “{console}”: stop it before committing.": "In „{console}“ läuft noch eine Anweisung: Stoppen Sie sie vor dem Commit.",
+    "Stop Query": "Abfrage stoppen",
+    "Rolling back…": "Rollback läuft…",
+    "Waiting for the transaction to end…": "Warten auf das Ende der Transaktion…"
   }
 }

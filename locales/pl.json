@@ -1466,7 +1466,7 @@
     "The transaction had failed, so it was rolled back; nothing was committed": "Transakcja nie powiodła się, więc została wycofana; nic nie zatwierdzono",
     "The connection closed, so the open transaction was rolled back": "Połączenie zostało zamknięte, więc otwarta transakcja została wycofana",
     "The session closed, so the open transaction was rolled back": "Sesja została zamknięta, więc otwarta transakcja została wycofana",
-    "The statement committed the open transaction implicitly": "Instrukcja niejawnie zatwierdziła otwartą transakcję",
+    "The statement committed the open transaction implicitly; the next statements run in a new one": "Instrukcja niejawnie zatwierdziła otwartą transakcję; kolejne instrukcje działają w nowej",
     "The server rolled back the transaction after the error": "Serwer wycofał transakcję po błędzie",
     "Transaction committed in {time}": "Transakcja zatwierdzona w {time}",
     "Transaction rolled back in {time}": "Transakcja wycofana w {time}",
@@ -1481,6 +1481,12 @@
     "Open transaction": "Otwarta transakcja",
     "Committing…": "Zatwierdzanie…",
     "Transaction rolled back": "Transakcja wycofana",
-    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "Edycja w siatce jest wyłączona w ręcznym trybie transakcji: zmieniaj wiersze instrukcjami SQL"
+    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "Edycja w siatce jest wyłączona w ręcznym trybie transakcji: zmieniaj wiersze instrukcjami SQL",
+    "The Snowflake session expired; a new session cannot continue the console's transaction": "Sesja Snowflake wygasła; nowa sesja nie może kontynuować transakcji konsoli",
+    "Commit the changes or roll them back before the data source is saved or deleted.": "Zatwierdź zmiany lub je wycofaj przed zapisaniem lub usunięciem źródła danych.",
+    "A statement is still running in “{console}”: stop it before committing.": "W „{console}” nadal działa instrukcja: zatrzymaj ją przed zatwierdzeniem.",
+    "Stop Query": "Zatrzymaj zapytanie",
+    "Rolling back…": "Wycofywanie…",
+    "Waiting for the transaction to end…": "Oczekiwanie na zakończenie transakcji…"
   }
 }

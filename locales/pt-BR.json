@@ -1466,7 +1466,7 @@
     "The transaction had failed, so it was rolled back; nothing was committed": "A transação tinha falhado, então foi desfeita com rollback; nada recebeu commit",
     "The connection closed, so the open transaction was rolled back": "A conexão foi fechada, então a transação aberta foi desfeita com rollback",
     "The session closed, so the open transaction was rolled back": "A sessão foi fechada, então a transação aberta foi desfeita com rollback",
-    "The statement committed the open transaction implicitly": "A instrução fez commit implícito da transação aberta",
+    "The statement committed the open transaction implicitly; the next statements run in a new one": "A instrução fez commit implícito da transação aberta; as próximas instruções rodam em uma nova",
     "The server rolled back the transaction after the error": "O servidor fez rollback da transação após o erro",
     "Transaction committed in {time}": "Commit da transação feito em {time}",
     "Transaction rolled back in {time}": "Rollback da transação feito em {time}",
@@ -1481,6 +1481,12 @@
     "Open transaction": "Transação aberta",
     "Committing…": "Fazendo commit…",
     "Transaction rolled back": "Rollback da transação feito",
-    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "A edição na grade fica desativada no modo de transação manual: altere as linhas com instruções SQL"
+    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "A edição na grade fica desativada no modo de transação manual: altere as linhas com instruções SQL",
+    "The Snowflake session expired; a new session cannot continue the console's transaction": "A sessão do Snowflake expirou; uma nova sessão não pode continuar a transação do console",
+    "Commit the changes or roll them back before the data source is saved or deleted.": "Faça commit das alterações ou rollback antes de salvar ou excluir a fonte de dados.",
+    "A statement is still running in “{console}”: stop it before committing.": "Uma instrução ainda está em execução em “{console}”: interrompa-a antes do commit.",
+    "Stop Query": "Parar consulta",
+    "Rolling back…": "Fazendo rollback…",
+    "Waiting for the transaction to end…": "Aguardando o fim da transação…"
   }
 }

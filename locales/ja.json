@@ -1466,7 +1466,7 @@
     "The transaction had failed, so it was rolled back; nothing was committed": "トランザクションが失敗していたため、ロールバックされました。何もコミットされていません",
     "The connection closed, so the open transaction was rolled back": "接続が閉じられたため、開いていたトランザクションはロールバックされました",
     "The session closed, so the open transaction was rolled back": "セッションが閉じられたため、開いていたトランザクションはロールバックされました",
-    "The statement committed the open transaction implicitly": "ステートメントが開いていたトランザクションを暗黙的にコミットしました",
+    "The statement committed the open transaction implicitly; the next statements run in a new one": "ステートメントが開いていたトランザクションを暗黙的にコミットしました。以降のステートメントは新しいトランザクションで実行されます",
     "The server rolled back the transaction after the error": "エラーの後、サーバーがトランザクションをロールバックしました",
     "Transaction committed in {time}": "トランザクションを {time} でコミットしました",
     "Transaction rolled back in {time}": "トランザクションを {time} でロールバックしました",
@@ -1481,6 +1481,12 @@
     "Open transaction": "開いているトランザクション",
     "Committing…": "コミット中…",
     "Transaction rolled back": "トランザクションをロールバックしました",
-    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "手動トランザクションモードではグリッドでの編集は無効です: SQL ステートメントで行を変更してください"
+    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "手動トランザクションモードではグリッドでの編集は無効です: SQL ステートメントで行を変更してください",
+    "The Snowflake session expired; a new session cannot continue the console's transaction": "Snowflake のセッションが期限切れになりました。新しいセッションではコンソールのトランザクションを続行できません",
+    "Commit the changes or roll them back before the data source is saved or deleted.": "データソースを保存または削除する前に、変更をコミットするかロールバックしてください。",
+    "A statement is still running in “{console}”: stop it before committing.": "「{console}」でステートメントがまだ実行中です。コミットする前に停止してください。",
+    "Stop Query": "クエリを停止",
+    "Rolling back…": "ロールバック中…",
+    "Waiting for the transaction to end…": "トランザクションの終了を待っています…"
   }
 }

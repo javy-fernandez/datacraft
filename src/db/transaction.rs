@@ -14,8 +14,13 @@ pub enum Control {
     Rollback,
     /// `ROLLBACK TO [SAVEPOINT]`: the transaction stays open (and recovers on PostgreSQL).
     RollbackTo,
-    /// DDL that commits the open transaction by itself (MySQL, MariaDB, Oracle, Snowflake).
+    /// DDL (and on MySQL / MariaDB `LOCK TABLES`, `ANALYZE TABLE`…) that commits the open
+    /// transaction by itself (MySQL, MariaDB, Oracle, Snowflake). The console's session never
+    /// commits on its own, so the statements after it run in a new transaction.
     ImplicitCommit,
+    /// `SET autocommit …` (MySQL, MariaDB) or `ALTER SESSION SET AUTOCOMMIT …` (Snowflake): the
+    /// worker turns autocommit off again afterwards.
+    Autocommit,
 }
 
 /// Leading words of a statement in upper case, skipping comments.
@@ -47,6 +52,11 @@ fn leading_words(sql: &str, n: usize) -> Vec<String> {
 pub fn control(driver: Driver, statement: &str) -> Option<Control> {
     let w = leading_words(statement, 3);
     let word = |i: usize| w.get(i).map(String::as_str);
+    let mysql = matches!(driver, Driver::MySql | Driver::MariaDb);
+    let session_setting = (mysql && word(0) == Some("SET")) || (driver == Driver::Snowflake && word(0) == Some("ALTER") && word(1) == Some("SESSION"));
+    if session_setting && statement.to_ascii_uppercase().contains("AUTOCOMMIT") {
+        return Some(Control::Autocommit);
+    }
     match word(0)? {
         // Oracle's BEGIN opens a PL/SQL block, T-SQL's a statement block unless it says TRAN;
         // a Snowflake BEGIN followed by anything else is a scripting block.
@@ -57,6 +67,10 @@ pub fn control(driver: Driver, statement: &str) -> Option<Control> {
             _ => Some(Control::Begin),
         },
         "START" if word(1) == Some("TRANSACTION") => Some(Control::Begin),
+        // PostgreSQL's two-phase COMMIT / ROLLBACK PREPARED end another, prepared transaction;
+        // PREPARE TRANSACTION detaches the current one from the session.
+        "COMMIT" | "ROLLBACK" if driver == Driver::Postgres && word(1) == Some("PREPARED") => None,
+        "PREPARE" if driver == Driver::Postgres && word(1) == Some("TRANSACTION") => Some(Control::Commit),
         "COMMIT" => Some(Control::Commit),
         "END" if matches!(driver, Driver::Postgres | Driver::Sqlite) => Some(Control::Commit),
         "ABORT" if driver == Driver::Postgres => Some(Control::Rollback),
@@ -64,6 +78,9 @@ pub fn control(driver: Driver, statement: &str) -> Option<Control> {
             let to = word(1) == Some("TO") || (matches!(word(1), Some("WORK" | "TRANSACTION" | "TRAN")) && word(2) == Some("TO"));
             Some(if to { Control::RollbackTo } else { Control::Rollback })
         }
+        // Oracle's ALTER SESSION / SYSTEM don't commit; Snowflake's ALTER SESSION is kept as
+        // not committing too (the open transaction stays marked open).
+        "ALTER" if matches!(driver, Driver::Oracle | Driver::Snowflake) && matches!(word(1), Some("SESSION" | "SYSTEM")) => None,
         "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME" | "GRANT" | "REVOKE" | "COMMENT" => {
             let implicit = match driver {
                 // Temporary tables are the exception on MySQL and MariaDB.
@@ -73,13 +90,25 @@ pub fn control(driver: Driver, statement: &str) -> Option<Control> {
             };
             implicit.then_some(Control::ImplicitCommit)
         }
+        // MySQL / MariaDB statements documented to commit implicitly.
+        "LOCK" | "UNLOCK" | "ANALYZE" | "OPTIMIZE" | "REPAIR" | "CHECK" | "FLUSH" | "RESET" | "CACHE" | "INSTALL" | "UNINSTALL" if mysql => Some(Control::ImplicitCommit),
+        "LOAD" if mysql && word(1) == Some("INDEX") => Some(Control::ImplicitCommit),
         _ => None,
     }
 }
 
-/// Server error after which MySQL / MariaDB has rolled the whole transaction back (deadlock).
+/// Server error after which MySQL / MariaDB has rolled the whole transaction back: a deadlock
+/// (error 1213, SQLSTATE 40001; the numbers survive the message's translation).
 pub fn rolls_back_on_error(driver: Driver, error: &str) -> bool {
-    matches!(driver, Driver::MySql | Driver::MariaDb) && error.contains("Deadlock found")
+    matches!(driver, Driver::MySql | Driver::MariaDb) && error.contains("1213") && error.contains("40001")
+}
+
+/// `SET autocommit = 1` and the like: turning autocommit on commits the open transaction.
+pub fn enables_autocommit(statement: &str) -> bool {
+    let s = statement.to_ascii_uppercase();
+    let after = s.split_once("AUTOCOMMIT").map_or("", |(_, v)| v);
+    let value: String = after.trim_start_matches(|c: char| c.is_whitespace() || c == '=').chars().take_while(|c| c.is_alphanumeric()).collect();
+    matches!(value.as_str(), "1" | "ON" | "TRUE")
 }
 
 #[cfg(test)]
@@ -113,6 +142,24 @@ mod tests {
             (Driver::Snowflake, "BEGIN TRANSACTION", Some(Begin)),
             (Driver::Snowflake, "BEGIN RETURN 1; END", None),
             (Driver::Snowflake, "drop table t", Some(ImplicitCommit)),
+            (Driver::Postgres, "COMMIT PREPARED 'tx1'", None),
+            (Driver::Postgres, "rollback prepared 'tx1'", None),
+            (Driver::Postgres, "PREPARE TRANSACTION 'tx1'", Some(Commit)),
+            (Driver::Postgres, "prepare q as select 1", None),
+            (Driver::Oracle, "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY'", None),
+            (Driver::Oracle, "alter system flush shared_pool", None),
+            (Driver::Oracle, "alter table t add c int", Some(ImplicitCommit)),
+            (Driver::Snowflake, "ALTER SESSION SET QUERY_TAG = 'x'", None),
+            (Driver::Snowflake, "alter session set autocommit = true", Some(Autocommit)),
+            (Driver::Snowflake, "alter table t add column c int", Some(ImplicitCommit)),
+            (Driver::MySql, "LOCK TABLES t WRITE", Some(ImplicitCommit)),
+            (Driver::MariaDb, "analyze table t", Some(ImplicitCommit)),
+            (Driver::MySql, "FLUSH PRIVILEGES", Some(ImplicitCommit)),
+            (Driver::MySql, "LOAD INDEX INTO CACHE t", Some(ImplicitCommit)),
+            (Driver::MySql, "LOAD DATA INFILE 'x' INTO TABLE t", None),
+            (Driver::MySql, "SET @@session.autocommit = 1", Some(Autocommit)),
+            (Driver::MariaDb, "set autocommit=0", Some(Autocommit)),
+            (Driver::Postgres, "set lock_timeout = 1000", None),
             (Driver::Postgres, "select 1", None),
             (Driver::Postgres, "", None),
         ] {
@@ -121,8 +168,17 @@ mod tests {
     }
 
     #[test]
-    fn mysql_deadlocks_roll_back() {
-        assert!(rolls_back_on_error(Driver::MariaDb, "Deadlock found when trying to get lock; try restarting transaction"));
-        assert!(!rolls_back_on_error(Driver::Postgres, "Deadlock found"));
+    fn mysql_deadlocks_roll_back_whatever_the_language() {
+        assert!(rolls_back_on_error(Driver::MariaDb, "Error 1213 (SQLSTATE 40001): Deadlock found when trying to get lock"));
+        assert!(rolls_back_on_error(Driver::MySql, "Fehler 1213 (SQLSTATE 40001): Deadlock beim Versuch, eine Sperre zu bekommen"));
+        assert!(!rolls_back_on_error(Driver::MySql, "Error 1205 (SQLSTATE HY000): Lock wait timeout exceeded"));
+        assert!(!rolls_back_on_error(Driver::Postgres, "ERROR 1213 40001"));
+    }
+
+    #[test]
+    fn turning_autocommit_on() {
+        for (sql, on) in [("SET autocommit=1", true), ("set @@session.autocommit = ON;", true), ("SET autocommit = 1, sql_mode = ''", true), ("ALTER SESSION SET AUTOCOMMIT = TRUE", true), ("SET autocommit=0", false), ("alter session set autocommit = false", false)] {
+            assert_eq!(enables_autocommit(sql), on, "{sql}");
+        }
     }
 }

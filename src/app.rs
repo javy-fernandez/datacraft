@@ -716,6 +716,7 @@ impl DataCraftApp {
                         if let Some(statements) = console.pending.take() {
                             console.running = true;
                             let db = console.db.clone();
+                            console.tx_released = false;
                             self.worker.send(Request::Execute { conn, db, console: console.id, statements, max_rows, manual: console.manual_tx });
                         }
                     }
@@ -821,7 +822,6 @@ impl DataCraftApp {
                 Response::ConnectFailed { conn, error } => {
                     self.cancel_table_duplicate(conn);
                     self.cancel_startup_table(conn);
-                    self.drop_transactions(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
                     if let Some(c) = self.conn_mut(conn) {
                         // Also if it was connected: the session is lost and the next run
@@ -1421,6 +1421,7 @@ impl DataCraftApp {
                 let id = console.id;
                 let db = console.db.clone();
                 let manual = console.manual_tx;
+                console.tx_released = false;
                 self.worker.send(Request::Execute { conn, db, console: id, statements, max_rows, manual });
             }
             ConnStatus::Connecting => console.pending = Some(statements),
@@ -2908,6 +2909,14 @@ impl DataCraftApp {
             if c.is_busy() || c.table.is_some() || c.routine.is_some() || c.conn == Some(id) {
                 return;
             }
+            // A Manual console releases its own session first (asking if a transaction is open).
+            if c.manual_tx {
+                let console = c.id;
+                if self.tx_guard(vec![console], transactions::TxThen::Source(console, Some(id), None)) {
+                    self.set_console_source(console, Some(id), None);
+                }
+                return;
+            }
             c.conn = Some(id);
             c.db = None;
             c.pending = None;
@@ -3499,17 +3508,8 @@ impl DataCraftApp {
 
         if let Some(dialog) = self.dialog.as_mut() {
             match dialog.show(ctx) {
-                Some(DialogResult::Save { save, delete, close }) => {
-                    if close {
-                        self.dialog = None;
-                    }
-                    for id in delete {
-                        self.delete_connection(id);
-                    }
-                    for cfg in save {
-                        self.save_connection(cfg);
-                    }
-                }
+                // The dialog stays open while open transactions are asked about.
+                Some(DialogResult::Save { save, delete, close }) => self.connections_changed(save, delete, close),
                 Some(DialogResult::Test(cfg)) => self.worker.send(Request::Test(*cfg)),
                 Some(DialogResult::Cancel) => self.dialog = None,
                 None => {}
@@ -3636,7 +3636,7 @@ impl DataCraftApp {
             match decision {
                 Some(true) => {
                     self.confirm_delete = None;
-                    self.delete_connection(id);
+                    self.connections_changed(Vec::new(), vec![id], false);
                 }
                 Some(false) => self.confirm_delete = None,
                 None => {}

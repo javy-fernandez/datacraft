@@ -1466,7 +1466,7 @@
     "The transaction had failed, so it was rolled back; nothing was committed": "La transaction avait échoué, elle a donc été annulée ; rien n'a été validé",
     "The connection closed, so the open transaction was rolled back": "La connexion a été fermée, la transaction ouverte a donc été annulée",
     "The session closed, so the open transaction was rolled back": "La session a été fermée, la transaction ouverte a donc été annulée",
-    "The statement committed the open transaction implicitly": "L'instruction a validé implicitement la transaction ouverte",
+    "The statement committed the open transaction implicitly; the next statements run in a new one": "L'instruction a validé implicitement la transaction ouverte ; les instructions suivantes s'exécutent dans une nouvelle",
     "The server rolled back the transaction after the error": "Le serveur a annulé la transaction après l'erreur",
     "Transaction committed in {time}": "Transaction validée en {time}",
     "Transaction rolled back in {time}": "Transaction annulée en {time}",
@@ -1481,6 +1481,12 @@
     "Open transaction": "Transaction ouverte",
     "Committing…": "Validation…",
     "Transaction rolled back": "Transaction annulée",
-    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "La modification dans la grille est désactivée en mode de transaction manuel : modifiez les lignes avec des instructions SQL"
+    "Grid editing is off in Manual transaction mode: change rows with SQL statements": "La modification dans la grille est désactivée en mode de transaction manuel : modifiez les lignes avec des instructions SQL",
+    "The Snowflake session expired; a new session cannot continue the console's transaction": "La session Snowflake a expiré ; une nouvelle session ne peut pas poursuivre la transaction de la console",
+    "Commit the changes or roll them back before the data source is saved or deleted.": "Validez les modifications ou annulez-les avant d'enregistrer ou de supprimer la source de données.",
+    "A statement is still running in “{console}”: stop it before committing.": "Une instruction est encore en cours dans « {console} » : arrêtez-la avant de valider.",
+    "Stop Query": "Arrêter la requête",
+    "Rolling back…": "Annulation…",
+    "Waiting for the transaction to end…": "En attente de la fin de la transaction…"
   }
 }

@@ -139,6 +139,9 @@ pub struct Console {
     pub tx: Option<crate::worker::TxInfo>,
     /// Commit or Roll Back in progress.
     pub ending_tx: bool,
+    /// Its Manual session was released while a run or end was in flight: their replies about
+    /// the transaction are stale.
+    pub tx_released: bool,
 }
 
 /// State of the editor's find / replace bar.
@@ -301,6 +304,7 @@ impl Console {
             manual_tx: false,
             tx: None,
             ending_tx: false,
+            tx_released: false,
         }
     }
 

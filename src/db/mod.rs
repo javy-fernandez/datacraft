@@ -781,8 +781,8 @@ impl Engine {
         Ok(total)
     }
 
-    /// Opens a console's Manual transaction. Oracle has no BEGIN: its statements just stop
-    /// committing themselves.
+    /// Opens a console's Manual transaction. Oracle has no BEGIN: its statements just don't
+    /// commit themselves on the Manual session (see `manual_session`).
     pub async fn begin(&mut self) -> anyhow::Result<()> {
         let sql = match self {
             Engine::Oracle(s) => {
@@ -795,6 +795,24 @@ impl Engine {
             _ => anyhow::bail!(crate::i18n::tr("Manual transactions are not available for this engine")),
         };
         self.execute(sql, 0).await.map(|_| ())
+    }
+
+    /// Prepares a console's own session for Manual transactions: nothing on it commits by itself
+    /// (MySQL / MariaDB `autocommit = 0`, Snowflake `AUTOCOMMIT = FALSE` without silent re-logins,
+    /// Oracle without its per-statement commit). Run again after the user changes autocommit.
+    pub async fn manual_session(&mut self) -> anyhow::Result<()> {
+        match self {
+            Engine::Oracle(s) => {
+                s.set_autocommit(false);
+                Ok(())
+            }
+            Engine::MySql(_) => self.execute("SET autocommit = 0", 0).await.map(|_| ()),
+            Engine::Snowflake(s) => {
+                s.keep_session();
+                self.execute("ALTER SESSION SET AUTOCOMMIT = FALSE", 0).await.map(|_| ())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Commits or rolls back a console's Manual transaction.

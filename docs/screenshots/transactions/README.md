@@ -15,6 +15,7 @@ the ignored live PostgreSQL test described in the pull request.
 | [Transaction mode menu](tx-mode-menu-dark.png) | Dark |
 | [Failed PostgreSQL transaction](failed-transaction-dark.png) | Dark |
 | [Closing a tab with an open transaction](close-tab-confirm-dark.png) | Dark |
+| [Closing a tab while a statement still runs](close-tab-running-dark.png) | Dark |
 
 Regenerate on Windows with a working GPU using the render fixture:
 
