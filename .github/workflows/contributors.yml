@@ -1,13 +1,9 @@
 name: Contributors chart
 
 on:
-  push:
+  pull_request_target:
+    types: [closed]
     branches: [main]
-    paths-ignore:
-      - "docs/contributors/**"
-  schedule:
-    - cron: "17 4 * * 1"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,12 +14,14 @@ concurrency:
 
 jobs:
   update:
-    # Forks get the chart by syncing with the main repository.
-    if: github.repository == 'javy-fernandez/datacraft'
+    # Only after a merge; forks get the chart by syncing with the main repository.
+    if: github.repository == 'javy-fernandez/datacraft' && github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
     steps:
+      # Always main, never the pull request's head: this job has write access.
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
       - run: python3 scripts/contributors.py
         env:
