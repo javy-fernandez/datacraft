@@ -57,7 +57,9 @@ highlight statements, for the data source's engine:
   statement (`TOP (n) PERCENT` does not). Statements written without `;` are
   told apart (`UPDATE … WHERE …` followed by `DELETE FROM b` on the next line,
   also after `CREATE TABLE`, `CREATE TYPE` or `ALTER TABLE`), as are `IF`,
-  `BEGIN TRAN` / `TRY` blocks, `CASE` expressions and table hints.
+  `BEGIN TRAN` / `TRY` blocks, `CASE` expressions, table hints and the
+  `ON DELETE CASCADE` / `ON UPDATE NO ACTION` of foreign keys in generated
+  scripts.
 - Routine bodies only run when called, so they are not looked into:
   `CREATE FUNCTION` / `PROCEDURE` / `TRIGGER` in every engine, packages and
   types on Oracle, events on MySQL, rules on PostgreSQL, PostgreSQL
@@ -95,7 +97,7 @@ A data source with an environment shows it:
 On a Production data source, every console run that changes data or structure
 asks first, once per run, whatever the statements are, in Auto and Manual
 transaction mode alike. Reads (`SELECT`, `WITH`, `SHOW`, `EXPLAIN`,
-`EXPLAIN ANALYZE SELECT`…) run at once: the same rule decides what a read-only
+`EXPLAIN ANALYZE SELECT`, Oracle's `EXPLAIN PLAN FOR SELECT`…) run at once: the same rule decides what a read-only
 data source may run, reading the statement with the engine's lexer, so words in
 strings, quoted names and comments (`WHERE action = 'DELETE'`, a data editor
 filter naming `update`) don't count. Redis, MongoDB, InfluxDB and Kusto use

@@ -304,8 +304,10 @@ fn tsql_head(w: &str, stmt: &str, prev: &str, next: &str) -> bool {
         );
     // `FOR UPDATE OF`, `UNION SELECT`, `INSTEAD OF DELETE`, column lists, names (`FROM log`);
     // `UPDATE(column)` in triggers, `WITH (NOLOCK)` table hints.
+    // `ON DELETE CASCADE` / `ON UPDATE NO ACTION` of a foreign key (`SET NOCOUNT ON DELETE …` is not one).
     let inside = matches!(prev, "FOR" | "OF" | "UNION" | "ALL" | "EXCEPT" | "INTERSECT" | "AFTER" | "INSTEAD" | "BEFORE" | "FROM" | "TABLE" | "INTO" | "," | ".")
-        || (matches!(w, "UPDATE" | "WITH") && next == "(");
+        || (matches!(w, "UPDATE" | "WITH") && next == "(")
+        || (prev == "ON" && matches!(w, "UPDATE" | "DELETE") && ["CASCADE", "NO", "SET", "RESTRICT"].iter().any(|a| a.eq_ignore_ascii_case(next)));
     TSQL_STARTS.contains(&w) && !(clause || inside)
 }
 
@@ -841,6 +843,13 @@ mod tests {
         assert_eq!(found("CREATE TYPE dbo.Ids AS TABLE (id int)\nDELETE FROM orders", d), one(Danger::Delete, "orders"));
         assert_eq!(found("CREATE TABLE t (id int REFERENCES u ON DELETE CASCADE)\nTRUNCATE TABLE log", d), one(Danger::Truncate, "log"));
         assert_eq!(found("ALTER TABLE t ADD c int\nDELETE FROM t", d), one(Danger::Delete, "t"));
+        // Foreign keys added by SSMS scripts: their referential actions are not statements.
+        for action in ["ON DELETE CASCADE", "ON UPDATE CASCADE", "ON DELETE NO ACTION", "on update set null", "ON DELETE SET DEFAULT ON UPDATE NO ACTION"] {
+            let fk = format!("ALTER TABLE [dbo].[Orders] WITH CHECK ADD CONSTRAINT [FK_x] FOREIGN KEY([c]) REFERENCES [dbo].[Customers]([Id]) {action}\nGO\nALTER TABLE [dbo].[Orders] CHECK CONSTRAINT [FK_x]");
+            assert!(found(&fk, d).is_empty(), "{action}");
+        }
+        assert_eq!(found("ALTER TABLE t ADD FOREIGN KEY (c) REFERENCES u (id) ON DELETE CASCADE\nDELETE FROM t", d), one(Danger::Delete, "t"));
+        assert_eq!(found("SET XACT_ABORT ON UPDATE t SET a = 1", d), one(Danger::Update, "t"));
         // A view, like a routine, is the whole batch.
         assert!(found("CREATE VIEW v AS SELECT 1 AS a\nDELETE FROM x", d).is_empty());
         assert!(found("GRANT SELECT, UPDATE, DELETE ON t TO r", d).is_empty());

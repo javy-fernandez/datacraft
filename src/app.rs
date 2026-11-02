@@ -1416,6 +1416,43 @@ impl DataCraftApp {
         self.send_statements(idx, statements, false);
     }
 
+    /// Logs why console `idx` can't run `statements` on `conn` (writes on a read-only data
+    /// source, statements outside a Manual transaction); true if it can't.
+    pub(super) fn refused(&mut self, idx: usize, conn: ConnId, statements: &[String]) -> bool {
+        let driver = self.conn(conn).map(|c| c.cfg.driver).unwrap_or(Driver::Postgres);
+        if self.conn(conn).is_some_and(|c| c.cfg.read_only)
+            && let Some(stmt) = statements
+                .iter()
+                .flat_map(|s| sql::split_statements(s, driver))
+                .map(|s| s.text)
+                .find(|s| !is_read_statement(driver, s))
+        {
+            let Some(console) = self.consoles.get_mut(idx) else { return true };
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: stmt.trim().to_string(),
+                message: tr("Read-only connection: only queries can run (SELECT, WITH, SHOW, EXPLAIN…)").into(),
+                is_error: true,
+            });
+            console.result_tab = ResultTab::Output;
+            return true;
+        }
+        if self.consoles.get(idx).is_some_and(|c| c.manual_tx)
+            && let Some(stmt) = statements.iter().flat_map(|s| sql::split_statements(s, driver)).map(|s| s.text).find(|s| crate::db::transaction::outside_transaction(driver, s))
+        {
+            let Some(console) = self.consoles.get_mut(idx) else { return true };
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: stmt.trim().to_string(),
+                message: tr("This statement can't run inside a transaction: switch the console to Auto mode to run it").into(),
+                is_error: true,
+            });
+            console.result_tab = ResultTab::Output;
+            return true;
+        }
+        false
+    }
+
     /// [`Self::run_statements`]; `confirmed`: the user already accepted them (dangerous
     /// statements and writes on Production ask first).
     fn send_statements(&mut self, idx: usize, statements: Vec<String>, confirmed: bool) {
@@ -1443,35 +1480,7 @@ impl DataCraftApp {
             console.result_tab = ResultTab::Output;
             return;
         };
-        let driver = self.conn(conn).map(|c| c.cfg.driver).unwrap_or(Driver::Postgres);
-        if self.conn(conn).is_some_and(|c| c.cfg.read_only)
-            && let Some(stmt) = statements
-                .iter()
-                .flat_map(|s| sql::split_statements(s, driver))
-                .map(|s| s.text)
-                .find(|s| !is_read_statement(driver, s))
-        {
-            let Some(console) = self.consoles.get_mut(idx) else { return };
-            console.log.push(OutputEntry {
-                time: now(),
-                statement: stmt.trim().to_string(),
-                message: tr("Read-only connection: only queries can run (SELECT, WITH, SHOW, EXPLAIN…)").into(),
-                is_error: true,
-            });
-            console.result_tab = ResultTab::Output;
-            return;
-        }
-        if self.consoles.get(idx).is_some_and(|c| c.manual_tx)
-            && let Some(stmt) = statements.iter().flat_map(|s| sql::split_statements(s, driver)).map(|s| s.text).find(|s| crate::db::transaction::outside_transaction(driver, s))
-        {
-            let Some(console) = self.consoles.get_mut(idx) else { return };
-            console.log.push(OutputEntry {
-                time: now(),
-                statement: stmt.trim().to_string(),
-                message: tr("This statement can't run inside a transaction: switch the console to Auto mode to run it").into(),
-                is_error: true,
-            });
-            console.result_tab = ResultTab::Output;
+        if self.refused(idx, conn, &statements) {
             return;
         }
         if !confirmed
@@ -4230,8 +4239,10 @@ fn reads(words: &[String]) -> bool {
         // SHOW / DESCRIBE never write, whatever they name (`SHOW CREATE TABLE`).
         Some("show" | "describe" | "desc") => true,
         // `EXPLAIN [ANALYZE] …` (and MariaDB's `ANALYZE SELECT`) reads when what it explains
-        // does: ANALYZE runs it. Option words (`VERBOSE`, `FORMAT JSON`, `QUERY PLAN`) are skipped.
-        Some("explain" | "analyze" | "analyse") => {
+        // does: ANALYZE runs it. Option words (`VERBOSE`, `FORMAT JSON`, `QUERY PLAN`, Oracle's
+        // `PLAN FOR`, ClickHouse's `AST` / `PIPELINE`…) are skipped. `ANALYZE TABLE t` (MySQL)
+        // writes statistics; `EXPLAIN TABLE t` reads.
+        Some(first @ ("explain" | "analyze" | "analyse")) => {
             let rest: Vec<String> = words[1..]
                 .iter()
                 .skip_while(|w| {
@@ -4240,11 +4251,17 @@ fn reads(words: &[String]) -> bool {
                         "analyze" | "analyse" | "verbose" | "costs" | "settings" | "buffers" | "wal" | "timing" | "summary"
                             | "memory" | "serialize" | "generic_plan" | "format" | "json" | "text" | "xml" | "yaml" | "tree"
                             | "traditional" | "true" | "false" | "on" | "off" | "query" | "plan" | "using" | "tabular"
+                            | "for" | "ast" | "syntax" | "pipeline" | "estimate" | "header" | "description" | "indexes"
+                            | "actions" | "graph" | "compact" | "projections"
                     )
                 })
                 .cloned()
                 .collect();
-            matches!(rest.first().map(String::as_str), Some("select" | "values" | "table" | "with")) && reads(&rest)
+            match rest.first().map(String::as_str) {
+                Some("select" | "values" | "with") => reads(&rest),
+                Some("table") => first == "explain" && reads(&rest),
+                _ => false,
+            }
         }
         Some("select" | "values" | "table" | "with") => !words.iter().any(writes),
         // SQL Server's explain plan.
@@ -4909,6 +4926,17 @@ mod tests {
         assert!(is_query(Driver::MariaDb, "ANALYZE FORMAT=JSON SELECT * FROM t"));
         assert!(!is_query(Driver::MariaDb, "ANALYZE FORMAT=JSON DELETE FROM t"));
         assert!(!is_query(Driver::Postgres, "analyze t"));
+        assert!(!is_query(Driver::MySql, "ANALYZE TABLE t"));
+        assert!(!is_query(Driver::MariaDb, "ANALYZE TABLE t PERSISTENT FOR ALL"));
+        assert!(is_query(Driver::Postgres, "EXPLAIN TABLE t"));
+        // Oracle's Explain Plan and ClickHouse's explain kinds read.
+        for s in sql::explain_statements("select * from t", Driver::Oracle) {
+            assert!(is_query(Driver::Oracle, &s), "{s}");
+        }
+        for kind in ["AST", "SYNTAX", "PIPELINE", "ESTIMATE", "PLAN indexes = 1", "QUERY TREE"] {
+            assert!(is_query(Driver::ClickHouse, &format!("EXPLAIN {kind} SELECT * FROM t")), "{kind}");
+        }
+        assert!(!is_query(Driver::ClickHouse, "EXPLAIN PIPELINE INSERT INTO t SELECT 1"));
         assert!(!is_query(Driver::Postgres, "explain delete from t"));
         assert!(!is_query(Driver::Postgres, "explain analyse delete from t"));
         assert!(!is_query(Driver::Postgres, "select * into copy from t"));

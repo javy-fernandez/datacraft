@@ -94,14 +94,19 @@ impl DataCraftApp {
     }
 
     /// Explain Analyze of console `idx`: it runs `statement`, so one that writes asks once,
-    /// with the dangerous statement / Production prompt when it needs one, else its own.
+    /// with the dangerous statement / Production prompt when it needs one, else its own. One the
+    /// console can't run (read-only, Manual transaction) is refused before asking.
     pub(super) fn explain_analyze(&mut self, idx: usize, statement: &str, explain: String) {
         let Some(c) = self.consoles.get(idx) else { return };
-        let driver = c.conn.and_then(|id| self.conn(id)).map_or(Driver::Postgres, |c| c.cfg.driver);
-        let confirm = c.conn.and_then(|conn| self.run_confirmation(conn, c.id, std::slice::from_ref(&explain)));
+        let (id, conn) = (c.id, c.conn);
+        let driver = conn.and_then(|id| self.conn(id)).map_or(Driver::Postgres, |c| c.cfg.driver);
         if is_query(driver, statement) {
-            self.run_statements(idx, vec![explain]);
-        } else if let Some(confirm) = confirm {
+            return self.run_statements(idx, vec![explain]);
+        }
+        if conn.is_some_and(|conn| self.refused(idx, conn, std::slice::from_ref(&explain))) {
+            return;
+        }
+        if let Some(confirm) = conn.and_then(|conn| self.run_confirmation(conn, id, std::slice::from_ref(&explain))) {
             self.safety.confirm = Some(Confirm { analyze: true, ..confirm });
         } else {
             self.confirm_analyze = Some((idx, explain));
@@ -311,6 +316,14 @@ mod tests {
         let mut a = app(Driver::MySql, Environment::Production, true);
         a.explain_analyze(0, "SELECT * FROM orders", "EXPLAIN ANALYZE SELECT * FROM orders".into());
         assert!(a.safety.confirm.is_none() && a.confirm_analyze.is_none() && sent(&a));
+        // A write a read-only data source refuses is refused before any prompt.
+        for environment in [Environment::Production, Environment::None] {
+            let mut a = app(Driver::Postgres, environment, true);
+            a.conns[0].cfg.read_only = true;
+            a.explain_analyze(0, "DELETE FROM orders", explain("DELETE FROM orders"));
+            assert!(a.safety.confirm.is_none() && a.confirm_analyze.is_none() && !sent(&a));
+            assert!(a.consoles[0].log.last().is_some_and(|e| e.is_error));
+        }
     }
 
     /// A Manual transaction console asks like an Auto one before its statements join the
