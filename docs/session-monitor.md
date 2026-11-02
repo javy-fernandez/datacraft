@@ -1,7 +1,7 @@
 # Session Monitor
 
-Right-click a connected PostgreSQL, MySQL, MariaDB, SQL Server, Oracle or ClickHouse
-connection in Database Explorer and choose **Session Monitor…**. The window lists the
+Right-click a connected PostgreSQL (10 or later), MySQL, MariaDB, SQL Server, Oracle or
+ClickHouse connection in Database Explorer and choose **Session Monitor…**. The window lists the
 server's sessions without blocking the rest of the app: consoles, the explorer and other
 windows stay usable while it is open, and one monitor can be open per connection.
 
@@ -23,6 +23,10 @@ application name (PostgreSQL, SQL Server, Oracle).
 
 **Refresh** reads the list again; **Auto-refresh** repeats it every 2, 5 or 10 seconds
 while the window is open. A refresh never starts while the previous one is still running.
+While DataCraft is not the focused window, auto-refresh runs at most every 30 seconds (the
+toolbar says so), and while it is minimized or covered it pauses: no frames are drawn and
+no queries sent until it is shown again, in line with [low-power
+rendering](low-power-rendering.md).
 
 ## Cancel and terminate
 
@@ -38,13 +42,15 @@ available, but both actions are disabled.
 
 | Engine | Sessions from | Blocking | Cancel | Terminate |
 | --- | --- | --- | --- | --- |
-| PostgreSQL | `pg_stat_activity` (client backends and autovacuum workers) | `pg_blocking_pids` | `pg_cancel_backend` | `pg_terminate_backend` |
+| PostgreSQL 10+ | `pg_stat_activity` (client backends and autovacuum workers) | `pg_blocking_pids`, for sessions waiting on a lock | `pg_cancel_backend`, only while the listed statement runs | `pg_terminate_backend` |
 | MySQL / MariaDB | `information_schema.PROCESSLIST` | `sys.innodb_lock_waits`, or the InnoDB lock views, when available | `KILL QUERY` | `KILL` |
 | SQL Server | `sys.dm_exec_sessions`, `sys.dm_exec_requests`, `sys.dm_exec_sql_text` | `blocking_session_id` | Not available | `KILL`, only if `login_time` is unchanged |
-| Oracle | `v$session`, `v$sql` | `blocking_session` | `ALTER SYSTEM CANCEL SQL` (18c and later) | `ALTER SYSTEM KILL SESSION … IMMEDIATE` |
+| Oracle | `v$session`, `v$sql` | `blocking_session` | `ALTER SYSTEM CANCEL SQL` with the SQL_ID (18c and later) | `ALTER SYSTEM KILL SESSION … IMMEDIATE` |
 | ClickHouse | `system.processes` (running queries, not sessions) | — | `KILL QUERY` | Not available |
 
-SQLite, Snowflake and the NoSQL engines have no Session Monitor.
+SQLite, Snowflake and the NoSQL engines have no Session Monitor. On PostgreSQL,
+`pg_blocking_pids` briefly locks the lock manager's state, so it is only called for sessions
+that wait on a lock; the sessions they wait for are highlighted from those lists.
 
 Session ids are reused, so an action checks that the id still names the session that was
 listed:
@@ -53,11 +59,20 @@ listed:
   and its PID was reused, the action fails with "The session has already ended".
 - SQL Server kills only if the SPID's `login_time` is unchanged, in the same batch;
   otherwise it reports that the session changed and asks for a refresh.
-- MySQL and MariaDB read the thread's account and client (`USER`, `HOST` with the port)
-  right before `KILL` and refuse on a mismatch. The check and `KILL` are two statements,
-  so a thread that ends and whose id is reused in between can still be hit; refresh
-  before acting on an old list.
+- MySQL and MariaDB don't reuse a thread id until the server restarts, so the list also
+  records when the server started (from `Uptime`). Right before `KILL` the server start,
+  the thread's account and its client (`USER`, `HOST` with the port, or `localhost` over a
+  local socket) must still match. The check and `KILL` are two statements, so a thread
+  that ends in between is not killed, but its id isn't reused either.
 - Oracle identifies a session by SID and SERIAL#, and ClickHouse by query id.
+
+Cancel Query also checks that the listed statement is still the one running, so a
+confirmation left open can't cancel the session's next statement: PostgreSQL compares
+`query_start` in the same statement, Oracle passes the SQL_ID to `CANCEL SQL`, and
+ClickHouse cancels by query id. MySQL and MariaDB compare the statement's text right before
+`KILL QUERY` and require it to have run at least as long as when listed (`TIME` is in whole
+seconds, so the same text re-run within a second can't be told apart). Otherwise the action
+fails with "The listed query has finished; the session is now running another statement".
 
 An action is also refused when the list was read before the connection was closed or
 opened again, and the window clears its list, selection and any open confirmation when
@@ -71,7 +86,7 @@ written into a statement.
 ## Permissions and errors
 
 The monitor uses a database session of its own, opened on first use and closed with the
-window (or the connection), so it doesn't wait behind a running console query and never
+window (or the connection, also when the window closes while it is still connecting), so it doesn't wait behind a running console query and never
 cancels or takes down a console's session. Each request is limited to 15 seconds.
 
 What the list contains depends on the account. PostgreSQL shows the details of other
@@ -79,8 +94,9 @@ roles' sessions only to superusers and members of `pg_read_all_stats`: without i
 sessions are listed with their id, user, database and application, their state reads
 *insufficient privilege*, a note above the table counts them, and they can't be cancelled
 or terminated from the monitor (their start time, which identifies them, is hidden too).
-Cancelling or terminating another role's session needs `pg_signal_backend` or superuser. MySQL lists other accounts'
-threads with `PROCESS` and kills them with `CONNECTION_ADMIN` (or `SUPER`). SQL Server
+Cancelling or terminating another role's session needs `pg_signal_backend` or superuser.
+MySQL lists other accounts' threads with `PROCESS` and kills them with `CONNECTION_ADMIN`
+(or `SUPER`). SQL Server
 needs `VIEW SERVER STATE` (`VIEW SERVER PERFORMANCE STATE` on 2022) to see other sessions
 and `ALTER ANY CONNECTION` to kill them. Oracle needs access to `v$session` and `v$sql`
 and `ALTER SYSTEM`. Errors, such as a missing permission, appear in the window above the
@@ -90,9 +106,10 @@ can't be read.
 Oracle reads `v$session` of the instance it is connected to: on RAC, sessions of the other
 instances are not listed.
 
-The PostgreSQL queries, cancel, terminate, the lock-wait display, the restricted rows of a
-role without `pg_read_all_stats`, closing the monitor session and refusing an action after
-a reconnect are covered by tests against a live PostgreSQL 16 server. The other engines'
+The PostgreSQL queries, cancel (including refusing it once the listed statement has
+changed), terminate, the lock-wait display, the restricted rows of a role without
+`pg_read_all_stats`, closing the monitor session and refusing an action after a reconnect
+are covered by tests against a live PostgreSQL 16 server. The other engines'
 queries and statements have unit tests but were not run against live servers.
 
 References: [pg_stat_activity](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW),
