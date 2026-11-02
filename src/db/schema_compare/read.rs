@@ -2,7 +2,7 @@
 //! `SchemaModel`, on sessions of their own that a cancel interrupts.
 
 use super::{ForeignKeyDef, SchemaModel, TableModel, ViewModel, supported};
-use crate::db::alter::{IndexDef, load_details};
+use crate::db::alter::{ColumnDef, IndexDef, load_details};
 use crate::db::table_definition::lit;
 use crate::db::{ConnectionConfig, Driver, ResultSet, Session};
 use crate::i18n::{tr, trf};
@@ -266,6 +266,36 @@ fn parse_foreign_keys(driver: Driver, rs: &ResultSet) -> Vec<(String, ForeignKey
         .collect()
 }
 
+/// SQLite: the table's statement, its constraints and options, and its generated columns, which
+/// `pragma_table_info` leaves out (`pragma_table_xinfo` marks them hidden 2 or 3), in place.
+async fn sqlite_table(s: &mut Session, schema: &str, t: &mut TableModel) -> anyhow::Result<()> {
+    let d = Driver::Sqlite;
+    let (sch, tab) = (lit(d, schema), lit(d, &t.name));
+    let master = format!("{}.sqlite_master", d.quote_ident(schema));
+    t.sql = query(s, &format!("select sql from {master} where type = 'table' and name = {tab}")).await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
+    let (features, generated) = super::sqlite_features(&t.sql);
+    t.features = features;
+    let rs = query(s, &format!("select name, type, \"notnull\", hidden from pragma_table_xinfo({tab}, {sch}) order by cid")).await?;
+    let mut plain = std::mem::take(&mut t.details.columns).into_iter();
+    for r in &rs.rows {
+        match text(r, 3).as_str() {
+            "2" | "3" => t.details.columns.push(ColumnDef {
+                name: text(r, 0),
+                data_type: text(r, 1),
+                nullable: text(r, 2) == "0",
+                extra: generated.get(&text(r, 0).to_lowercase()).cloned().unwrap_or_default(),
+                generated: true,
+                ..Default::default()
+            }),
+            "0" => t.details.columns.extend(plain.next()),
+            _ => {}
+        }
+    }
+    t.details.columns.extend(plain);
+    t.triggers = query(s, &format!("select name from {master} where type = 'trigger' and tbl_name = {tab} order by name")).await?.rows.iter().map(|r| text(r, 0)).collect();
+    Ok(())
+}
+
 /// The model of `schema` in the session's database.
 pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progress: &Progress) -> anyhow::Result<SchemaModel> {
     anyhow::ensure!(supported(driver), tr("Not available for this engine"));
@@ -286,7 +316,6 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
             model.views.push(ViewModel { name, definition, ..Default::default() });
         } else {
             let mut details = load_details(s, driver, schema, &name).await.map_err(|e| anyhow::anyhow!("{name}: {e:#}"))?;
-            details.rebuild_blocker = None;
             if driver == Driver::Sqlite {
                 // UNIQUE constraints (auto-named indexes `load_details` leaves out).
                 let rs = query(
@@ -307,7 +336,11 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
                     details.indexes.last_mut().expect("pushed").columns.push(text(r, 1));
                 }
             }
-            model.tables.push(TableModel { name, details, foreign_keys: vec![] });
+            let mut table = TableModel { name, details, ..Default::default() };
+            if driver == Driver::Sqlite {
+                sqlite_table(s, schema, &mut table).await?;
+            }
+            model.tables.push(table);
         }
         progress.done.fetch_add(1, Ordering::Relaxed);
     }

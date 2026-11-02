@@ -1481,7 +1481,6 @@
     "Source and target use different engines: the differences are shown, but no script is generated.": "比較元と比較先のエンジンが異なります: 相違は表示されますが、スクリプトは生成されません。",
     "Adding NOT NULL column “{name}” without a default fails if “{table}” has rows": "既定値のない NOT NULL 列「{name}」の追加は、「{table}」に行があると失敗します",
     "Table “{name}”: {error}": "テーブル「{name}」: {error}",
-    "SQLite rebuilds changed tables: their CHECK constraints, collations and triggers are not carried over.": "SQLite は変更されたテーブルを再構築します: CHECK 制約、照合順序、トリガーは引き継がれません。",
     "The schema catalog is too large to compare": "スキーマのカタログが大きすぎて比較できません",
     "Schemas can't be compared on {engine}": "{engine} ではスキーマを比較できません",
     "Choose the source and the target, then compare.": "比較元と比較先を選んでから比較してください。",
@@ -1517,6 +1516,12 @@
     "The source or target changed: compare again to update the result.": "比較元または比較先が変更されました: 結果を更新するには再比較してください。",
     "Not compared in the source: {objects}": "比較元で比較していないもの: {objects}",
     "Not compared in the target: {objects}": "比較先で比較していないもの: {objects}",
-    "No differences in the compared objects": "比較したオブジェクトに相違はありません"
+    "No differences in the compared objects": "比較したオブジェクトに相違はありません",
+    "Constraint or option “{item}” added": "制約またはオプション「{item}」を追加",
+    "Constraint or option “{item}” dropped": "制約またはオプション「{item}」を削除",
+    "rebuilding the table would drop its triggers ({triggers})": "テーブルを再構築するとトリガーが削除されます ({triggers})",
+    "Table “{name}” needs a manual migration: {reason}": "テーブル「{name}」は手動での移行が必要です: {reason}",
+    "manual": "手動",
+    "Needs a manual migration, not scripted: {reason}": "手動での移行が必要なため、スクリプトには含めません: {reason}"
   }
 }

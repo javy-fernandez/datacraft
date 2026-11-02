@@ -85,10 +85,13 @@ Statements are ordered so that they can run top to bottom:
    `serial`; other sequences are created first).
 5. Changed tables, with the same statements as **Modify Table…**. SQLite can't alter most
    of a table in place: new nullable columns and index changes are made with `ALTER
-   TABLE`, anything else rebuilds the table (a new table with the source definition, the
-   rows copied, the old one dropped and the new one renamed). The script then starts with
-   `pragma foreign_keys = off` and ends by restoring the session's settings, so it must
-   run as a whole.
+   TABLE`, anything else rebuilds the table: a new table made with the source table's own
+   `CREATE TABLE` statement (so its CHECK constraints, collations, generated columns,
+   `WITHOUT ROWID` and `STRICT` come along), the rows copied, the old one dropped and the
+   new one renamed. The script then starts with `pragma foreign_keys = off` and ends by
+   restoring the session's settings, so it must run as a whole. A rebuild would drop the
+   target table's triggers: such a table is marked **manual** (needs a manual migration),
+   can't be checked, and is never scripted.
 6. Foreign keys.
 7. New and changed views, each after the views it uses (`CREATE OR REPLACE`, SQL Server
    `CREATE OR ALTER`, where the view isn't dropped first).
@@ -109,8 +112,8 @@ and SQL differ too much for one script. MySQL and MariaDB count as the same engi
 - Generated columns are written with their expression on PostgreSQL, MySQL, MariaDB and
   Oracle (`generated always as (…)`); only MySQL and MariaDB can change that expression in
   place. SQL Server computed columns are left out of the script, with a warning.
-- A SQLite rebuild keeps the columns, keys, foreign keys, UNIQUE constraints and indexes of
-  the source table, but not its CHECK constraints, collations or triggers.
+- SQLite tables are also compared by their CHECK constraints, collations, `ON CONFLICT`
+  clauses, generated columns, `WITHOUT ROWID` and `STRICT`.
 - SQL Server can't add or remove a column's identity in place: the script says so.
 - Adding a `NOT NULL` column without a default fails on a table that has rows: the script
   warns about it.

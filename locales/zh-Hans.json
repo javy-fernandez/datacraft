@@ -1481,7 +1481,6 @@
     "Source and target use different engines: the differences are shown, but no script is generated.": "源和目标使用不同的引擎：会显示差异，但不会生成脚本。",
     "Adding NOT NULL column “{name}” without a default fails if “{table}” has rows": "如果“{table}”中有行，添加没有默认值的 NOT NULL 列“{name}”将失败",
     "Table “{name}”: {error}": "表“{name}”：{error}",
-    "SQLite rebuilds changed tables: their CHECK constraints, collations and triggers are not carried over.": "SQLite 会重建已更改的表：其 CHECK 约束、排序规则和触发器不会保留。",
     "The schema catalog is too large to compare": "架构目录过大，无法比较",
     "Schemas can't be compared on {engine}": "无法在 {engine} 上比较架构",
     "Choose the source and the target, then compare.": "选择源和目标，然后进行比较。",
@@ -1517,6 +1516,12 @@
     "The source or target changed: compare again to update the result.": "源或目标已更改：请重新比较以更新结果。",
     "Not compared in the source: {objects}": "源中未比较：{objects}",
     "Not compared in the target: {objects}": "目标中未比较：{objects}",
-    "No differences in the compared objects": "已比较的对象中没有差异"
+    "No differences in the compared objects": "已比较的对象中没有差异",
+    "Constraint or option “{item}” added": "已添加约束或选项“{item}”",
+    "Constraint or option “{item}” dropped": "已删除约束或选项“{item}”",
+    "rebuilding the table would drop its triggers ({triggers})": "重建该表会删除其触发器（{triggers}）",
+    "Table “{name}” needs a manual migration: {reason}": "表“{name}”需要手动迁移：{reason}",
+    "manual": "手动",
+    "Needs a manual migration, not scripted: {reason}": "需要手动迁移，未包含在脚本中：{reason}"
   }
 }

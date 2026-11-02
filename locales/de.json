@@ -1481,7 +1481,6 @@
     "Source and target use different engines: the differences are shown, but no script is generated.": "Quelle und Ziel verwenden unterschiedliche Engines: Die Unterschiede werden angezeigt, aber es wird kein Skript erzeugt.",
     "Adding NOT NULL column “{name}” without a default fails if “{table}” has rows": "Das Hinzufügen der NOT-NULL-Spalte „{name}“ ohne Standardwert schlägt fehl, wenn „{table}“ Zeilen enthält",
     "Table “{name}”: {error}": "Tabelle „{name}“: {error}",
-    "SQLite rebuilds changed tables: their CHECK constraints, collations and triggers are not carried over.": "SQLite baut geänderte Tabellen neu auf: CHECK-Constraints, Sortierungen und Trigger werden nicht übernommen.",
     "The schema catalog is too large to compare": "Der Schemakatalog ist zu groß für einen Vergleich",
     "Schemas can't be compared on {engine}": "Schemas können unter {engine} nicht verglichen werden",
     "Choose the source and the target, then compare.": "Wählen Sie Quelle und Ziel und vergleichen Sie dann.",
@@ -1517,6 +1516,12 @@
     "The source or target changed: compare again to update the result.": "Quelle oder Ziel wurden geändert: Vergleichen Sie erneut, um das Ergebnis zu aktualisieren.",
     "Not compared in the source: {objects}": "In der Quelle nicht verglichen: {objects}",
     "Not compared in the target: {objects}": "Im Ziel nicht verglichen: {objects}",
-    "No differences in the compared objects": "Keine Unterschiede in den verglichenen Objekten"
+    "No differences in the compared objects": "Keine Unterschiede in den verglichenen Objekten",
+    "Constraint or option “{item}” added": "Einschränkung oder Option „{item}“ hinzugefügt",
+    "Constraint or option “{item}” dropped": "Einschränkung oder Option „{item}“ gelöscht",
+    "rebuilding the table would drop its triggers ({triggers})": "ein Neuaufbau der Tabelle würde ihre Trigger löschen ({triggers})",
+    "Table “{name}” needs a manual migration: {reason}": "Die Tabelle „{name}“ erfordert eine manuelle Migration: {reason}",
+    "manual": "manuell",
+    "Needs a manual migration, not scripted: {reason}": "Erfordert eine manuelle Migration, nicht im Skript: {reason}"
   }
 }

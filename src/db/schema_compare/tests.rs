@@ -29,7 +29,7 @@ fn fk(name: &str, columns: &[&str], table: &str, ref_columns: &[&str]) -> Foreig
 }
 
 fn table(name: &str, columns: Vec<ColumnDef>, pk: &[&str]) -> TableModel {
-    TableModel { name: name.into(), details: TableDetails { columns, primary_key: pk.iter().map(|c| c.to_string()).collect(), ..Default::default() }, foreign_keys: vec![] }
+    TableModel { name: name.into(), details: TableDetails { columns, primary_key: pk.iter().map(|c| c.to_string()).collect(), ..Default::default() }, ..Default::default() }
 }
 
 fn view(name: &str, body: &str) -> ViewModel {
@@ -312,7 +312,7 @@ fn sqlite_rebuilds_tables_it_cannot_alter_and_keeps_simple_changes_in_place() {
     assert!(create < copy && copy < drop && drop < rename && rename < index, "{text}");
     // SQLite has no OR REPLACE: the changed view is dropped and created.
     assert!(at(&s, "drop view big") < at(&s, "create view big as"));
-    assert!(s.warnings.iter().any(|w| w.contains("CHECK constraints")));
+    assert!(!s.warnings.iter().any(|w| w.contains("CHECK constraints")), "rebuilds are faithful now");
 }
 
 #[test]
@@ -510,4 +510,77 @@ fn long_warnings_wrap_into_comment_lines() {
     assert!(lines.len() >= 3 && lines.iter().all(|l| l.len() <= 101), "{text}");
     assert!(lines[1..].iter().all(|l| l.starts_with("--   word")), "{text}");
     assert_eq!(lines.iter().map(|l| l.matches("word").count()).sum::<usize>(), 60);
+}
+
+#[test]
+fn sqlite_definitions_are_parsed_for_constraints_options_and_generated_columns() {
+    let sql = "CREATE TABLE \"Orders\" (id INTEGER PRIMARY KEY, code TEXT COLLATE NOCASE NOT NULL ON CONFLICT REPLACE, qty INT CHECK (qty > 0),
+        price REAL, total REAL GENERATED ALWAYS AS (qty * price) STORED, label TEXT AS (upper(code)),
+        CONSTRAINT positive CHECK (price >= 0), UNIQUE (code) ON CONFLICT IGNORE) WITHOUT ROWID, STRICT";
+    let (features, generated) = sqlite_features(sql);
+    assert_eq!(
+        features,
+        [
+            "check(price>=0)",
+            "code collate nocase",
+            "code on conflict replace",
+            "qty check(qty>0)",
+            "strict",
+            "unique on conflict ignore",
+            "without rowid"
+        ],
+        "{features:?}"
+    );
+    assert_eq!(generated["total"], "generated always as (qty * price) stored");
+    assert_eq!(generated["label"], "generated always as (upper(code)) virtual");
+    assert_eq!(sqlite_retarget(sql, "_dc_new_Orders").unwrap()[..29].to_string(), "CREATE TABLE _dc_new_Orders (");
+    assert_eq!(sqlite_retarget("create table if not exists main.t (a)", "x").unwrap(), "create table if not exists x (a)");
+    assert_eq!(sqlite_retarget("create view v as select 1", "x"), None);
+}
+
+#[test]
+fn sqlite_tables_differing_in_generated_columns_or_options_are_different_and_rebuilt_faithfully() {
+    let sqlite = |sql: &str, columns: Vec<ColumnDef>| {
+        let (features, generated) = sqlite_features(sql);
+        let mut t = table("t", columns, &["id"]);
+        for c in t.details.columns.iter_mut().filter(|c| c.generated) {
+            c.extra = generated[&c.name.to_lowercase()].clone();
+        }
+        TableModel { sql: sql.into(), features, ..t }
+    };
+    let plain = || vec![required(col("id", "INTEGER")), col("qty", "INT")];
+    let with_generated = || {
+        let mut c = plain();
+        c.push(ColumnDef { generated: true, ..col("twice", "INT") });
+        c
+    };
+    // A generated column only in the source: different, and the rebuild keeps it.
+    let src = model(Driver::Sqlite, "main", vec![sqlite("create table t (id INTEGER primary key, qty INT, twice INT as (qty * 2) stored)", with_generated())], vec![]);
+    let tgt = model(Driver::Sqlite, "main", vec![sqlite("create table t (id INTEGER primary key, qty INT)", plain())], vec![]);
+    let c = compare(&src, &tgt);
+    assert_eq!(status(&c, "t"), Status::Different);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(s.statements.iter().any(|x| x == "create table _dc_new_t (id INTEGER primary key, qty INT, twice INT as (qty * 2) stored)"), "{:#?}", s.statements);
+    assert!(s.statements.iter().any(|x| x == "insert into _dc_new_t (id, qty) select id, qty from t"), "generated columns are not copied: {:#?}", s.statements);
+    // WITHOUT ROWID / STRICT only on one side: different too.
+    let src = model(Driver::Sqlite, "main", vec![sqlite("create table t (id INTEGER primary key, qty INT) without rowid, strict", plain())], vec![]);
+    let c = compare(&src, &tgt);
+    assert_eq!(c.objects[0].changes, ["Constraint or option “strict” added", "Constraint or option “without rowid” added"]);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(s.statements.iter().any(|x| x.ends_with("without rowid, strict")), "{:#?}", s.statements);
+    // A target with triggers can't be rebuilt without losing them: a manual migration, never
+    // selected nor scripted.
+    let mut tgt = tgt;
+    tgt.tables[0].triggers = vec!["t_audit".into()];
+    let c = compare(&src, &tgt);
+    assert_eq!(c.objects[0].manual.as_deref(), Some("rebuilding the table would drop its triggers (t_audit)"));
+    assert_eq!(c.default_selection(), [false]);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(s.statements.is_empty(), "{:#?}", s.statements);
+    assert!(s.warnings.iter().any(|w| w == "Table “t” needs a manual migration: rebuilding the table would drop its triggers (t_audit)"), "{:?}", s.warnings);
+    // Changes ALTER TABLE makes in place keep the triggers: not manual.
+    let mut wider = sqlite("create table t (id INTEGER primary key, qty INT, note TEXT)", plain());
+    wider.details.columns.push(col("note", "TEXT"));
+    let c = compare(&model(Driver::Sqlite, "main", vec![wider], vec![]), &tgt);
+    assert_eq!(c.objects[0].manual, None);
 }

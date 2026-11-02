@@ -1481,7 +1481,6 @@
     "Source and target use different engines: the differences are shown, but no script is generated.": "Źródło i cel używają różnych silników: różnice są widoczne, ale skrypt nie jest generowany.",
     "Adding NOT NULL column “{name}” without a default fails if “{table}” has rows": "Dodanie kolumny NOT NULL „{name}” bez wartości domyślnej nie powiedzie się, jeśli „{table}” zawiera wiersze",
     "Table “{name}”: {error}": "Tabela „{name}”: {error}",
-    "SQLite rebuilds changed tables: their CHECK constraints, collations and triggers are not carried over.": "SQLite przebudowuje zmienione tabele: ich ograniczenia CHECK, sortowania i wyzwalacze nie są przenoszone.",
     "The schema catalog is too large to compare": "Katalog schematu jest zbyt duży, aby go porównać",
     "Schemas can't be compared on {engine}": "W {engine} nie można porównywać schematów",
     "Choose the source and the target, then compare.": "Wybierz źródło i cel, a następnie porównaj.",
@@ -1517,6 +1516,12 @@
     "The source or target changed: compare again to update the result.": "Źródło lub cel się zmieniły: porównaj ponownie, aby zaktualizować wynik.",
     "Not compared in the source: {objects}": "Nieporównane w źródle: {objects}",
     "Not compared in the target: {objects}": "Nieporównane w celu: {objects}",
-    "No differences in the compared objects": "Brak różnic w porównanych obiektach"
+    "No differences in the compared objects": "Brak różnic w porównanych obiektach",
+    "Constraint or option “{item}” added": "Dodano ograniczenie lub opcję „{item}”",
+    "Constraint or option “{item}” dropped": "Usunięto ograniczenie lub opcję „{item}”",
+    "rebuilding the table would drop its triggers ({triggers})": "przebudowa tabeli usunęłaby jej wyzwalacze ({triggers})",
+    "Table “{name}” needs a manual migration: {reason}": "Tabela „{name}” wymaga ręcznej migracji: {reason}",
+    "manual": "ręcznie",
+    "Needs a manual migration, not scripted: {reason}": "Wymaga ręcznej migracji, pominięto w skrypcie: {reason}"
   }
 }

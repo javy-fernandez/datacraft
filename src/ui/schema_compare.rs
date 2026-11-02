@@ -470,7 +470,7 @@ fn object_list(ui: &mut Ui, o: &mut Outcome, selected: &mut Option<usize>, colla
                         // Identical objects have nothing to script: an invisible box keeps the column.
                         if status == Status::Identical {
                             ui.add_visible(false, egui::Checkbox::without_text(&mut false));
-                        } else if ui.add_enabled(scriptable, egui::Checkbox::without_text(&mut o.include[i])).changed() {
+                        } else if ui.add_enabled(scriptable && obj.manual.is_none(), egui::Checkbox::without_text(&mut o.include[i])).changed() {
                             changed = true;
                         }
                         let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
@@ -479,14 +479,15 @@ fn object_list(ui: &mut Ui, o: &mut Outcome, selected: &mut Option<usize>, colla
                         if ui.selectable_label(*selected == Some(i), RichText::new(&obj.name).color(color)).clicked() {
                             *selected = Some(i);
                         }
-                        let tag = match status {
-                            Status::OnlyInSource => tr("create"),
-                            Status::OnlyInTarget => tr("drop"),
-                            Status::Different => tr("alter"),
-                            Status::Identical => "",
+                        let (tag, color) = match status {
+                            _ if obj.manual.is_some() => (tr("manual"), p.error),
+                            Status::OnlyInSource => (tr("create"), status_color(p, status)),
+                            Status::OnlyInTarget => (tr("drop"), status_color(p, status)),
+                            Status::Different => (tr("alter"), status_color(p, status)),
+                            Status::Identical => ("", status_color(p, status)),
                         };
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(RichText::new(tag).small().color(status_color(p, status)));
+                            ui.label(RichText::new(tag).small().color(color));
                         });
                     });
                 }
@@ -508,6 +509,9 @@ fn detail(ui: &mut Ui, o: &Outcome, selected: Option<usize>, p: &Palette, dark: 
                 ui.label(RichText::new(tr("Dropping it deletes its data: it is left out of the script unless checked.")).small().color(p.error));
             }
         });
+        if let Some(why) = &obj.manual {
+            ui.add(egui::Label::new(RichText::new(trf("Needs a manual migration, not scripted: {reason}", &[("reason", why)])).small().color(p.error)).wrap());
+        }
         if !obj.changes.is_empty() {
             ui.label(RichText::new(obj.changes.join(" · ")).small().color(p.muted));
         }
@@ -665,6 +669,28 @@ mod tests {
         h.run_steps(2);
         let opened = h.state().opened.clone().unwrap();
         assert_eq!((opened.conn, opened.db.as_str(), opened.schema.as_str()), (2, "shop", "shop_staging"));
+    }
+
+    #[test]
+    fn a_manual_migration_is_marked_and_can_not_be_checked() {
+        let mut d = dialog(true);
+        let o = d.outcome.as_mut().unwrap();
+        let i = o.comparison.objects.iter().position(|x| x.name == "orders").unwrap();
+        o.comparison.objects[i].manual = Some("rebuilding the table would drop its triggers (audit)".into());
+        o.include[i] = false;
+        d.selected = Some(i);
+        let mut h = harness(d, true);
+        assert!(h.query_by_label("manual").is_some());
+        assert!(h.query_by_label("Needs a manual migration, not scripted: rebuilding the table would drop its triggers (audit)").is_some());
+        // Check boxes: "Show identical", then payments, coupons, orders. Coupons' box works; the
+        // manual one stays off.
+        let coupons = h.state().outcome.as_ref().unwrap().comparison.objects.iter().position(|x| x.name == "coupons").unwrap();
+        h.query_all_by_role(egui::accesskit::Role::CheckBox).nth(2).unwrap().click();
+        h.run_steps(2);
+        assert!(h.state().outcome.as_ref().unwrap().include[coupons], "the row order is as expected");
+        h.query_all_by_role(egui::accesskit::Role::CheckBox).nth(3).unwrap().click();
+        h.run_steps(2);
+        assert!(!h.state().outcome.as_ref().unwrap().include[i]);
     }
 
     #[test]

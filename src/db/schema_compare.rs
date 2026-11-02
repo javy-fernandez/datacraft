@@ -44,6 +44,14 @@ pub struct TableModel {
     /// identity / auto-increment clause of every engine.
     pub details: TableDetails,
     pub foreign_keys: Vec<ForeignKeyDef>,
+    /// SQLite: the `CREATE TABLE` statement as stored, which creates and rebuilds the table
+    /// faithfully (CHECK, COLLATE, generated columns, WITHOUT ROWID, STRICT…).
+    pub sql: String,
+    /// SQLite: what the definition has beyond columns and keys, normalised (see
+    /// `sqlite_features`): compared, so tables differing only there show as different.
+    pub features: Vec<String>,
+    /// SQLite: the table's triggers, which a rebuild would drop.
+    pub triggers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -120,6 +128,8 @@ pub struct ObjectDiff {
     /// Each side's definition, written the same way so they compare line by line.
     pub source_ddl: String,
     pub target_ddl: String,
+    /// Why the script can't make this change (it needs a manual migration): never scripted.
+    pub manual: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -144,9 +154,10 @@ impl Comparison {
         self.objects.iter().any(|o| o.status != Status::Identical)
     }
 
-    /// What goes into the script at first: everything but drops and identical objects.
+    /// What goes into the script at first: everything but drops, identical objects and what
+    /// needs a manual migration.
     pub fn default_selection(&self) -> Vec<bool> {
-        self.objects.iter().map(|o| matches!(o.status, Status::OnlyInSource | Status::Different)).collect()
+        self.objects.iter().map(|o| matches!(o.status, Status::OnlyInSource | Status::Different) && o.manual.is_none()).collect()
     }
 }
 
@@ -475,6 +486,9 @@ struct TableDelta<'a> {
     fks_added: Vec<&'a ForeignKeyDef>,
     fks_dropped: Vec<&'a ForeignKeyDef>,
     autoincrement: bool,
+    /// SQLite constraints and options only in the source / only in the target.
+    features_added: Vec<&'a str>,
+    features_dropped: Vec<&'a str>,
 }
 
 fn table_delta<'a>(cx: &Ctx, s: &'a TableModel, t: &'a TableModel) -> TableDelta<'a> {
@@ -490,6 +504,8 @@ fn table_delta<'a>(cx: &Ctx, s: &'a TableModel, t: &'a TableModel) -> TableDelta
         fks_added: vec![],
         fks_dropped: vec![],
         autoincrement: cx.tgt.driver == Driver::Sqlite && s.details.autoincrement != t.details.autoincrement,
+        features_added: s.features.iter().filter(|f| !t.features.contains(f)).map(String::as_str).collect(),
+        features_dropped: t.features.iter().filter(|f| !s.features.contains(f)).map(String::as_str).collect(),
     };
     for sc in &s.details.columns {
         let Some(&j) = tcols.get(&cx.key(&sc.name)) else {
@@ -589,7 +605,158 @@ fn describe(delta: &TableDelta) -> Vec<String> {
     for f in &delta.fks_dropped {
         out.push(trf("Foreign key {key} dropped", &[("key", &fk_label(f))]));
     }
+    for f in &delta.features_added {
+        out.push(trf("Constraint or option “{item}” added", &[("item", f)]));
+    }
+    for f in &delta.features_dropped {
+        out.push(trf("Constraint or option “{item}” dropped", &[("item", f)]));
+    }
     out
+}
+
+/// SQLite: the changes ALTER TABLE can make in place (indexes, new nullable or constant-default
+/// columns); anything else rebuilds the table.
+fn sqlite_in_place(cx: &Ctx, delta: &TableDelta, s: &TableModel) -> bool {
+    let fk_columns: HashSet<String> = s.foreign_keys.iter().flat_map(|f| cx.keys(&f.columns)).collect();
+    delta.changed.is_empty()
+        && delta.dropped.is_empty()
+        && !delta.pk
+        && !delta.autoincrement
+        && delta.fks_added.is_empty()
+        && delta.fks_dropped.is_empty()
+        && delta.features_added.is_empty()
+        && delta.features_dropped.is_empty()
+        && !delta.indexes_added.iter().chain(&delta.indexes_dropped).any(|x| x.constraint)
+        && delta.added.iter().all(|c| {
+            let default = c.default.as_deref().unwrap_or("").trim();
+            (c.nullable || !default.is_empty())
+                && (default.is_empty() || constant_default(default))
+                && !c.generated
+                && !fk_columns.contains(&cx.key(&c.name))
+                && !s.details.primary_key.iter().any(|p| cx.key(p) == cx.key(&c.name))
+        })
+}
+
+/// SQLite: why rebuilding target table `t` into `s` can't be done faithfully, if it can't.
+fn sqlite_manual(cx: &Ctx, delta: &TableDelta, s: &TableModel, t: &TableModel) -> Option<String> {
+    if cx.tgt.driver != Driver::Sqlite || sqlite_in_place(cx, delta, s) {
+        return None;
+    }
+    (!t.triggers.is_empty()).then(|| trf("rebuilding the table would drop its triggers ({triggers})", &[("triggers", &t.triggers.join(", "))]))
+}
+
+/// SQLite: `CREATE TABLE` statement `sql` for a table named `name` instead.
+pub fn sqlite_retarget(sql: &str, name: &str) -> Option<String> {
+    use crate::sql::TokenClass;
+    let toks: Vec<_> = crate::sql::tokens(sql, Driver::Sqlite).into_iter().filter(|(c, _)| *c != TokenClass::Blank).collect();
+    let word = |i: usize, w: &str| toks.get(i).is_some_and(|(c, r)| *c == TokenClass::Word && sql[r.clone()].eq_ignore_ascii_case(w));
+    let mut i = usize::from(word(0, "create"));
+    if !word(0, "create") {
+        return None;
+    }
+    if word(i, "temp") || word(i, "temporary") {
+        i += 1;
+    }
+    if !word(i, "table") {
+        return None;
+    }
+    i += 1;
+    if word(i, "if") && word(i + 1, "not") && word(i + 2, "exists") {
+        i += 3;
+    }
+    let start = toks.get(i)?.1.start;
+    // `schema.name` or `name`.
+    let dotted = toks.get(i + 1).is_some_and(|(c, r)| *c == TokenClass::Other && &sql[r.clone()] == ".");
+    let end = toks.get(if dotted { i + 2 } else { i })?.1.end;
+    Some(format!("{}{}{}", &sql[..start], quote_ident_if_needed(Driver::Sqlite, name), &sql[end..]))
+}
+
+/// SQLite: what a `CREATE TABLE` statement has beyond columns, keys and foreign keys, as
+/// normalised items (`check (…)`, `<column> collate nocase`, `without rowid`, `strict`,
+/// `… on conflict …`), and the generation clause of each generated column (by lowercase name).
+pub fn sqlite_features(sql: &str) -> (Vec<String>, HashMap<String, String>) {
+    use crate::sql::TokenClass;
+    let toks: Vec<_> = crate::sql::tokens(sql, Driver::Sqlite).into_iter().filter(|(c, _)| *c != TokenClass::Blank).collect();
+    let text = |i: usize| toks.get(i).map_or("", |(_, r)| &sql[r.clone()]);
+    let word = |i: usize, w: &str| toks.get(i).is_some_and(|(c, _)| *c == TokenClass::Word) && text(i).eq_ignore_ascii_case(w);
+    // Index of the `)` closing the `(` at `i`.
+    let close = |i: usize| {
+        let mut depth = 0;
+        for (j, _) in toks.iter().enumerate().skip(i) {
+            match text(j) {
+                "(" => depth += 1,
+                ")" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return j;
+                    }
+                }
+                _ => {}
+            }
+        }
+        toks.len().saturating_sub(1)
+    };
+    let span = |a: usize, b: usize| if a <= b && b < toks.len() { squash(&sql[toks[a].1.start..toks[b].1.end]) } else { String::new() };
+    let mut features = vec![];
+    let mut generated = HashMap::new();
+    let Some(open) = (0..toks.len()).find(|&i| text(i) == "(") else { return (features, generated) };
+    let end = close(open);
+    let mut items = vec![];
+    let (mut start, mut depth) = (open + 1, 0);
+    for i in open..end {
+        match text(i) {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            "," if depth == 1 => {
+                items.push(start..i);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(start..end);
+    for item in items.into_iter().filter(|r| !r.is_empty()) {
+        let table_constraint = ["constraint", "primary", "unique", "check", "foreign"].iter().any(|w| word(item.start, w));
+        let column = (!table_constraint).then(|| ident_name(Driver::Sqlite, toks[item.start].0, text(item.start)).to_lowercase());
+        let mut j = item.start;
+        while j < item.end {
+            if word(j, "check") && text(j + 1) == "(" {
+                let to = close(j + 1);
+                features.push(match &column {
+                    Some(c) => format!("{c} {}", span(j, to)),
+                    None => span(j, to),
+                });
+                j = to;
+            } else if word(j, "collate") && column.is_some() {
+                features.push(format!("{} collate {}", column.as_deref().unwrap_or_default(), text(j + 1).to_lowercase()));
+            } else if word(j, "conflict") {
+                let what = match &column {
+                    Some(c) => format!("{c} "),
+                    None => format!("{} ", span(item.start, item.start)),
+                };
+                features.push(format!("{what}on conflict {}", text(j + 1).to_lowercase()));
+            } else if word(j, "as") && text(j + 1) == "(" && let Some(c) = &column {
+                let to = close(j + 1);
+                let expr = &sql[toks[j + 1].1.end..toks[to].1.start];
+                let kind = if word(to + 1, "stored") { "stored" } else { "virtual" };
+                generated.insert(c.clone(), format!("generated always as ({}) {kind}", expr.trim()));
+                j = to;
+            }
+            j += 1;
+        }
+    }
+    let mut i = end + 1;
+    while i < toks.len() {
+        if word(i, "without") && word(i + 1, "rowid") {
+            features.push("without rowid".into());
+            i += 1;
+        } else if word(i, "strict") {
+            features.push("strict".into());
+        }
+        i += 1;
+    }
+    features.sort();
+    (features, generated)
 }
 
 /// Compares every table and view of the two schemas.
@@ -600,13 +767,15 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
     let mut seen = HashSet::new();
     for (i, s) in src.tables.iter().enumerate() {
         let j = tgt_tables.get(&cx.key(&s.name)).copied();
-        let (status, changes) = match j {
+        let (status, changes, manual) = match j {
             Some(j) => {
                 seen.insert(j);
-                let changes = describe(&table_delta(&cx, s, &tgt.tables[j]));
-                (if changes.is_empty() { Status::Identical } else { Status::Different }, changes)
+                let delta = table_delta(&cx, s, &tgt.tables[j]);
+                let changes = describe(&delta);
+                let manual = if changes.is_empty() { None } else { sqlite_manual(&cx, &delta, s, &tgt.tables[j]) };
+                (if changes.is_empty() { Status::Identical } else { Status::Different }, changes, manual)
             }
-            None => (Status::OnlyInSource, vec![]),
+            None => (Status::OnlyInSource, vec![], None),
         };
         objects.push(ObjectDiff {
             kind: Kind::Table,
@@ -617,6 +786,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             changes,
             source_ddl: table_text(src, &cx.src_names, s),
             target_ddl: j.map(|j| table_text(tgt, &cx.tgt_names, &tgt.tables[j])).unwrap_or_default(),
+            manual,
         });
     }
     for (j, t) in tgt.tables.iter().enumerate().filter(|(j, _)| !seen.contains(j)) {
@@ -629,6 +799,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             changes: vec![],
             source_ddl: String::new(),
             target_ddl: table_text(tgt, &cx.tgt_names, t),
+            manual: None,
         });
     }
     let tgt_views: HashMap<String, usize> = tgt.views.iter().enumerate().map(|(i, v)| (cx.key(&v.name), i)).collect();
@@ -652,6 +823,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             changes: if status == Status::Different { vec![tr("View definition differs").into()] } else { vec![] },
             source_ddl: view_text(src, &cx.src_names, s),
             target_ddl: j.map(|j| view_text(tgt, &cx.tgt_names, &tgt.views[j])).unwrap_or_default(),
+            manual: None,
         });
     }
     for (j, t) in tgt.views.iter().enumerate().filter(|(j, _)| !seen.contains(j)) {
@@ -664,6 +836,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             changes: vec![],
             source_ddl: String::new(),
             target_ddl: view_text(tgt, &cx.tgt_names, t),
+            manual: None,
         });
     }
     objects.sort_by_key(|o| (o.status, o.kind, o.name.to_lowercase()));
@@ -722,6 +895,9 @@ pub fn table_text(model: &SchemaModel, names: &Names, t: &TableModel) -> String 
     fks.sort();
     lines.extend(fks);
     let mut out = format!("create table {}\n(\n{}\n)", q(&t.name), lines.join(",\n"));
+    for f in &t.features {
+        out.push_str(&format!("\n{f}"));
+    }
     let mut indexes: Vec<&IndexDef> = t.details.indexes.iter().collect();
     indexes.sort_by_key(|x| (x.constraint && d == Driver::Sqlite, x.name.to_lowercase()));
     for x in indexes {
@@ -1041,7 +1217,12 @@ impl<'a> Gen<'a> {
                 lines.push(format!("    {}", self.fk_clause(fk, self.cx.src)));
             }
         }
-        let mut out = vec![format!("create table {}\n(\n{}\n)", self.object(name), lines.join(",\n"))];
+        // SQLite: the source's own statement keeps everything the model doesn't describe.
+        let create = match sqlite.then(|| sqlite_retarget(&s.sql, name)).flatten() {
+            Some(sql) => sql,
+            None => format!("create table {}\n(\n{}\n)", self.object(name), lines.join(",\n")),
+        };
+        let mut out = vec![create];
         for x in s.details.indexes.iter().filter(|x| !(sqlite && x.constraint)) {
             out.extend(self.create_index(name, x));
         }
@@ -1075,26 +1256,6 @@ impl<'a> Gen<'a> {
         let final_ref = format!(" on {} (", self.q(&t.name));
         out.extend(indexes.into_iter().map(|x| x.replacen(&tmp_ref, &final_ref, 1)));
         out
-    }
-
-    /// SQLite: the changes ALTER TABLE can make (indexes, new nullable or constant-default columns).
-    fn sqlite_in_place(&self, delta: &TableDelta, s: &TableModel) -> bool {
-        let fk_columns: HashSet<String> = s.foreign_keys.iter().flat_map(|f| self.cx.keys(&f.columns)).collect();
-        delta.changed.is_empty()
-            && delta.dropped.is_empty()
-            && !delta.pk
-            && !delta.autoincrement
-            && delta.fks_added.is_empty()
-            && delta.fks_dropped.is_empty()
-            && !delta.indexes_added.iter().chain(&delta.indexes_dropped).any(|x| x.constraint)
-            && delta.added.iter().all(|c| {
-                let default = c.default.as_deref().unwrap_or("").trim();
-                (c.nullable || !default.is_empty())
-                    && (default.is_empty() || constant_default(default))
-                    && !c.generated
-                    && !fk_columns.contains(&self.cx.key(&c.name))
-                    && !s.details.primary_key.iter().any(|p| self.cx.key(p) == self.cx.key(&c.name))
-            })
     }
 
     /// The edit that turns target table `t` into source table `s`, for `alter::plan`.
@@ -1240,6 +1401,12 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     let sqlite = d == Driver::Sqlite;
     let chosen: Vec<&ObjectDiff> =
         cmp.objects.iter().zip(selected.iter().chain(std::iter::repeat(&false))).filter(|(o, on)| **on && o.status != Status::Identical).map(|(o, _)| o).collect();
+    for o in &chosen {
+        if let Some(why) = &o.manual {
+            g.warnings.push(trf("Table “{name}” needs a manual migration: {reason}", &[("name", &o.name), ("reason", why)]));
+        }
+    }
+    let chosen: Vec<&ObjectDiff> = chosen.into_iter().filter(|o| o.manual.is_none()).collect();
     let tables = |status: Status| chosen.iter().filter(move |o| o.kind == Kind::Table && o.status == status).copied().collect::<Vec<_>>();
     let (created, dropped, altered) = (tables(Status::OnlyInSource), tables(Status::OnlyInTarget), tables(Status::Different));
     let mut p = Phases::default();
@@ -1278,7 +1445,7 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
             for c in delta.changed.iter().filter(|c| c.ty) {
                 g.warnings.push(trf("Changing the type of “{name}” can truncate or lose data, or fail on existing rows", &[("name", &c.tgt.name)]));
             }
-            if g.sqlite_in_place(&delta, s) {
+            if sqlite_in_place(&g.cx, &delta, s) {
                 for x in &delta.indexes_dropped {
                     alter_out.push(format!("drop index {}", g.q(&x.name)));
                 }
@@ -1500,7 +1667,6 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     if sqlite && rebuilt {
         // Renaming the rebuilt table must not re-check the views on the old one (see alter.rs).
         pragmas.push(("legacy_alter_table", "on"));
-        g.warnings.push(tr("SQLite rebuilds changed tables: their CHECK constraints, collations and triggers are not carried over.").into());
     }
     for (i, (name, value)) in pragmas.iter().enumerate() {
         p.pre.insert(i, format!("pragma {name} = {value}"));
@@ -1544,6 +1710,7 @@ pub(crate) fn demo_models() -> (SchemaModel, SchemaModel) {
         name: name.into(),
         details: TableDetails { columns, primary_key: pk.iter().map(|c| c.to_string()).collect(), pk_name: Some(format!("{name}_pkey")), indexes, ..Default::default() },
         foreign_keys,
+        ..Default::default()
     };
     // PostgreSQL views with their columns and the table columns they use.
     let view = |name: &str, body: &str, columns: &[(&str, &str)], uses: &[(&str, &str)]| ViewModel {

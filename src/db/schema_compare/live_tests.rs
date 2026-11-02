@@ -51,7 +51,10 @@ async fn sqlite_script_makes_the_target_match_the_source() {
                  qty integer not null default 1, primary key (order_id, product_id));
              create view big_orders as select id, total from orders where total > 100;
              create view customer_orders as select c.email, o.id from customers c join orders o on o.customer_id = c.id;
-             create virtual table notes using fts5(body);",
+             create virtual table notes using fts5(body);
+             create table lines (id integer primary key, qty int not null check (qty > 0), price real, code text collate nocase,
+                 total real generated always as (qty * price) stored, label text as (upper(code)));
+             create table settings (k text primary key, v any) without rowid, strict;",
         )
         .unwrap();
     rusqlite::Connection::open(&tgt_path)
@@ -66,7 +69,11 @@ async fn sqlite_script_makes_the_target_match_the_source() {
              create view legacy_view as select legacy from orders;
              insert into customers (email, name) values ('a@example.com', 'Ann'), ('b@example.com', 'Bob');
              insert into products values (1, 'SKU-1', 9.5);
-             insert into orders values (1, 1, '120.5', 'x'), (2, 2, '80', null);",
+             insert into orders values (1, 1, '120.5', 'x'), (2, 2, '80', null);
+             create table lines (id integer primary key, qty int not null, price real, code text);
+             insert into lines values (1, 3, 2.5, 'ab');
+             create table settings (k text primary key, v any);
+             insert into settings values ('theme', 'dark');",
         )
         .unwrap();
     let side = || Side { db: "main".into(), schema: "main".into() };
@@ -90,6 +97,18 @@ async fn sqlite_script_makes_the_target_match_the_source() {
     for w in ["Drops column “legacy” and all its data", "Changing the type of “total”", "Drops table “audit_log”"] {
         assert!(script.warnings.iter().any(|x| x.contains(w)), "{w}: {:?}", script.warnings);
     }
+    // Generated columns, CHECK, COLLATE, WITHOUT ROWID and STRICT come through the rebuilds, with
+    // the rows.
+    for name in ["lines", "settings"] {
+        assert_eq!(before.objects.iter().find(|o| o.name == name).map(|o| o.status), Some(Status::Different), "{name}");
+    }
+    let db = rusqlite::Connection::open(&tgt_path).unwrap();
+    let sql = |t: &str| db.query_row("select sql from sqlite_master where name = ?1", [t], |r| r.get::<_, String>(0)).unwrap().to_lowercase();
+    assert!(sql("settings").ends_with("without rowid, strict"), "{}", sql("settings"));
+    assert!(sql("lines").contains("check (qty > 0)") && sql("lines").contains("collate nocase"), "{}", sql("lines"));
+    assert_eq!(db.query_row("select total, label from lines", [], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?))).unwrap(), (7.5, "AB".to_string()));
+    assert_eq!(db.query_row("select v from settings", [], |r| r.get::<_, String>(0)).unwrap(), "dark");
+    drop(db);
     // The session's settings (DataCraft's SQLite sessions check foreign keys) come back at the
     // end of the script.
     let n = script.statements.len();
@@ -269,4 +288,27 @@ async fn postgres_public_to_another_schema_keeps_shared_objects() {
     assert!(text.contains("email public.citext") && text.contains("default public.f()"), "{text}");
     assert!(text.contains("references stage.people (id)"), "{text}");
     assert!(!text.contains("stage.citext") && !text.contains("stage.f()"), "{text}");
+}
+
+/// A table with triggers that would need a rebuild is a manual migration: compared, listed, but
+/// never scripted, so its triggers survive.
+#[tokio::test]
+async fn sqlite_tables_with_triggers_are_left_to_a_manual_migration() {
+    let dir = std::env::temp_dir().join(format!("datacraft-compare-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let (src_path, tgt_path) = (dir.join("source.db"), dir.join("target.db"));
+    rusqlite::Connection::open(&src_path).unwrap().execute_batch("create table t (id integer primary key, qty int not null); create table log (msg text);").unwrap();
+    rusqlite::Connection::open(&tgt_path)
+        .unwrap()
+        .execute_batch("create table t (id integer primary key, qty text); create table log (msg text); create trigger t_audit after insert on t begin insert into log values ('x'); end;")
+        .unwrap();
+    let side = || Side { db: "main".into(), schema: "main".into() };
+    let (s, t) = run(sqlite(1, &src_path), sqlite(2, &tgt_path), side(), side(), Arc::new(Progress::default())).await.unwrap();
+    let c = compare(&s, &t);
+    let o = c.objects.iter().find(|o| o.name == "t").unwrap();
+    assert_eq!(o.status, Status::Different);
+    assert_eq!(o.manual.as_deref(), Some("rebuilding the table would drop its triggers (t_audit)"));
+    let script = script(&s, &t, &c, &vec![true; c.objects.len()]).unwrap();
+    assert!(script.statements.is_empty(), "{:#?}", script.statements);
+    std::fs::remove_dir_all(dir).unwrap();
 }
