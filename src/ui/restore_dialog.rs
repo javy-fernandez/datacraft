@@ -27,9 +27,13 @@ pub struct RestoreDialog {
     /// Source the preview belongs to; editing it discards the preview.
     inspected: String,
     utility_edited: bool,
-    /// SQL Server: database name inside the backup set, and the target the file moves were made for.
+    /// SQL Server: database name inside the backup set, the target the file moves were made for and
+    /// the paths generated for it (a path that differs was edited and is kept).
     source_db: String,
     moves_for: String,
+    generated: Vec<(String, String)>,
+    /// The database the dialog was opened on.
+    origin: Option<String>,
 }
 
 pub enum RestoreAction {
@@ -43,6 +47,8 @@ impl RestoreDialog {
         let mut request = RestoreRequest::new(db.clone().unwrap_or_default());
         request.create = db.is_none() && driver != Driver::MsSql;
         Self {
+            origin: db,
+            generated: Vec::new(),
             id: uuid::Uuid::new_v4(),
             conn,
             request,
@@ -66,6 +72,32 @@ impl RestoreDialog {
     pub fn target_exists(&self) -> bool {
         let target = self.request.db.trim();
         self.databases.iter().any(|d| if self.driver == Driver::MsSql { d.eq_ignore_ascii_case(target) } else { d == target })
+    }
+
+    /// "Existing database": the one the dialog was opened on, else the first that isn't a system database.
+    fn default_existing(&self) -> String {
+        let system = |db: &str| match self.driver {
+            Driver::MySql | Driver::MariaDb => ["information_schema", "mysql", "performance_schema", "sys"].contains(&db),
+            _ => ["postgres", "template0", "template1"].contains(&db),
+        };
+        let origin = self.origin.as_ref().filter(|db| self.databases.contains(db));
+        origin.or_else(|| self.databases.iter().find(|db| !system(db))).or(self.databases.first()).cloned().unwrap_or_default()
+    }
+
+    /// SQL Server file paths for the current target; paths the user edited stay as they are.
+    fn regenerate_moves(&mut self, files: &[restore::BackupFile], reset: bool) {
+        let defaults = restore::default_moves(files, &self.source_db, &self.request.db);
+        if reset || self.request.moves.len() != defaults.len() {
+            self.request.moves.clone_from(&defaults);
+        } else {
+            for ((current, old), new) in self.request.moves.iter_mut().zip(&self.generated).zip(&defaults) {
+                if current.1 == old.1 {
+                    current.1.clone_from(&new.1);
+                }
+            }
+        }
+        self.generated = defaults;
+        self.moves_for.clone_from(&self.request.db);
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -96,14 +128,17 @@ impl RestoreDialog {
             if !preview.format.is_some_and(|f| matches!(f, RestoreFormat::Custom | RestoreFormat::Directory)) {
                 self.request.jobs = 1;
             }
+            // pg_restore's options do not apply to scripts; kept, they would mislead the confirmation.
+            if !preview.format.is_some_and(RestoreFormat::archive) {
+                (self.request.clean, self.request.no_owner, self.request.content) = (false, false, RestoreContent::All);
+            }
             if let Some(set) = preview.sets.iter().find(|s| s.position == self.request.position).or_else(|| preview.sets.iter().rev().find(|s| s.kind == 1)) {
                 self.request.position = set.position;
                 self.source_db.clone_from(&set.database);
                 if self.request.db.trim().is_empty() {
                     self.request.db.clone_from(&set.database);
                 }
-                self.request.moves = restore::default_moves(&preview.files, &self.source_db, &self.request.db);
-                self.moves_for.clone_from(&self.request.db);
+                self.regenerate_moves(&preview.files, true);
             }
         } else {
             self.request.format = None;
@@ -121,8 +156,8 @@ impl RestoreDialog {
             self.request.format = None;
         }
         if self.driver == Driver::MsSql && self.request.db != self.moves_for && let Some(Ok(preview)) = &self.preview {
-            self.request.moves = restore::default_moves(&preview.files, &self.source_db, &self.request.db);
-            self.moves_for.clone_from(&self.request.db);
+            let files = preview.files.clone();
+            self.regenerate_moves(&files, false);
         }
         if self.running {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -215,6 +250,7 @@ impl RestoreDialog {
         self.running = true;
         self.confirm = false;
         self.result = None;
+        self.request.overwrite = self.target_exists();
         RestoreAction::Start(self.request.clone())
     }
 
@@ -290,7 +326,7 @@ impl RestoreDialog {
             ui.horizontal(|ui| {
                 if ui.radio(!self.request.create, tr("Existing database")).clicked() && self.request.create {
                     self.request.create = false;
-                    if !self.target_exists() { self.request.db = self.databases.first().cloned().unwrap_or_default(); }
+                    if !self.target_exists() { self.request.db = self.default_existing(); }
                 }
                 if ui.radio(self.request.create, tr("Create new database")).clicked() && !self.request.create {
                     self.request.create = true;
@@ -350,7 +386,7 @@ impl RestoreDialog {
             Driver::Postgres => { ui.label(tr("Plain SQL dumps run with psql and stop at the first error; statements that already ran are kept.")); }
             Driver::MySql | Driver::MariaDb => {
                 ui.checkbox(&mut self.request.trust_cert, tr("Trust server certificate"));
-                ui.label(tr("The client stops at the first error. CREATE DATABASE and USE lines in the dump are skipped so the target database receives the restore."));
+                ui.label(tr("The client stops at the first error. Statements in the dump that create, drop, alter or switch databases are skipped, so only the target database changes."));
             }
             Driver::MsSql => {
                 ui.add_enabled(self.target_exists(), egui::Checkbox::new(&mut self.request.replace, tr("Overwrite the existing database (WITH REPLACE)")));
@@ -373,7 +409,7 @@ impl RestoreDialog {
             ui.add_space(8.0);
             let question = if self.driver == Driver::MsSql {
                 trf("“{db}” will be replaced by the database in the backup.", &[("db", &self.request.db)])
-            } else if self.request.clean {
+            } else if self.request.clean && self.request.format.is_some_and(RestoreFormat::archive) {
                 trf("Objects in “{db}” that the backup contains are dropped and recreated from the backup.", &[("db", &self.request.db)])
             } else {
                 trf("The backup's objects and rows are added to “{db}”.", &[("db", &self.request.db)])
@@ -488,6 +524,19 @@ mod tests {
         h.get_by_label("Restore").click();
         h.run_steps(2);
         assert_eq!(h.state().1.last().map(String::as_str), Some("start shop"));
+        assert!(h.state().0.request.overwrite);
+    }
+
+    #[test]
+    fn scripts_drop_archive_options_and_existing_targets_skip_system_databases() {
+        let mut dialog = RestoreDialog::new(1, Driver::MySql, None, ["information_schema", "mysql", "shop"].map(String::from).to_vec(), false);
+        dialog.request.clean = true;
+        dialog.request.content = RestoreContent::Schema;
+        dialog.inspected(Ok(RestorePreview { format: Some(RestoreFormat::Sql), ..Default::default() }));
+        assert!(!dialog.request.clean && dialog.request.content == RestoreContent::All);
+        assert_eq!(dialog.default_existing(), "shop");
+        dialog.origin = Some("mysql".into());
+        assert_eq!(dialog.default_existing(), "mysql");
     }
 
     #[test]
@@ -499,6 +548,12 @@ mod tests {
         let mut h = harness(dialog, egui::vec2(900.0, 760.0), false);
         h.run_steps(3);
         assert_eq!(h.state().0.request.moves[1].1, "D:\\Data\\shop_test_log.ldf");
+        // A path edited by hand survives renaming the target; generated ones follow it.
+        h.state_mut().0.request.moves[0].1 = "E:\\Fast\\shop.mdf".into();
+        h.state_mut().0.request.db = "shop_qa".into();
+        h.run_steps(2);
+        assert_eq!(h.state().0.request.moves[0].1, "E:\\Fast\\shop.mdf");
+        assert_eq!(h.state().0.request.moves[1].1, "D:\\Data\\shop_qa_log.ldf");
         assert!(h.state().0.validate().is_ok());
         h.state_mut().0.read_only = true;
         assert!(h.state().0.validate().is_err());
