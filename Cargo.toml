@@ -10,7 +10,7 @@ anyhow = "1.0.104"
 chrono = "0.4.45"
 dirs = "7.0.0"
 # GPU: solo Metal + WGSL (sin Vulkan/GLES/DX12/WebGPU), que es lo único que usa macOS.
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu_no_default_features", "persistence"] }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu_no_default_features", "persistence", "links"] }
 egui-wgpu = { version = "0.36", default-features = false }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
 egui = "0.36"
