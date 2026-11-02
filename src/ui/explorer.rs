@@ -41,6 +41,8 @@ pub enum ExplorerAction {
     Backup(ConnId, String),
     /// "Run SQL Script…" on the connection, or on one of its databases.
     RunScript(ConnId, Option<String>),
+    /// "Session Monitor…": the server's sessions of the connection.
+    SessionMonitor(ConnId),
     NewConnection,
     Connect(ConnId),
     Disconnect(ConnId),
@@ -516,6 +518,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
         }
         if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
             actions.push(ExplorerAction::RunScript(id, None));
+            ui.close();
+        }
+        if crate::db::sessions::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Session Monitor…"))).clicked() {
+            actions.push(ExplorerAction::SessionMonitor(id));
             ui.close();
         }
         ui.separator();

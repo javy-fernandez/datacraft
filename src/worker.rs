@@ -108,6 +108,10 @@ pub enum Request {
     Cancel { console: ConsoleId },
     /// Users / roles: the list or one user's privileges, on the metadata session.
     Users { conn: ConnId, request: crate::db::users::UsersRequest },
+    /// Session Monitor: the server's sessions, on the connection's monitor session.
+    Sessions { conn: ConnId, request_id: u64 },
+    /// Session Monitor: cancels a query or terminates a session, on the monitor session.
+    SessionAction { conn: ConnId, request_id: u64, action: crate::db::sessions::Action },
 }
 
 pub enum Response {
@@ -168,6 +172,8 @@ pub enum Response {
     DatabaseChoices { conn: ConnId, result: Result<crate::db::create_db::DatabaseChoices, String> },
     /// Result of `Users`.
     Users { conn: ConnId, result: Result<crate::db::users::UsersReply, String> },
+    Sessions { conn: ConnId, request_id: u64, result: Result<crate::db::sessions::SessionList, String> },
+    SessionAction { conn: ConnId, request_id: u64, result: Result<(), String> },
 }
 
 pub struct Worker {
@@ -236,6 +242,9 @@ struct Live {
     /// Object browser metadata sessions, per database: their queries neither wait behind a
     /// console nor take the console's session down when they time out.
     meta: HashMap<String, SharedSession>,
+    /// Session Monitor session: refreshes don't queue behind a console or the object browser,
+    /// and a cancel or terminate never runs on (or takes down) a console's session.
+    monitor: Option<SharedSession>,
 }
 
 /// A console's `Execute` in progress. Registered before waiting for the session, so a
@@ -269,7 +278,7 @@ impl State {
             Request::Connect(cfg) => cfg.id,
             Request::Disconnect(conn) => *conn,
             // Stamp queued grant writes so they cannot cross a disconnect/reconnect.
-            Request::TableGrants { conn, .. } => return self.current_epoch(*conn),
+            Request::TableGrants { conn, .. } | Request::SessionAction { conn, .. } => return self.current_epoch(*conn),
             _ => return 0,
         };
         let mut epochs = self.epochs.lock().unwrap_or_else(|e| e.into_inner());
@@ -341,6 +350,36 @@ impl State {
             return Ok((s.clone(), target));
         }
         Ok((session, target))
+    }
+
+    /// The Session Monitor session (opened on first use and kept).
+    async fn monitor_session(&self, conn: ConnId) -> anyhow::Result<SharedSession> {
+        let (cfg, existing) = {
+            let live = self.live.lock().await;
+            let l = live.get(&conn).ok_or_else(|| anyhow::anyhow!(tr("The connection is not open")))?;
+            (l.cfg.clone(), l.monitor.clone())
+        };
+        if let Some(s) = existing {
+            return Ok(s);
+        }
+        let epoch = self.current_epoch(conn);
+        let session = Arc::new(Mutex::new(Session::connect(&cfg).await?));
+        let mut live = self.live.lock().await;
+        if self.current_epoch(conn) == epoch
+            && let Some(l) = live.get_mut(&conn)
+        {
+            return Ok(l.monitor.get_or_insert(session).clone());
+        }
+        Ok(session)
+    }
+
+    /// Drops the Session Monitor session if it is still `session` (timed out or broken).
+    async fn forget_monitor(&self, conn: ConnId, session: &SharedSession) {
+        if let Some(l) = self.live.lock().await.get_mut(&conn)
+            && l.monitor.as_ref().is_some_and(|s| Arc::ptr_eq(s, session))
+        {
+            l.monitor = None;
+        }
     }
 
     /// Drops a metadata session (timed out or broken); the next request opens a new one.
@@ -523,6 +562,41 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
     result
 }
 
+type MonitorJob<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<T>> + Send + 'a>>;
+
+/// Runs `job` on the connection's Session Monitor session, 15 s at most; a query that can't be
+/// cancelled in time drops only that session.
+async fn on_monitor<T>(state: &State, conn: ConnId, job: impl for<'a> FnOnce(&'a mut Session, Driver) -> MonitorJob<'a, T>) -> Result<T, String> {
+    let Some(cfg) = state.live.lock().await.get(&conn).map(|l| l.cfg.clone()) else {
+        return Err(tr("The connection is not open").into());
+    };
+    if !crate::db::sessions::supported(cfg.driver) {
+        return Err(tr("Session monitoring is not available for this engine").into());
+    }
+    let redact = |e: anyhow::Error| {
+        let message = format!("{e:#}");
+        if cfg.password.is_empty() { message } else { message.replace(&cfg.password, "[redacted]") }
+    };
+    let session = state.monitor_session(conn).await.map_err(redact)?;
+    let mut s = session.lock().await;
+    let cancel = s.cancel_handle();
+    let (result, broken) = match tokio::time::timeout(std::time::Duration::from_secs(15), job(&mut s, cfg.driver)).await {
+        Ok(result) => (result.map_err(redact), s.is_closed()),
+        Err(_) => {
+            let cancelled = match cancel {
+                Some(h) => tokio::time::timeout(std::time::Duration::from_secs(2), h.cancel()).await.is_ok_and(|r| r.is_ok()),
+                None => false,
+            };
+            (Err(tr("The session monitor request timed out").into()), !cancelled)
+        }
+    };
+    drop(s);
+    if broken {
+        state.forget_monitor(conn, &session).await;
+    }
+    result
+}
+
 fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<std::path::PathBuf> {
     use std::io::Write;
     let parent = path.parent().filter(|p| p.is_dir()).ok_or_else(|| anyhow::anyhow!(tr("Choose an existing destination directory")))?;
@@ -630,6 +704,21 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             vec![Response::DatabaseChoices { conn, result }]
         }
         Request::Users { conn, request } => vec![Response::Users { conn, result: fetch_users(state, conn, &request).await }],
+        Request::Sessions { conn, request_id } => {
+            let result = on_monitor(state, conn, |s, driver| Box::pin(crate::db::sessions::list(s, driver))).await;
+            vec![Response::Sessions { conn, request_id, result }]
+        }
+        Request::SessionAction { conn, request_id, action } => {
+            let read_only = state.live.lock().await.get(&conn).is_none_or(|l| l.cfg.read_only);
+            let result = if state.current_epoch(conn) != epoch {
+                Err(tr("The connection is not open").into())
+            } else if read_only {
+                Err(tr("Read-only connection").into())
+            } else {
+                on_monitor(state, conn, move |s, driver| Box::pin(async move { crate::db::sessions::act(s, driver, &action).await })).await
+            };
+            vec![Response::SessionAction { conn, request_id, result }]
+        }
         Request::RunScript { conn, db, files, run } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             match cfg {
@@ -720,7 +809,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                     }
                     let mut sessions = HashMap::new();
                     sessions.insert(String::new(), Arc::new(Mutex::new(session)));
-                    live.insert(conn, Live { cfg, default_db, sessions, meta: HashMap::new() });
+                    live.insert(conn, Live { cfg, default_db, sessions, meta: HashMap::new(), monitor: None });
                     vec![Response::Connected { conn, databases }]
                 }
                 Err(e) if state.current_epoch(conn) == epoch => {
@@ -1178,7 +1267,7 @@ mod tests {
         let state = State::default();
         let mut cfg = ConnectionConfig::new(7, Driver::Sqlite);
         cfg.read_only = true;
-        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new() });
+        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None });
         let request = |id| Request::TableGrants {
             conn: 7,
             db: "main".into(),
@@ -1283,7 +1372,7 @@ mod tests {
         let mut cfg = ConnectionConfig::new(71, Driver::Sqlite);
         cfg.password = secret.into();
         cfg.file_path = std::env::temp_dir().join(format!("datacraft-missing-{secret}-{}.db", uuid::Uuid::new_v4())).to_string_lossy().into_owned();
-        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new() });
+        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None });
         let request = Request::TableDuplicate {
             conn: 71,
             db: "main".into(),
@@ -1342,6 +1431,90 @@ mod tests {
         assert_eq!(def.spec.unwrap().body.trim(), "select n * 2");
         w.send(Request::RunDdl { conn: 32, db: None, statements: vec!["drop function public.dc_worker_twice(integer)".into()], close_db: None, transaction: false });
         wait_for(&w, |r| matches!(r, Response::DdlDone { conn: 32, result: Ok(_) }));
+    }
+
+    /// The Session Monitor on a real PostgreSQL (DATACRAFT_PG_HOST, as `db::postgres`'s tests): the
+    /// list doesn't wait behind a console's running query, cancelling that query keeps the
+    /// console's session, and a read-only connection lists but refuses actions.
+    #[test]
+    #[ignore]
+    fn postgres_session_monitor_through_the_worker() {
+        use crate::db::sessions::{Action, ActionKind};
+        let Ok(host) = std::env::var("DATACRAFT_PG_HOST") else { return };
+        let var = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let mut cfg = ConnectionConfig::new(33, Driver::Postgres);
+        cfg.host = host;
+        cfg.port = var("DATACRAFT_PG_PORT", "5432").parse().unwrap();
+        cfg.user = var("DATACRAFT_PG_USER", "postgres");
+        cfg.password = var("DATACRAFT_PG_PASSWORD", "");
+        cfg.database = var("DATACRAFT_PG_DB", "postgres");
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(cfg.clone()));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select pg_sleep(30) /* dc monitor test */".into()], max_rows: 10 });
+        let started = Instant::now();
+        let mut row = None;
+        for request_id in 1..=50 {
+            w.send(Request::Sessions { conn: 33, request_id });
+            let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: id, .. } if *id == request_id)) else { unreachable!() };
+            row = result.unwrap().rows.into_iter().find(|r| r.query.contains("dc monitor test") && r.state == "active" && !r.own);
+            if row.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let row = row.expect("the console's query is listed while it runs");
+        assert!(started.elapsed() < Duration::from_secs(10), "the list did not wait for the console");
+        w.send(Request::SessionAction { conn: 33, request_id: 900, action: Action::new(ActionKind::Cancel, &row) });
+        // Both replies, in whichever order they arrive.
+        let (mut cancelled, mut executed) = (None, None);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while (cancelled.is_none() || executed.is_none()) && Instant::now() < deadline {
+            for r in w.poll() {
+                match r {
+                    Response::SessionAction { request_id: 900, result, .. } => cancelled = Some(result),
+                    Response::Executed { console: 330, error, .. } => executed = Some(error),
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(cancelled, Some(Ok(())));
+        assert!(executed.expect("the console's query ended").is_some(), "the console's query was cancelled");
+        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select 1".into()], max_rows: 10 });
+        let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 330, .. })) else { unreachable!() };
+        assert_eq!((error, results[0].rows[0][0].as_deref()), (None, Some("1")), "the console's session survived");
+
+        cfg.id = 34;
+        cfg.read_only = true;
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 34, .. }));
+        w.send(Request::Sessions { conn: 34, request_id: 1 });
+        let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { conn: 34, .. })) else { unreachable!() };
+        let own = result.unwrap().rows.into_iter().find(|r| r.own).expect("listed on a read-only connection");
+        w.send(Request::SessionAction { conn: 34, request_id: 2, action: Action::new(ActionKind::Terminate, &own) });
+        let Response::SessionAction { result, .. } = wait_for(&w, |r| matches!(r, Response::SessionAction { conn: 34, .. })) else { unreachable!() };
+        assert_eq!(result, Err(tr("Read-only connection").into()));
+    }
+
+    #[test]
+    fn session_monitor_is_refused_on_engines_without_sessions() {
+        let path = std::env::temp_dir().join(format!("datacraft-sessions-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&path).unwrap();
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(35, Driver::Sqlite);
+        cfg.file_path = path.display().to_string();
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 35, .. }));
+        w.send(Request::Sessions { conn: 35, request_id: 4 });
+        let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: 4, .. })) else { unreachable!() };
+        assert_eq!(result.unwrap_err(), tr("Session monitoring is not available for this engine"));
+        w.send(Request::Sessions { conn: 36, request_id: 5 });
+        let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: 5, .. })) else { unreachable!() };
+        assert_eq!(result.unwrap_err(), tr("The connection is not open"));
+        w.send(Request::Disconnect(35));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(35)));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
