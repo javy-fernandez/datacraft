@@ -224,6 +224,37 @@ pub struct ConnectionConfig {
     pub tunnel_host: Option<String>,
     /// Imported (from DataGrip) without its password: it is asked for on the first connect.
     pub ask_password: bool,
+    /// Badge shown on its consoles, tabs and explorer row; Production asks before changing data.
+    pub environment: Environment,
+    /// The badge's colour (sRGB) when it is not the environment's own.
+    pub environment_color: Option<[u8; 3]>,
+    /// The console asks before `UPDATE` / `DELETE` without `WHERE`, `TRUNCATE` and `DROP`.
+    pub confirm_dangerous: bool,
+}
+
+/// What a data source is used for (Options tab).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Environment {
+    #[default]
+    None,
+    Development,
+    Staging,
+    /// Every statement that changes data, and every grid save, asks first.
+    Production,
+}
+
+impl Environment {
+    pub const ALL: [Environment; 4] = [Environment::None, Environment::Development, Environment::Staging, Environment::Production];
+
+    /// Badge colour (sRGB) unless the data source picks another.
+    pub fn default_color(self) -> [u8; 3] {
+        match self {
+            Environment::None => [0x8c, 0x8f, 0x96],
+            Environment::Development => [0x3f, 0xb9, 0x50],
+            Environment::Staging => [0xe8, 0xa3, 0x3d],
+            Environment::Production => [0xe5, 0x48, 0x4d],
+        }
+    }
 }
 
 /// Driver properties that hold secrets (`token`, `private_key_file_pwd`, `password`…): their
@@ -301,7 +332,15 @@ impl ConnectionConfig {
             tls: tls::TlsSettings::default(),
             tunnel_host: None,
             ask_password: false,
+            environment: Environment::None,
+            environment_color: None,
+            confirm_dangerous: true,
         }
+    }
+
+    /// Environment and badge colour, if it has one.
+    pub fn environment_badge(&self) -> Option<(Environment, [u8; 3])> {
+        (self.environment != Environment::None).then(|| (self.environment, self.environment_color.unwrap_or(self.environment.default_color())))
     }
 
     /// Switches the engine: fields still at the old engine's defaults take the new one's, and an

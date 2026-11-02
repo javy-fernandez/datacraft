@@ -5,6 +5,9 @@ use crate::db::Driver;
 use egui::Color32;
 use egui::text::{LayoutJob, TextFormat};
 
+mod guard;
+pub use guard::{Danger, Dangerous, dangerous_statements};
+
 /// Script fragment with its byte range within the original text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
@@ -264,6 +267,11 @@ fn find_delimiter(script: &str, tok: Token, d: &str) -> Option<usize> {
             && bytes.len() >= k + d.len()
             && bytes[k..k + d.len()].eq_ignore_ascii_case(d)
     })
+}
+
+/// The words of `text`, lowercased, without strings, quoted names and comments.
+pub fn words(text: &str, driver: Driver) -> Vec<String> {
+    Lexer::new(text, Dialect::for_driver(driver)).filter(|t| t.kind == Kind::Word).map(|t| text[t.start..t.end].to_ascii_lowercase()).collect()
 }
 
 /// Statement containing the `cursor` position (in bytes). If the cursor is in the space between

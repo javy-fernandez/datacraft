@@ -303,6 +303,7 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Task scheduler](docs/sql-scheduler.md) | Recurring SQL and backup tasks, the background process, time limits and history |
 | [Schema compare](docs/schema-compare.md) | Differences between two schemas and the migration script that applies them |
+| [Dangerous statements and environments](docs/safety.md) | Confirmations before whole-table changes, Development / Staging / Production data sources |
 | [Manual transactions](docs/transactions.md) | Commit / Roll Back in the SQL console, failed transactions and the safeguards |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |

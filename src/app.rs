@@ -70,6 +70,7 @@ mod views;
 mod table_export;
 mod table_shortcuts;
 mod table_grants;
+mod safety;
 mod fk_nav;
 mod session_monitor;
 mod transactions;
@@ -194,6 +195,7 @@ impl ConnState {
             status: self.status.kind(),
             databases: self.databases.iter().map(|d| d.name.clone()).collect(),
             default_db: self.default_db().map(str::to_string),
+            environment: theme::environment(&self.cfg),
         }
     }
 }
@@ -385,6 +387,8 @@ pub struct DataCraftApp {
     applied_zoom: Option<f32>,
     preview: Option<PreviewState>,
     confirm_discard: Option<Discard>,
+    /// Dangerous statements or a Production write waiting for confirmation.
+    safety: safety::SafetyState,
     /// "Commit / Roll Back / Cancel" for open Manual transactions.
     tx_prompt: Option<transactions::TxPrompt>,
     /// Quitting was confirmed (open transactions dealt with).
@@ -487,6 +491,7 @@ impl DataCraftApp {
             applied_zoom: None,
             preview: None,
             confirm_discard: None,
+            safety: Default::default(),
             tx_prompt: None,
             quit_confirmed: false,
             demo_explorer_w: None,
@@ -1137,16 +1142,23 @@ impl DataCraftApp {
                     self.error(err);
                 }
                 None => {
-                    self.submit_preview();
-                    // If it could not be sent (no connection, busy tab), report it and discard.
-                    if let Some(pv) = self.preview.as_ref().filter(|p| !p.visible && !p.applying) {
-                        let err = pv.error.clone().unwrap_or_default();
-                        self.preview = None;
-                        self.error(err);
-                    }
+                    self.submit_preview(false);
+                    self.report_hidden_submit();
                 }
             },
             _ => {}
+        }
+    }
+
+    /// A direct save that could not be sent (no connection, busy tab) is reported and
+    /// discarded; one waiting for confirmation stays.
+    fn report_hidden_submit(&mut self) {
+        if self.safety.confirm.is_none()
+            && let Some(pv) = self.preview.as_ref().filter(|p| !p.visible && !p.applying)
+        {
+            let err = pv.error.clone().unwrap_or_default();
+            self.preview = None;
+            self.error(err);
         }
     }
 
@@ -1194,8 +1206,9 @@ impl DataCraftApp {
         true
     }
 
-    /// Sends the preview's changes in a transaction.
-    fn submit_preview(&mut self) {
+    /// Sends the preview's changes in a transaction; on a Production data source, once
+    /// `confirmed`.
+    fn submit_preview(&mut self, confirmed: bool) {
         let Some(pv) = self.preview.as_ref() else { return };
         if pv.applying || pv.statements.is_empty() {
             return;
@@ -1208,10 +1221,12 @@ impl DataCraftApp {
         let (conn, db, busy) = (c.conn, c.db.clone(), c.is_busy());
         let connected = conn.and_then(|id| self.conn(id)).is_some_and(|c| matches!(c.status, ConnStatus::Connected));
         let read_only = conn.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.read_only);
+        let confirm = conn.filter(|_| connected && !confirmed && !read_only && !busy).and_then(|conn| self.changes_confirmation(conn, console));
         let Some(pv) = self.preview.as_mut() else { return };
         match conn {
             _ if read_only => pv.error = Some(tr("Read-only connection").into()),
             _ if busy => pv.error = Some(tr("The tab is running another operation").into()),
+            Some(_) if confirm.is_some() => self.safety.confirm = confirm,
             Some(conn) if connected => {
                 pv.applying = true;
                 pv.error = None;
@@ -1398,6 +1413,49 @@ impl DataCraftApp {
 
     /// Sends statements of tab `idx`, connecting first if needed.
     fn run_statements(&mut self, idx: usize, statements: Vec<String>) {
+        self.send_statements(idx, statements, false);
+    }
+
+    /// Logs why console `idx` can't run `statements` on `conn` (writes on a read-only data
+    /// source, statements outside a Manual transaction); true if it can't.
+    pub(super) fn refused(&mut self, idx: usize, conn: ConnId, statements: &[String]) -> bool {
+        let driver = self.conn(conn).map(|c| c.cfg.driver).unwrap_or(Driver::Postgres);
+        if self.conn(conn).is_some_and(|c| c.cfg.read_only)
+            && let Some(stmt) = statements
+                .iter()
+                .flat_map(|s| sql::split_statements(s, driver))
+                .map(|s| s.text)
+                .find(|s| !is_read_statement(driver, s))
+        {
+            let Some(console) = self.consoles.get_mut(idx) else { return true };
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: stmt.trim().to_string(),
+                message: tr("Read-only connection: only queries can run (SELECT, WITH, SHOW, EXPLAIN…)").into(),
+                is_error: true,
+            });
+            console.result_tab = ResultTab::Output;
+            return true;
+        }
+        if self.consoles.get(idx).is_some_and(|c| c.manual_tx)
+            && let Some(stmt) = statements.iter().flat_map(|s| sql::split_statements(s, driver)).map(|s| s.text).find(|s| crate::db::transaction::outside_transaction(driver, s))
+        {
+            let Some(console) = self.consoles.get_mut(idx) else { return true };
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: stmt.trim().to_string(),
+                message: tr("This statement can't run inside a transaction: switch the console to Auto mode to run it").into(),
+                is_error: true,
+            });
+            console.result_tab = ResultTab::Output;
+            return true;
+        }
+        false
+    }
+
+    /// [`Self::run_statements`]; `confirmed`: the user already accepted them (dangerous
+    /// statements and writes on Production ask first).
+    fn send_statements(&mut self, idx: usize, statements: Vec<String>, confirmed: bool) {
         let Some(console) = self.consoles.get(idx) else { return };
         if console.is_busy() {
             return;
@@ -1422,35 +1480,13 @@ impl DataCraftApp {
             console.result_tab = ResultTab::Output;
             return;
         };
-        let driver = self.conn(conn).map(|c| c.cfg.driver).unwrap_or(Driver::Postgres);
-        if self.conn(conn).is_some_and(|c| c.cfg.read_only)
-            && let Some(stmt) = statements
-                .iter()
-                .flat_map(|s| sql::split_statements(s, driver))
-                .map(|s| s.text)
-                .find(|s| !is_read_statement(driver, s))
-        {
-            let Some(console) = self.consoles.get_mut(idx) else { return };
-            console.log.push(OutputEntry {
-                time: now(),
-                statement: stmt.trim().to_string(),
-                message: tr("Read-only connection: only queries can run (SELECT, WITH, SHOW, EXPLAIN…)").into(),
-                is_error: true,
-            });
-            console.result_tab = ResultTab::Output;
+        if self.refused(idx, conn, &statements) {
             return;
         }
-        if self.consoles.get(idx).is_some_and(|c| c.manual_tx)
-            && let Some(stmt) = statements.iter().flat_map(|s| sql::split_statements(s, driver)).map(|s| s.text).find(|s| crate::db::transaction::outside_transaction(driver, s))
+        if !confirmed
+            && let Some(confirm) = self.run_confirmation(conn, self.consoles[idx].id, &statements)
         {
-            let Some(console) = self.consoles.get_mut(idx) else { return };
-            console.log.push(OutputEntry {
-                time: now(),
-                statement: stmt.trim().to_string(),
-                message: tr("This statement can't run inside a transaction: switch the console to Auto mode to run it").into(),
-                is_error: true,
-            });
-            console.result_tab = ResultTab::Output;
+            self.safety.confirm = Some(confirm);
             return;
         }
         let Some(console) = self.consoles.get_mut(idx) else { return };
@@ -1880,7 +1916,7 @@ impl DataCraftApp {
             }
         } else {
             let select = crate::db::copy::select_sql(driver, &request.source_schema, &request.source_table, &request.columns, &request.filter, None);
-            if request.filter.contains(';') || !is_query(&select) {
+            if request.filter.contains(';') || !is_query(driver, &select) {
                 d.error = Some(tr("The WHERE condition can only read data").to_string());
                 return;
             }
@@ -2635,6 +2671,7 @@ impl DataCraftApp {
             || self.show_settings
             || self.preview.as_ref().is_some_and(|p| p.visible)
             || self.confirm_discard.is_some()
+            || self.safety.confirm.is_some()
             || self.tx_prompt.is_some()
             || self.modify.is_some()
     }
@@ -3244,6 +3281,11 @@ impl DataCraftApp {
                                 c.title.clone()
                             };
                             let (resp, closed) = theme::tab(ui, !self.object_browser.active && i == self.active, Some(ico), &title, true);
+                            // The data source's environment, as a line under the tab.
+                            if let Some((_, color)) = c.conn.and_then(|id| self.conns.iter().find(|x| x.cfg.id == id)).and_then(|x| theme::environment(&x.cfg)) {
+                                let r = resp.rect;
+                                ui.painter().hline(egui::Rangef::new(r.left() + 8.0, r.right() - 8.0), r.bottom() - 1.0, egui::Stroke::new(2.0, color));
+                            }
                             if closed {
                                 close = Some(i);
                             } else if resp.clicked() {
@@ -3486,11 +3528,7 @@ impl DataCraftApp {
                 ConsoleAction::ExplainAnalyze { statement, explain } => {
                     let id = self.consoles[idx].id;
                     if self.consoles[idx].table.is_none() && !self.consoles[idx].is_busy() && self.guard(Discard::Run(id, false)) {
-                        if is_query(&statement) {
-                            self.run_statements(idx, vec![explain]);
-                        } else {
-                            self.confirm_analyze = Some((idx, explain));
-                        }
+                        self.explain_analyze(idx, &statement, explain);
                     }
                 }
                 ConsoleAction::RunStatements(statements) => {
@@ -3822,6 +3860,7 @@ impl DataCraftApp {
         }
 
         self.preview_dialog(ctx, frame);
+        self.confirm_dialog(ctx, frame);
         self.tx_dialog(ctx, frame);
 
         if self.show_shortcuts {
@@ -4107,13 +4146,13 @@ impl DataCraftApp {
                 });
             });
         });
-        if !applying && (resp.should_close() || ctx.input(|i| i.key_pressed(Key::Escape))) {
+        if !applying && self.safety.confirm.is_none() && (resp.should_close() || ctx.input(|i| i.key_pressed(Key::Escape))) {
             cancel = true;
         }
         if cancel {
             self.preview = None;
         } else if submit {
-            self.submit_preview();
+            self.submit_preview(false);
         }
     }
 }
@@ -4172,23 +4211,22 @@ pub(crate) fn is_read_statement(driver: Driver, statement: &str) -> bool {
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
         Driver::InfluxDb => crate::db::influx::is_read_command(statement),
         Driver::Kusto => crate::db::kusto::is_read_command(statement),
-        _ => is_query(statement),
+        _ => is_query(driver, statement),
     }
 }
 
 /// true if the statement only reads (allowed on read-only connections). A `WITH` that
-/// contains a data-modifying statement (PostgreSQL) is not.
-fn is_query(statement: &str) -> bool {
-    let words: Vec<String> = statement
-        .lines()
-        .map(|l| l.split("--").next().unwrap_or(""))
-        .flat_map(|l| l.split(|c: char| !c.is_alphanumeric() && c != '_'))
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .collect();
-    // `SELECT … INTO` creates tables (PG, SQL Server) or writes files (MySQL); `EXPLAIN ANALYZE`
-    // runs the statement. `WITH … PROCEDURE … CALL` (Snowflake) runs an anonymous procedure, so
-    // DDL, grants and calls count as writes anywhere in the statement.
+/// contains a data-modifying statement (PostgreSQL) is not. Strings, quoted names and comments
+/// don't count (`WHERE action = 'DELETE'`).
+pub(crate) fn is_query(driver: Driver, statement: &str) -> bool {
+    // `$$…$$` bodies (Snowflake, PostgreSQL) hold code that runs as a block.
+    !statement.contains("$$") && reads(&sql::words(statement, driver))
+}
+
+fn reads(words: &[String]) -> bool {
+    // `SELECT … INTO` creates tables (PG, SQL Server) or writes files (MySQL). `WITH … PROCEDURE
+    // … CALL` (Snowflake) runs an anonymous procedure, so DDL, grants and calls count as writes
+    // anywhere in the statement.
     let writes = |w: &String| {
         matches!(
             w.as_str(),
@@ -4197,14 +4235,35 @@ fn is_query(statement: &str) -> bool {
                 | "remove" | "undrop"
         )
     };
-    // `$$…$$` bodies (Snowflake, PostgreSQL) hold code that runs as a block.
-    if statement.contains("$$") {
-        return false;
-    }
     match words.first().map(String::as_str) {
         // SHOW / DESCRIBE never write, whatever they name (`SHOW CREATE TABLE`).
         Some("show" | "describe" | "desc") => true,
-        Some("select" | "explain" | "values" | "table" | "with") => !words.iter().any(writes),
+        // `EXPLAIN [ANALYZE] …` (and MariaDB's `ANALYZE SELECT`) reads when what it explains
+        // does: ANALYZE runs it. Option words (`VERBOSE`, `FORMAT JSON`, `QUERY PLAN`, Oracle's
+        // `PLAN FOR`, ClickHouse's `AST` / `PIPELINE`…) are skipped. `ANALYZE TABLE t` (MySQL)
+        // writes statistics; `EXPLAIN TABLE t` reads.
+        Some(first @ ("explain" | "analyze" | "analyse")) => {
+            let rest: Vec<String> = words[1..]
+                .iter()
+                .skip_while(|w| {
+                    matches!(
+                        w.as_str(),
+                        "analyze" | "analyse" | "verbose" | "costs" | "settings" | "buffers" | "wal" | "timing" | "summary"
+                            | "memory" | "serialize" | "generic_plan" | "format" | "json" | "text" | "xml" | "yaml" | "tree"
+                            | "traditional" | "true" | "false" | "on" | "off" | "query" | "plan" | "using" | "tabular"
+                            | "for" | "ast" | "syntax" | "pipeline" | "estimate" | "header" | "description" | "indexes"
+                            | "actions" | "graph" | "compact" | "projections"
+                    )
+                })
+                .cloned()
+                .collect();
+            match rest.first().map(String::as_str) {
+                Some("select" | "values" | "with") => reads(&rest),
+                Some("table") => first == "explain" && reads(&rest),
+                _ => false,
+            }
+        }
+        Some("select" | "values" | "table" | "with") => !words.iter().any(writes),
         // SQL Server's explain plan.
         Some("set") => words.len() == 3 && words[1] == "showplan_text" && matches!(words[2].as_str(), "on" | "off"),
         _ => false,
@@ -4542,7 +4601,7 @@ mod tests {
             show_about: false, show_shortcuts: false, show_settings: false, script: None, session_monitors: Vec::new(), next_monitor_request: 0, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
-            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None, tx_prompt: None, quit_confirmed: false,
+            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None, safety: Default::default(), tx_prompt: None, quit_confirmed: false,
             startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
@@ -4843,26 +4902,50 @@ mod tests {
 
     #[test]
     fn read_only_statements() {
-        assert!(is_query("select 1"));
-        assert!(is_query("  -- note\n SELECT * FROM t"));
-        assert!(is_query("with x as (select 1) select * from x"));
+        assert!(is_query(Driver::Postgres, "select 1"));
+        assert!(is_query(Driver::Postgres, "  -- note\n SELECT * FROM t"));
+        assert!(is_query(Driver::Postgres, "with x as (select 1) select * from x"));
         // Snowflake anonymous procedures run anything (found in review of the Snowflake PR).
-        assert!(!is_query("WITH p AS PROCEDURE() RETURNS INT LANGUAGE SQL AS $$ BEGIN DROP TABLE t; RETURN 1; END $$ CALL p()"));
-        assert!(!is_query("with p as procedure() returns int language sql as 'begin return 1; end' call p()"));
-        assert!(!is_query("with x as (select 1) select * from x; drop table t"));
-        assert!(!is_query("select $$ text $$"));
-        assert!(is_query("SHOW CREATE TABLE t"));
-        assert!(is_query("describe procedure p(int)"));
-        assert!(is_query("explain select 1"));
-        assert!(!is_query("explain analyze delete from t"));
-        assert!(!is_query("explain analyse delete from t"));
-        assert!(!is_query("select * into copy from t"));
-        assert!(is_query("SET SHOWPLAN_TEXT ON"));
-        assert!(!is_query("set ansi_nulls off"));
-        assert!(!is_query("with d as (delete from t returning *) select * from d"));
-        assert!(!is_query("update t set a = 1"));
-        assert!(!is_query("drop table t"));
-        assert!(!is_query(""));
+        assert!(!is_query(Driver::Postgres, "WITH p AS PROCEDURE() RETURNS INT LANGUAGE SQL AS $$ BEGIN DROP TABLE t; RETURN 1; END $$ CALL p()"));
+        assert!(!is_query(Driver::Postgres, "with p as procedure() returns int language sql as 'begin return 1; end' call p()"));
+        assert!(!is_query(Driver::Postgres, "with x as (select 1) select * from x; drop table t"));
+        assert!(!is_query(Driver::Postgres, "select $$ text $$"));
+        assert!(is_query(Driver::Postgres, "SHOW CREATE TABLE t"));
+        assert!(is_query(Driver::Postgres, "describe procedure p(int)"));
+        assert!(is_query(Driver::Postgres, "explain select 1"));
+        assert!(!is_query(Driver::Postgres, "explain analyze delete from t"));
+        // Strings, quoted names and comments aren't words of the statement.
+        assert!(is_query(Driver::Postgres, "select * from audit where action = 'DELETE'"));
+        assert!(is_query(Driver::Postgres, "select \"update\" from t /* drop table t */"));
+        assert!(is_query(Driver::MySql, "select `delete` from t # insert into"));
+        assert!(is_query(Driver::MySql, "select * from t where note = \"truncate\""));
+        assert!(!is_query(Driver::Postgres, "select 1; delete from t"));
+        // Explain Analyze of a read only reads; of a write, or ANALYZE of a table, writes.
+        assert!(is_query(Driver::Postgres, "explain analyze select 1"));
+        assert!(is_query(Driver::Postgres, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT * FROM t"));
+        assert!(is_query(Driver::MariaDb, "ANALYZE FORMAT=JSON SELECT * FROM t"));
+        assert!(!is_query(Driver::MariaDb, "ANALYZE FORMAT=JSON DELETE FROM t"));
+        assert!(!is_query(Driver::Postgres, "analyze t"));
+        assert!(!is_query(Driver::MySql, "ANALYZE TABLE t"));
+        assert!(!is_query(Driver::MariaDb, "ANALYZE TABLE t PERSISTENT FOR ALL"));
+        assert!(is_query(Driver::Postgres, "EXPLAIN TABLE t"));
+        // Oracle's Explain Plan and ClickHouse's explain kinds read.
+        for s in sql::explain_statements("select * from t", Driver::Oracle) {
+            assert!(is_query(Driver::Oracle, &s), "{s}");
+        }
+        for kind in ["AST", "SYNTAX", "PIPELINE", "ESTIMATE", "PLAN indexes = 1", "QUERY TREE"] {
+            assert!(is_query(Driver::ClickHouse, &format!("EXPLAIN {kind} SELECT * FROM t")), "{kind}");
+        }
+        assert!(!is_query(Driver::ClickHouse, "EXPLAIN PIPELINE INSERT INTO t SELECT 1"));
+        assert!(!is_query(Driver::Postgres, "explain delete from t"));
+        assert!(!is_query(Driver::Postgres, "explain analyse delete from t"));
+        assert!(!is_query(Driver::Postgres, "select * into copy from t"));
+        assert!(is_query(Driver::Postgres, "SET SHOWPLAN_TEXT ON"));
+        assert!(!is_query(Driver::Postgres, "set ansi_nulls off"));
+        assert!(!is_query(Driver::Postgres, "with d as (delete from t returning *) select * from d"));
+        assert!(!is_query(Driver::Postgres, "update t set a = 1"));
+        assert!(!is_query(Driver::Postgres, "drop table t"));
+        assert!(!is_query(Driver::Postgres, ""));
     }
 
     #[test]
