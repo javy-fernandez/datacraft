@@ -83,13 +83,20 @@ pub enum Request {
     },
     /// Runs statements in order; stops at the first error.
     /// `db`: database to run them in (`None` = the connection's default database).
+    /// `manual`: on the console's own session, inside the transaction it keeps open.
     Execute {
         conn: ConnId,
         db: Option<String>,
         console: ConsoleId,
         statements: Vec<String>,
         max_rows: usize,
+        manual: bool,
     },
+    /// Commits (or rolls back) a console's Manual transaction.
+    EndTransaction { console: ConsoleId, commit: bool },
+    /// Closes a console's own Manual session (tab closed, back to Auto…): an open transaction
+    /// is rolled back.
+    ReleaseConsole { console: ConsoleId },
     /// Saves data editor changes (statements from `edit::change_sql`) in one transaction.
     ApplyChanges {
         conn: ConnId,
@@ -108,6 +115,13 @@ pub enum Request {
     Cancel { console: ConsoleId },
     /// Users / roles: the list or one user's privileges, on the metadata session.
     Users { conn: ConnId, request: crate::db::users::UsersRequest },
+    /// Session Monitor: the server's sessions, on the connection's monitor session.
+    Sessions { conn: ConnId, request_id: u64 },
+    /// Session Monitor: cancels a query or terminates a session, on the monitor session.
+    /// `epoch`: that of the list the session was picked from (refused after a reconnect).
+    SessionAction { conn: ConnId, request_id: u64, epoch: u64, action: crate::db::sessions::Action },
+    /// The last Session Monitor window of the connection closed: its session is closed too.
+    CloseSessionMonitor(ConnId),
 }
 
 pub enum Response {
@@ -158,6 +172,11 @@ pub enum Response {
         error: Option<String>,
         elapsed: std::time::Duration,
     },
+    /// After the `Executed` of a Manual `Execute`: the console's transaction now, and why it
+    /// ended if it ended by itself.
+    Transaction { console: ConsoleId, tx: Option<TxInfo>, note: Option<TxNote> },
+    /// Result of `EndTransaction`; `tx` is the transaction if it is still open (a commit that failed).
+    TransactionEnded { console: ConsoleId, commit: bool, result: Result<(), String>, tx: Option<TxInfo>, elapsed: std::time::Duration },
     /// Result of `ApplyChanges`: modified rows or an error (in which case nothing was saved).
     ChangesApplied { console: ConsoleId, result: Result<u64, String> },
     /// Result of `RunDdl`.
@@ -168,6 +187,35 @@ pub enum Response {
     DatabaseChoices { conn: ConnId, result: Result<crate::db::create_db::DatabaseChoices, String> },
     /// Result of `Users`.
     Users { conn: ConnId, result: Result<crate::db::users::UsersReply, String> },
+    /// `epoch`: the connection's when the list was read, to send back with an action.
+    Sessions { conn: ConnId, request_id: u64, epoch: u64, result: Result<crate::db::sessions::SessionList, String> },
+    SessionAction { conn: ConnId, request_id: u64, result: Result<(), String> },
+}
+
+/// A console's open Manual transaction, as the worker last saw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TxInfo {
+    pub began: Instant,
+    /// Statements that ran in it since it began.
+    pub statements: usize,
+    /// A statement failed and the server aborted the transaction (PostgreSQL, a doomed SQL
+    /// Server transaction): only a rollback is possible.
+    pub aborted: bool,
+}
+
+/// Why a console's Manual transaction ended by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxNote {
+    /// Its session was lost or closed (a cancel that had to abandon the query): rolled back.
+    Lost,
+    /// A DDL statement committed it (MySQL, MariaDB, Oracle, Snowflake).
+    ImplicitCommit,
+    /// The server rolled it back after an error (or answered a COMMIT of a failed PostgreSQL
+    /// transaction with a rollback).
+    RolledBack,
+    /// A DDL statement failed, but Oracle or Snowflake may have committed the transaction before
+    /// running it.
+    MaybeCommitted,
 }
 
 pub struct Worker {
@@ -236,6 +284,33 @@ struct Live {
     /// Object browser metadata sessions, per database: their queries neither wait behind a
     /// console nor take the console's session down when they time out.
     meta: HashMap<String, SharedSession>,
+    /// Session Monitor session: refreshes don't queue behind a console or the object browser,
+    /// and a cancel or terminate never runs on (or takes down) a console's session.
+    monitor: Option<SharedSession>,
+    /// Times the monitor was closed: a session that finishes connecting after a close is used
+    /// for its one request and not kept.
+    monitor_closes: u64,
+}
+
+/// A console's own session in Manual transaction mode: its transaction stays open between runs,
+/// which the connection's shared sessions cannot do. A separate connection, tied to the data
+/// source and database it was opened for: losing the shared sessions doesn't end it, only a
+/// Disconnect of the data source (`generation`) or its own failure does.
+#[derive(Clone)]
+struct TxSession {
+    conn: ConnId,
+    db: String,
+    generation: u64,
+    session: Arc<Mutex<TxConn>>,
+}
+
+struct TxConn {
+    session: Session,
+    driver: Driver,
+    /// The console's database: selected again before each run, so a typed `USE` lasts one run
+    /// as in Auto mode.
+    db: String,
+    tx: Option<TxInfo>,
 }
 
 /// A console's `Execute` in progress. Registered before waiting for the session, so a
@@ -261,6 +336,10 @@ struct State {
     /// Newest object browser request per (connection, catalog?): older ones still queued for
     /// the metadata session are skipped (their reply would be discarded anyway).
     meta_latest: std::sync::Mutex<HashMap<(ConnId, bool), u64>>,
+    /// Consoles' own sessions for Manual transactions.
+    tx: std::sync::Mutex<HashMap<ConsoleId, TxSession>>,
+    /// Disconnects per connection, counted as they arrive: the generation of Manual sessions.
+    disconnects: std::sync::Mutex<HashMap<ConnId, u64>>,
 }
 
 impl State {
@@ -272,6 +351,9 @@ impl State {
             Request::TableGrants { conn, .. } => return self.current_epoch(*conn),
             _ => return 0,
         };
+        if matches!(req, Request::Disconnect(_)) {
+            *self.disconnects.lock().unwrap_or_else(|e| e.into_inner()).entry(conn).or_default() += 1;
+        }
         let mut epochs = self.epochs.lock().unwrap_or_else(|e| e.into_inner());
         let e = epochs.entry(conn).or_default();
         *e += 1;
@@ -343,6 +425,40 @@ impl State {
         Ok((session, target))
     }
 
+    /// The Session Monitor session (opened on first use and kept).
+    async fn monitor_session(&self, conn: ConnId) -> anyhow::Result<SharedSession> {
+        let (cfg, existing, closes) = {
+            let live = self.live.lock().await;
+            let l = live.get(&conn).ok_or_else(|| anyhow::anyhow!(tr("The connection is not open")))?;
+            (l.cfg.clone(), l.monitor.clone(), l.monitor_closes)
+        };
+        if let Some(s) = existing {
+            return Ok(s);
+        }
+        let epoch = self.current_epoch(conn);
+        let session = Arc::new(Mutex::new(Session::connect(&cfg).await?));
+        Ok(self.keep_monitor(conn, epoch, closes, session).await)
+    }
+
+    /// Keeps a new monitor session unless the connection was reopened or the monitor closed while
+    /// it connected (then it closes after this request).
+    async fn keep_monitor(&self, conn: ConnId, epoch: u64, closes: u64, session: SharedSession) -> SharedSession {
+        let mut live = self.live.lock().await;
+        match live.get_mut(&conn) {
+            Some(l) if self.current_epoch(conn) == epoch && l.monitor_closes == closes => l.monitor.get_or_insert(session).clone(),
+            _ => session,
+        }
+    }
+
+    /// Drops the Session Monitor session if it is still `session` (timed out or broken).
+    async fn forget_monitor(&self, conn: ConnId, session: &SharedSession) {
+        if let Some(l) = self.live.lock().await.get_mut(&conn)
+            && l.monitor.as_ref().is_some_and(|s| Arc::ptr_eq(s, session))
+        {
+            l.monitor = None;
+        }
+    }
+
     /// Drops a metadata session (timed out or broken); the next request opens a new one.
     async fn forget_meta(&self, conn: ConnId, session: &SharedSession) {
         if let Some(l) = self.live.lock().await.get_mut(&conn) {
@@ -358,6 +474,67 @@ impl State {
 
     fn meta_started(&self, conn: ConnId, catalog: bool, request_id: u64) {
         self.meta_latest.lock().unwrap_or_else(|e| e.into_inner()).insert((conn, catalog), request_id);
+    }
+
+    fn disconnect_gen(&self, conn: ConnId) -> u64 {
+        self.disconnects.lock().unwrap_or_else(|e| e.into_inner()).get(&conn).copied().unwrap_or_default()
+    }
+
+    /// The console's own Manual session for `db` (opened on first use and kept). One left from
+    /// another connection, database or generation is dropped: closing it rolls its transaction
+    /// back.
+    async fn tx_session_for(&self, console: ConsoleId, conn: ConnId, db: Option<&str>) -> anyhow::Result<Arc<Mutex<TxConn>>> {
+        // Read before the connection: a Disconnect arriving after this changes it, so a session
+        // opened meanwhile is never kept (and one kept before it is dropped by its handler).
+        let generation = self.disconnect_gen(conn);
+        let (mut cfg, target) = {
+            let live = self.live.lock().await;
+            let l = live.get(&conn).ok_or_else(|| anyhow::anyhow!(tr("The connection is not open")))?;
+            (l.cfg.clone(), db.filter(|d| !d.is_empty()).unwrap_or(&l.default_db).to_string())
+        };
+        let stale = {
+            let mut map = self.tx.lock().unwrap_or_else(|e| e.into_inner());
+            match map.get(&console) {
+                Some(t) if t.conn == conn && t.db == target && t.generation == generation => return Ok(t.session.clone()),
+                Some(_) => map.remove(&console),
+                None => None,
+            }
+        };
+        drop(stale);
+        anyhow::ensure!(cfg.driver.has_transactions(), tr("Manual transactions are not available for this engine"));
+        if cfg.driver == Driver::Postgres {
+            cfg.database = target.clone();
+        }
+        let mut session = Session::connect(&cfg).await?;
+        session.use_database(&target).await?;
+        session.manual_session().await?;
+        let session = Arc::new(Mutex::new(TxConn { session, driver: cfg.driver, db: target.clone(), tx: None }));
+        let mut map = self.tx.lock().unwrap_or_else(|e| e.into_inner());
+        // Disconnected meanwhile: it is not kept (it closes when dropped). Checked under the map's
+        // lock, so a Disconnect after the check finds it there and drops it.
+        if self.disconnect_gen(conn) != generation {
+            drop(map);
+            anyhow::bail!(tr("The connection is not open"));
+        }
+        let old = map.insert(console, TxSession { conn, db: target, generation, session: session.clone() });
+        drop(map);
+        drop(old);
+        Ok(session)
+    }
+
+    /// Drops the Manual sessions of a disconnected connection: their transactions roll back as
+    /// they close.
+    fn forget_tx(&self, conn: ConnId) {
+        let dropped: Vec<_> = self.tx.lock().unwrap_or_else(|e| e.into_inner()).extract_if(|_, t| t.conn == conn).collect();
+        drop(dropped);
+    }
+
+    /// Drops a console's Manual session if it is still `session` (it was lost).
+    fn forget_console_tx(&self, console: ConsoleId, session: &Arc<Mutex<TxConn>>) {
+        let mut map = self.tx.lock().unwrap_or_else(|e| e.into_inner());
+        let old = if map.get(&console).is_some_and(|t| Arc::ptr_eq(&t.session, session)) { map.remove(&console) } else { None };
+        drop(map);
+        drop(old);
     }
 
     /// Removes the session if it is still the same one (the connection was lost).
@@ -523,6 +700,41 @@ async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::Us
     result
 }
 
+type MonitorJob<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<T>> + Send + 'a>>;
+
+/// Runs `job` on the connection's Session Monitor session, 15 s at most; a query that can't be
+/// cancelled in time drops only that session.
+async fn on_monitor<T>(state: &State, conn: ConnId, job: impl for<'a> FnOnce(&'a mut Session, Driver) -> MonitorJob<'a, T>) -> Result<T, String> {
+    let Some(cfg) = state.live.lock().await.get(&conn).map(|l| l.cfg.clone()) else {
+        return Err(tr("The connection is not open").into());
+    };
+    if !crate::db::sessions::supported(cfg.driver) {
+        return Err(tr("Session monitoring is not available for this engine").into());
+    }
+    let redact = |e: anyhow::Error| {
+        let message = format!("{e:#}");
+        if cfg.password.is_empty() { message } else { message.replace(&cfg.password, "[redacted]") }
+    };
+    let session = state.monitor_session(conn).await.map_err(redact)?;
+    let mut s = session.lock().await;
+    let cancel = s.cancel_handle();
+    let (result, broken) = match tokio::time::timeout(std::time::Duration::from_secs(15), job(&mut s, cfg.driver)).await {
+        Ok(result) => (result.map_err(redact), s.is_closed()),
+        Err(_) => {
+            let cancelled = match cancel {
+                Some(h) => tokio::time::timeout(std::time::Duration::from_secs(2), h.cancel()).await.is_ok_and(|r| r.is_ok()),
+                None => false,
+            };
+            (Err(tr("The session monitor request timed out").into()), !cancelled)
+        }
+    };
+    drop(s);
+    if broken {
+        state.forget_monitor(conn, &session).await;
+    }
+    result
+}
+
 fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<std::path::PathBuf> {
     use std::io::Write;
     let parent = path.parent().filter(|p| p.is_dir()).ok_or_else(|| anyhow::anyhow!(tr("Choose an existing destination directory")))?;
@@ -630,6 +842,30 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             vec![Response::DatabaseChoices { conn, result }]
         }
         Request::Users { conn, request } => vec![Response::Users { conn, result: fetch_users(state, conn, &request).await }],
+        Request::Sessions { conn, request_id } => {
+            let epoch = state.current_epoch(conn);
+            let result = on_monitor(state, conn, |s, driver| Box::pin(crate::db::sessions::list(s, driver))).await;
+            vec![Response::Sessions { conn, request_id, epoch, result }]
+        }
+        Request::SessionAction { conn, request_id, epoch, action } => {
+            let read_only = state.live.lock().await.get(&conn).is_none_or(|l| l.cfg.read_only);
+            // The ids of a list read before a reconnect may name other sessions by now.
+            let result = if state.current_epoch(conn) != epoch {
+                Err(tr("The list is from an earlier connection; refresh and try again").into())
+            } else if read_only {
+                Err(tr("Read-only connection").into())
+            } else {
+                on_monitor(state, conn, move |s, driver| Box::pin(async move { crate::db::sessions::act(s, driver, &action).await })).await
+            };
+            vec![Response::SessionAction { conn, request_id, result }]
+        }
+        Request::CloseSessionMonitor(conn) => {
+            if let Some(l) = state.live.lock().await.get_mut(&conn) {
+                l.monitor = None;
+                l.monitor_closes += 1;
+            }
+            Vec::new()
+        }
         Request::RunScript { conn, db, files, run } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             match cfg {
@@ -720,7 +956,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                     }
                     let mut sessions = HashMap::new();
                     sessions.insert(String::new(), Arc::new(Mutex::new(session)));
-                    live.insert(conn, Live { cfg, default_db, sessions, meta: HashMap::new() });
+                    live.insert(conn, Live { cfg, default_db, sessions, meta: HashMap::new(), monitor: None, monitor_closes: 0 });
                     vec![Response::Connected { conn, databases }]
                 }
                 Err(e) if state.current_epoch(conn) == epoch => {
@@ -735,6 +971,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
         }
         Request::Disconnect(conn) => {
             state.live.lock().await.remove(&conn);
+            state.forget_tx(conn);
             vec![Response::Disconnected(conn)]
         }
         Request::Refresh(conn) => {
@@ -927,7 +1164,22 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             }
             vec![]
         }
-        Request::Execute { conn, db, console, statements, max_rows } => {
+        Request::EndTransaction { console, commit } => vec![end_transaction(state, console, commit).await],
+        Request::ReleaseConsole { console } => {
+            let old = state.tx.lock().unwrap_or_else(|e| e.into_inner()).remove(&console);
+            // Roll back explicitly when the session is idle; a busy one rolls back as it closes.
+            if let Some(t) = old
+                && let Ok(mut t) = t.session.try_lock()
+                && t.tx.take().is_some()
+            {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), t.session.end_transaction(false)).await;
+            }
+            vec![]
+        }
+        Request::Execute { conn, db, console, statements, max_rows, manual: true } => {
+            Box::pin(execute_manual(state, conn, db, console, statements, max_rows)).await
+        }
+        Request::Execute { conn, db, console, statements, max_rows, manual: false } => {
             use std::sync::atomic::Ordering::SeqCst;
             let start = Instant::now();
             let running = Arc::new(Running::default());
@@ -1015,6 +1267,231 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             out
         }
     }
+}
+
+/// `Execute` in Manual mode: on the console's own session, inside the transaction it keeps open.
+/// The transaction begins before the first statement that doesn't itself control it.
+async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console: ConsoleId, statements: Vec<String>, max_rows: usize) -> Vec<Response> {
+    use crate::db::transaction::{self, Control};
+    use std::sync::atomic::Ordering::SeqCst;
+    let start = Instant::now();
+    let running = Arc::new(Running::default());
+    state.running.lock().unwrap_or_else(|e| e.into_inner()).insert(console, running.clone());
+    let unregister = |state: &State| {
+        let mut map = state.running.lock().unwrap_or_else(|e| e.into_inner());
+        if map.get(&console).is_some_and(|r| Arc::ptr_eq(r, &running)) {
+            map.remove(&console);
+        }
+    };
+    let shared = match state.tx_session_for(console, conn, db.as_deref()).await {
+        Ok(s) => s,
+        Err(e) => {
+            unregister(state);
+            let error = Some(format!("{e:#}"));
+            return vec![Response::Executed { console, results: vec![], error, elapsed: start.elapsed() }, Response::Transaction { console, tx: None, note: None }];
+        }
+    };
+    let mut guard = shared.lock().await;
+    let t = &mut *guard;
+    *running.native.lock().unwrap_or_else(|e| e.into_inner()) = t.session.cancel_handle();
+    let driver = t.driver;
+    let statements_tail = statements.last().cloned();
+    let (mut results, mut error, mut abandoned, mut note) = (Vec::new(), None, false, None);
+    let mut broken = false;
+    let db = t.db.clone();
+    if let Err(e) = t.session.use_database(&db).await {
+        error = Some(format!("{e:#}"));
+    }
+    let statements = if error.is_some() { Vec::new() } else { statements };
+    for stmt in statements {
+        // As in `Execute`: `in_flight` first, so either side sees the other.
+        running.in_flight.store(true, SeqCst);
+        if running.cancelled.load(SeqCst) {
+            running.in_flight.store(false, SeqCst);
+            break;
+        }
+        let control = transaction::control(driver, &stmt);
+        let mut result = Ok(Vec::new());
+        if t.tx.is_none() && control.is_none() {
+            result = tokio::select! {
+                r = t.session.begin() => r.map(|()| Vec::new()),
+                _ = running.abandon.notified() => {
+                    abandoned = true;
+                    Err(anyhow::anyhow!(tr("Query cancelled")))
+                }
+            };
+            if result.is_ok() {
+                t.tx = Some(TxInfo { began: Instant::now(), statements: 0, aborted: false });
+            }
+        }
+        let was_open = t.tx.is_some();
+        let was_aborted = t.tx.is_some_and(|tx| tx.aborted);
+        if result.is_ok() {
+            result = tokio::select! {
+                r = t.session.execute(&stmt, max_rows) => r,
+                _ = running.abandon.notified() => {
+                    abandoned = true;
+                    Err(anyhow::anyhow!(tr("Query cancelled")))
+                }
+            };
+        }
+        running.in_flight.store(false, SeqCst);
+        let failed = match result {
+            Ok(rs) => {
+                results.extend(rs);
+                None
+            }
+            Err(e) => Some(format!("{e:#}")),
+        };
+        if abandoned {
+            error = failed;
+            break;
+        }
+        // The user turned autocommit back on: the session goes back to never committing by itself.
+        if control == Some(Control::Autocommit)
+            && !t.session.is_closed()
+            && let Err(e) = t.session.manual_session().await
+        {
+            broken = true;
+            error = Some(format!("{e:#}"));
+            break;
+        }
+        // Where the transaction stands now: asked where the engine can tell, else followed. When
+        // unsure it stays open: the session never commits by itself, so later statements are
+        // still uncommitted and the guards keep asking.
+        let server = if t.session.is_closed() { None } else { t.session.transaction_state().await };
+        if let (Some((_, doomed)), Some(tx)) = (server, t.tx.as_mut()) {
+            tx.aborted = doomed;
+        }
+        let after = transaction::after(driver, &stmt, failed.as_deref(), was_open, was_aborted, server.map(|(open, _)| open));
+        if after.maybe_committed {
+            note = Some(TxNote::MaybeCommitted);
+        }
+        match (after.open, t.tx.as_mut()) {
+            (true, Some(tx)) if after.implicit => {
+                *tx = TxInfo { began: Instant::now(), statements: 0, aborted: false };
+                note = Some(TxNote::ImplicitCommit);
+            }
+            (true, Some(tx)) => {
+                if failed.is_none() && control.is_none() {
+                    tx.statements += 1;
+                }
+                // Any error aborts a PostgreSQL transaction until it rolls back (or to a savepoint).
+                if driver == Driver::Postgres {
+                    if failed.is_some() {
+                        tx.aborted = true;
+                    } else if control == Some(Control::RollbackTo) {
+                        tx.aborted = false;
+                    }
+                }
+            }
+            (true, None) => t.tx = Some(TxInfo { began: Instant::now(), statements: 0, aborted: false }),
+            (false, _) => {
+                if after.rolled_back {
+                    note = Some(TxNote::RolledBack);
+                }
+                t.tx = None;
+            }
+        }
+        if failed.is_some() {
+            error = failed;
+            break;
+        }
+    }
+    if error.is_some()
+        && !abandoned
+        && let Some(last) = statements_tail.filter(|s| s.trim().eq_ignore_ascii_case("SET SHOWPLAN_TEXT OFF"))
+    {
+        let _ = t.session.execute(&last, 0).await;
+    }
+    unregister(state);
+    if running.cancelled.load(SeqCst) {
+        error = Some(tr("Query cancelled").to_string());
+    }
+    // A lost session (or an abandoned query, which closes it) takes its transaction with it.
+    let lost = abandoned || broken || t.session.is_closed();
+    if lost && t.tx.take().is_some() {
+        note = Some(TxNote::Lost);
+    }
+    // Released meanwhile (tab closed, disconnected…): the app already reported the rollback, so
+    // the transaction ends here instead of coming back.
+    let released = !lost && !state.tx.lock().unwrap_or_else(|e| e.into_inner()).get(&console).is_some_and(|x| Arc::ptr_eq(&x.session, &shared));
+    if released && t.tx.take().is_some() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), t.session.end_transaction(false)).await;
+        note = None;
+    }
+    let tx = t.tx;
+    drop(guard);
+    if lost {
+        state.forget_console_tx(console, &shared);
+    }
+    vec![Response::Executed { console, results, error, elapsed: start.elapsed() }, Response::Transaction { console, tx, note }]
+}
+
+/// Longest wait for a console's COMMIT or ROLLBACK before its session is closed.
+const END_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `EndTransaction`: COMMIT or ROLLBACK on the console's own session.
+async fn end_transaction(state: &State, console: ConsoleId, commit: bool) -> Response {
+    let start = Instant::now();
+    let shared = state.tx.lock().unwrap_or_else(|e| e.into_inner()).get(&console).map(|t| t.session.clone());
+    let Some(shared) = shared else {
+        return Response::TransactionEnded { console, commit, result: Err(tr("No transaction is open").into()), tx: None, elapsed: start.elapsed() };
+    };
+    // Stop (Request::Cancel) and a time limit reach it like a running statement.
+    let running = Arc::new(Running::default());
+    state.running.lock().unwrap_or_else(|e| e.into_inner()).insert(console, running.clone());
+    let mut guard = shared.lock().await;
+    let t = &mut *guard;
+    *running.native.lock().unwrap_or_else(|e| e.into_inner()) = t.session.cancel_handle();
+    running.in_flight.store(true, std::sync::atomic::Ordering::SeqCst);
+    let rollback_failed = commit && t.tx.is_some_and(|tx| tx.aborted);
+    let end = async {
+        match t.tx {
+            None => Err(tr("No transaction is open").to_string()),
+            // PostgreSQL answers COMMIT with a rollback here: say so instead.
+            Some(_) if rollback_failed => match t.session.end_transaction(false).await {
+                Ok(()) => Err(tr("The transaction had failed, so it was rolled back; nothing was committed").to_string()),
+                Err(e) => Err(format!("{e:#}")),
+            },
+            Some(_) => t.session.end_transaction(commit).await.map_err(|e| format!("{e:#}")),
+        }
+    };
+    let (result, stopped) = tokio::select! {
+        r = tokio::time::timeout(END_TIMEOUT, end) => match r {
+            Ok(r) => (r, false),
+            Err(_) => (Ok(()), true),
+        },
+        _ = running.abandon.notified() => (Ok(()), true),
+    };
+    running.in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+    {
+        let mut map = state.running.lock().unwrap_or_else(|e| e.into_inner());
+        if map.get(&console).is_some_and(|r| Arc::ptr_eq(r, &running)) {
+            map.remove(&console);
+        }
+    }
+    // Stopped or too slow: the session is closed, which rolls back what didn't commit.
+    let result = match stopped {
+        true if commit => Err(tr("The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown").to_string()),
+        true => Err(tr("The rollback was stopped: the console's session was closed, which rolls the transaction back").to_string()),
+        false => result,
+    };
+    // A failed COMMIT can leave it open: where the engine says so (SQLite: database busy), and
+    // when unsure except on PostgreSQL and Oracle, which roll back on a failed COMMIT.
+    let lost = stopped || t.session.is_closed();
+    let server = if lost { None } else { t.session.transaction_state().await };
+    t.tx = match server {
+        Some((true, doomed)) => t.tx.map(|tx| TxInfo { aborted: doomed, ..tx }),
+        None if result.is_err() && !lost && !matches!(t.driver, Driver::Postgres | Driver::Oracle) => t.tx,
+        _ => None,
+    };
+    let tx = t.tx;
+    drop(guard);
+    if lost {
+        state.forget_console_tx(console, &shared);
+    }
+    Response::TransactionEnded { console, commit, result, tx, elapsed: start.elapsed() }
 }
 
 fn report_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
@@ -1173,12 +1650,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_actions_need_the_list_epoch_and_closing_drops_the_monitor_session() {
+        use crate::db::sessions::{Action, ActionKind};
+        let state = State::default();
+        let path = std::env::temp_dir().join(format!("datacraft-monitor-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&path).unwrap();
+        let mut cfg = ConnectionConfig::new(8, Driver::Sqlite);
+        cfg.file_path = path.display().to_string();
+        let monitor = Arc::new(Mutex::new(Session::connect(&cfg).await.unwrap()));
+        let late = Arc::new(Mutex::new(Session::connect(&cfg).await.unwrap()));
+        state.live.lock().await.insert(8, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: Some(monitor), monitor_closes: 0 });
+        state.bump_if_lifecycle(&Request::Disconnect(8));
+        let action = Action::new(ActionKind::Terminate, &crate::db::sessions::SessionRow { id: "1".into(), ..Default::default() });
+        let stale = Request::SessionAction { conn: 8, request_id: 1, epoch: 0, action };
+        let responses = Box::pin(handle(stale, 0, &state)).await;
+        let [Response::SessionAction { result: Err(error), .. }] = responses.as_slice() else { panic!("expected a refusal") };
+        assert_eq!(error, tr("The list is from an earlier connection; refresh and try again"));
+        let (epoch, closes) = (state.current_epoch(8), 0);
+        assert!(Box::pin(handle(Request::CloseSessionMonitor(8), 0, &state)).await.is_empty());
+        assert!(state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_none()));
+        // A session that finished connecting after the window closed serves its request only.
+        let used = state.keep_monitor(8, epoch, closes, late.clone()).await;
+        assert!(Arc::ptr_eq(&used, &late));
+        assert!(state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_none()), "not kept after a close");
+        let kept = state.keep_monitor(8, epoch, 1, late.clone()).await;
+        assert!(Arc::ptr_eq(&kept, &late) && state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_some()));
+        drop((used, kept, late));
+        state.live.lock().await.clear();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
     async fn grants_worker_rejects_read_only_and_invalidated_connection_requests() {
         use crate::db::table_privileges::{Edit, Principal, Request as GrantsRequest};
         let state = State::default();
         let mut cfg = ConnectionConfig::new(7, Driver::Sqlite);
         cfg.read_only = true;
-        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new() });
+        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None, monitor_closes: 0 });
         let request = |id| Request::TableGrants {
             conn: 7,
             db: "main".into(),
@@ -1283,7 +1791,7 @@ mod tests {
         let mut cfg = ConnectionConfig::new(71, Driver::Sqlite);
         cfg.password = secret.into();
         cfg.file_path = std::env::temp_dir().join(format!("datacraft-missing-{secret}-{}.db", uuid::Uuid::new_v4())).to_string_lossy().into_owned();
-        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new() });
+        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None, monitor_closes: 0 });
         let request = Request::TableDuplicate {
             conn: 71,
             db: "main".into(),
@@ -1342,6 +1850,119 @@ mod tests {
         assert_eq!(def.spec.unwrap().body.trim(), "select n * 2");
         w.send(Request::RunDdl { conn: 32, db: None, statements: vec!["drop function public.dc_worker_twice(integer)".into()], close_db: None, transaction: false });
         wait_for(&w, |r| matches!(r, Response::DdlDone { conn: 32, result: Ok(_) }));
+    }
+
+    /// The Session Monitor on a real PostgreSQL (DATACRAFT_PG_HOST, as `db::postgres`'s tests): the
+    /// list doesn't wait behind a console's running query, cancelling that query keeps the
+    /// console's session, and a read-only connection lists but refuses actions.
+    #[test]
+    #[ignore]
+    fn postgres_session_monitor_through_the_worker() {
+        use crate::db::sessions::{Action, ActionKind};
+        let Ok(host) = std::env::var("DATACRAFT_PG_HOST") else { return };
+        let var = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let mut cfg = ConnectionConfig::new(33, Driver::Postgres);
+        cfg.host = host;
+        cfg.port = var("DATACRAFT_PG_PORT", "5432").parse().unwrap();
+        cfg.user = var("DATACRAFT_PG_USER", "postgres");
+        cfg.password = var("DATACRAFT_PG_PASSWORD", "");
+        cfg.database = var("DATACRAFT_PG_DB", "postgres");
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(cfg.clone()));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select pg_sleep(30) /* dc monitor test */".into()], max_rows: 10, manual: false });
+        let started = Instant::now();
+        let (mut row, mut epoch, mut monitor_pid) = (None, 0, String::new());
+        for request_id in 1..=50 {
+            w.send(Request::Sessions { conn: 33, request_id });
+            let Response::Sessions { result, epoch: listed, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: id, .. } if *id == request_id)) else { unreachable!() };
+            let rows = result.unwrap().rows;
+            (epoch, monitor_pid) = (listed, rows.iter().find(|r| r.own).map(|r| r.id.clone()).unwrap_or_default());
+            row = rows.into_iter().find(|r| r.query.contains("dc monitor test") && r.state == "active" && !r.own);
+            if row.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let row = row.expect("the console's query is listed while it runs");
+        assert!(started.elapsed() < Duration::from_secs(10), "the list did not wait for the console");
+        w.send(Request::SessionAction { conn: 33, request_id: 900, epoch, action: Action::new(ActionKind::Cancel, &row) });
+        // Both replies, in whichever order they arrive.
+        let (mut cancelled, mut executed) = (None, None);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while (cancelled.is_none() || executed.is_none()) && Instant::now() < deadline {
+            for r in w.poll() {
+                match r {
+                    Response::SessionAction { request_id: 900, result, .. } => cancelled = Some(result),
+                    Response::Executed { console: 330, error, .. } => executed = Some(error),
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(cancelled, Some(Ok(())));
+        assert!(executed.expect("the console's query ended").is_some(), "the console's query was cancelled");
+        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select 1".into()], max_rows: 10, manual: false });
+        let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 330, .. })) else { unreachable!() };
+        assert_eq!((error, results[0].rows[0][0].as_deref()), (None, Some("1")), "the console's session survived");
+
+        // Closing the last monitor window closes its session on the server.
+        w.send(Request::CloseSessionMonitor(33));
+        let mut probe = cfg.clone();
+        probe.id = 37;
+        w.send(Request::Connect(probe));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 37, .. }));
+        let mut gone = false;
+        for request_id in 100..150 {
+            w.send(Request::Sessions { conn: 37, request_id });
+            let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: id, .. } if *id == request_id)) else { unreachable!() };
+            gone = !result.unwrap().rows.iter().any(|r| r.id == monitor_pid);
+            if gone {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(gone && !monitor_pid.is_empty(), "the monitor session {monitor_pid} was closed");
+
+        // After a reconnect, an action from the earlier list is refused.
+        w.send(Request::Disconnect(33));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(33)));
+        w.send(Request::Connect(cfg.clone()));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        w.send(Request::SessionAction { conn: 33, request_id: 901, epoch, action: Action::new(ActionKind::Terminate, &row) });
+        let Response::SessionAction { result, .. } = wait_for(&w, |r| matches!(r, Response::SessionAction { request_id: 901, .. })) else { unreachable!() };
+        assert_eq!(result, Err(tr("The list is from an earlier connection; refresh and try again").into()));
+
+        cfg.id = 34;
+        cfg.read_only = true;
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 34, .. }));
+        w.send(Request::Sessions { conn: 34, request_id: 1 });
+        let Response::Sessions { result, epoch, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { conn: 34, .. })) else { unreachable!() };
+        let own = result.unwrap().rows.into_iter().find(|r| r.own).expect("listed on a read-only connection");
+        w.send(Request::SessionAction { conn: 34, request_id: 2, epoch, action: Action::new(ActionKind::Terminate, &own) });
+        let Response::SessionAction { result, .. } = wait_for(&w, |r| matches!(r, Response::SessionAction { conn: 34, .. })) else { unreachable!() };
+        assert_eq!(result, Err(tr("Read-only connection").into()));
+    }
+
+    #[test]
+    fn session_monitor_is_refused_on_engines_without_sessions() {
+        let path = std::env::temp_dir().join(format!("datacraft-sessions-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&path).unwrap();
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(35, Driver::Sqlite);
+        cfg.file_path = path.display().to_string();
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 35, .. }));
+        w.send(Request::Sessions { conn: 35, request_id: 4 });
+        let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: 4, .. })) else { unreachable!() };
+        assert_eq!(result.unwrap_err(), tr("Session monitoring is not available for this engine"));
+        w.send(Request::Sessions { conn: 36, request_id: 5 });
+        let Response::Sessions { result, .. } = wait_for(&w, |r| matches!(r, Response::Sessions { request_id: 5, .. })) else { unreachable!() };
+        assert_eq!(result.unwrap_err(), tr("The connection is not open"));
+        w.send(Request::Disconnect(35));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(35)));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -1418,14 +2039,14 @@ mod tests {
         wait_for(&w, |r| matches!(r, Response::Connected { .. }));
         // Endless recursive CTE: only a cancel stops it.
         let endless = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c".to_string();
-        w.send(Request::Execute { conn: 7, db: None, console: 1, statements: vec![endless], max_rows: 10 });
+        w.send(Request::Execute { conn: 7, db: None, console: 1, statements: vec![endless], max_rows: 10, manual: false });
         std::thread::sleep(Duration::from_millis(300));
         w.send(Request::Cancel { console: 1 });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 1, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert_eq!(error.as_deref(), Some(tr("Query cancelled")));
         // The session is still usable.
-        w.send(Request::Execute { conn: 7, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10 });
+        w.send(Request::Execute { conn: 7, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10, manual: false });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 2, .. }));
         let Response::Executed { error, results, .. } = r else { unreachable!() };
         assert!(error.is_none() && results.len() == 1);
@@ -1437,7 +2058,7 @@ mod tests {
         let w = Worker::start(egui::Context::default());
         w.send(Request::Connect(cfg));
         wait_for(&w, |r| matches!(r, Response::Connected { .. }));
-        w.send(Request::Execute { conn, db: None, console: 3, statements: vec![write.into()], max_rows: 10 });
+        w.send(Request::Execute { conn, db: None, console: 3, statements: vec![write.into()], max_rows: 10, manual: false });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 3, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert!(error.is_some(), "the server accepted a write on a read-only connection");
@@ -1469,7 +2090,7 @@ mod tests {
         w.send(Request::RunDdl { conn, db: None, statements, close_db: None, transaction: true });
         let Response::DdlDone { result, .. } = wait_for(&w, |r| matches!(r, Response::DdlDone { .. })) else { unreachable!() };
         assert!(result.is_err());
-        w.send(Request::Execute { conn, db: None, console: 4, statements: vec![format!("select count(*) from {table}")], max_rows: 10 });
+        w.send(Request::Execute { conn, db: None, console: 4, statements: vec![format!("select count(*) from {table}")], max_rows: 10, manual: false });
         let Response::Executed { results, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 4, .. })) else { unreachable!() };
         assert_eq!(results[0].rows[0][0].as_deref(), Some("0"));
         w.send(Request::RunDdl { conn, db: None, statements: vec![format!("drop table {table}")], close_db: None, transaction: false });
@@ -1544,7 +2165,7 @@ mod tests {
             transaction: false,
         });
         wait_for(&w, |r| matches!(r, Response::DdlDone { result: Ok(_), .. }));
-        w.send(Request::Execute { conn, db: None, console: 4, statements: vec!["select sleep(4)".into()], max_rows: 10 });
+        w.send(Request::Execute { conn, db: None, console: 4, statements: vec!["select sleep(4)".into()], max_rows: 10, manual: false });
         std::thread::sleep(Duration::from_millis(300));
         let start = Instant::now();
         for request_id in 1..=3 {
@@ -1648,14 +2269,14 @@ mod tests {
         w.send(Request::Connect(cfg));
         wait_for(&w, |r| matches!(r, Response::Connected { .. }));
         let start = Instant::now();
-        w.send(Request::Execute { conn: 8, db: None, console: 1, statements: vec!["select sleep(30)".into()], max_rows: 10 });
+        w.send(Request::Execute { conn: 8, db: None, console: 1, statements: vec!["select sleep(30)".into()], max_rows: 10, manual: false });
         std::thread::sleep(Duration::from_millis(500));
         w.send(Request::Cancel { console: 1 });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 1, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert_eq!(error.as_deref(), Some(tr("Query cancelled")));
         assert!(start.elapsed() < Duration::from_secs(10));
-        w.send(Request::Execute { conn: 8, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10 });
+        w.send(Request::Execute { conn: 8, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10, manual: false });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 2, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
@@ -1941,7 +2562,7 @@ mod tests {
     }
 
     fn first_rows(w: &Worker, conn: ConnId, console: ConsoleId, statements: &[&str]) -> Vec<ResultSet> {
-        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100 });
+        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100, manual: false });
         let r = wait_for(w, |r| matches!(r, Response::Executed { console: c, .. } if *c == console));
         let Response::Executed { results, error, .. } = r else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
@@ -2225,7 +2846,7 @@ mod tests {
         assert!(!d.columns[2].nullable);
         assert_eq!(d.columns[2].default.as_deref(), Some("1"));
         // The rows survive, under the new names.
-        w.send(Request::Execute { conn, db: None, console: 5, statements: vec!["select id, title, price from dc_goods".into()], max_rows: 10 });
+        w.send(Request::Execute { conn, db: None, console: 5, statements: vec!["select id, title, price from dc_goods".into()], max_rows: 10, manual: false });
         let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 5, .. })) else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
         assert_eq!(results[0].rows, vec![vec![Some("1".into()), Some("pen".into()), Some("3".into())]]);
@@ -2291,7 +2912,7 @@ mod tests {
         assert!(d.autoincrement);
         assert_eq!(d.columns[1].data_type, "bigint");
         assert!(!d.columns[1].nullable);
-        w.send(Request::Execute { conn: 14, db: None, console: 6, statements: vec!["select n from dc_view".into()], max_rows: 10 });
+        w.send(Request::Execute { conn: 14, db: None, console: 6, statements: vec!["select n from dc_view".into()], max_rows: 10, manual: false });
         let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 6, .. })) else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
         assert_eq!(results[0].rows, vec![vec![Some("1".into())]]);
@@ -2357,5 +2978,378 @@ mod tests {
             assert_eq!(n.as_deref(), Some("2"), "kept: {error}");
         }
         first_rows(&w, 46, 4, &["db.partial.drop()"]);
+    }
+
+    /// A Manual `Execute`: (results, error, the transaction after it, why it ended).
+    fn manual_run(w: &Worker, conn: ConnId, console: ConsoleId, statements: &[&str]) -> (Vec<ResultSet>, Option<String>, Option<TxInfo>, Option<TxNote>) {
+        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100, manual: true });
+        manual_reply(w, console)
+    }
+
+    /// The `Executed` and `Transaction` of a console's Manual run (`wait_for` would drop the second).
+    fn manual_reply(w: &Worker, console: ConsoleId) -> (Vec<ResultSet>, Option<String>, Option<TxInfo>, Option<TxNote>) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut executed = None;
+        while Instant::now() < deadline {
+            for r in w.poll() {
+                match r {
+                    Response::Executed { console: c, results, error, .. } if c == console => executed = Some((results, error)),
+                    Response::Transaction { console: c, tx, note } if c == console => {
+                        let (results, error) = executed.take().expect("Executed comes first");
+                        return (results, error, tx, note);
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("timed out waiting for the Manual run");
+    }
+
+    fn end_tx(w: &Worker, console: ConsoleId, commit: bool) -> (Result<(), String>, Option<TxInfo>) {
+        w.send(Request::EndTransaction { console, commit });
+        let r = wait_for(w, |r| matches!(r, Response::TransactionEnded { console: c, .. } if *c == console));
+        let Response::TransactionEnded { result, tx, commit: c, .. } = r else { unreachable!() };
+        assert_eq!(c, commit);
+        (result, tx)
+    }
+
+    /// `select count(*)` on the connection's shared session (another console in Auto mode).
+    fn shared_count(w: &Worker, conn: ConnId, console: ConsoleId, table: &str) -> String {
+        let rs = first_rows(w, conn, console, &[&format!("select count(*) from {table}")]);
+        rs[0].rows[0][0].clone().unwrap_or_default()
+    }
+
+    fn sqlite_tx_db(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("datacraft-tx-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        rusqlite::Connection::open(&path).unwrap().execute_batch("create table t(x)").unwrap();
+        (dir, path)
+    }
+
+    /// Rows of `t` and whether the file takes a write, read straight from the file.
+    fn sqlite_file_state(path: &std::path::Path) -> (i64, bool) {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(Duration::ZERO).unwrap();
+        let rows = db.query_row("select count(*) from t", [], |r| r.get(0)).unwrap();
+        let writable = db.execute_batch("begin immediate; rollback").is_ok();
+        (rows, writable)
+    }
+
+    #[test]
+    fn sqlite_manual_transactions_roll_back_and_commit() {
+        let (dir, path) = sqlite_tx_db("commit");
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(sqlite_cfg(30, &path)));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 30, .. }));
+
+        let (_, error, tx, note) = manual_run(&w, 30, 1, &["insert into t values (1)"]);
+        assert!(error.is_none(), "{error:?}");
+        let tx = tx.expect("the transaction stays open");
+        assert_eq!((tx.statements, tx.aborted, note), (1, false, None));
+        // Another console reads on the shared session: not blocked, and it doesn't see the row.
+        assert_eq!(shared_count(&w, 30, 2, "t"), "0");
+        assert_eq!(sqlite_file_state(&path), (0, false), "the console's session holds the write lock");
+
+        let (result, tx) = end_tx(&w, 1, false);
+        assert!(result.is_ok() && tx.is_none(), "{result:?}");
+        assert_eq!(shared_count(&w, 30, 2, "t"), "0");
+        assert_eq!(sqlite_file_state(&path), (0, true), "rolled back: nothing persisted");
+
+        // The transaction spans runs and counts their statements.
+        manual_run(&w, 30, 1, &["insert into t values (2)"]);
+        let (_, _, tx, _) = manual_run(&w, 30, 1, &["insert into t values (3)", "select * from t"]);
+        assert_eq!(tx.map(|t| t.statements), Some(3));
+        assert_eq!(shared_count(&w, 30, 2, "t"), "0");
+        let (result, tx) = end_tx(&w, 1, true);
+        assert!(result.is_ok() && tx.is_none(), "{result:?}");
+        assert_eq!(shared_count(&w, 30, 2, "t"), "2");
+        assert_eq!(sqlite_file_state(&path), (2, true), "committed");
+
+        // A COMMIT typed in the console ends it too; nothing is left to commit.
+        let (_, error, tx, _) = manual_run(&w, 30, 1, &["insert into t values (4)", "commit"]);
+        assert!(error.is_none() && tx.is_none(), "{error:?} {tx:?}");
+        assert_eq!(end_tx(&w, 1, true).0, Err(tr("No transaction is open").to_string()));
+        assert_eq!(sqlite_file_state(&path), (3, true));
+
+        // Leaving Manual mode releases the session, rolling back what it held.
+        manual_run(&w, 30, 1, &["insert into t values (5)"]);
+        w.send(Request::ReleaseConsole { console: 1 });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while sqlite_file_state(&path) != (3, true) {
+            assert!(Instant::now() < deadline, "the released session still holds its transaction");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sqlite_manual_cancel_keeps_the_transaction_and_disconnect_drops_it() {
+        let (dir, path) = sqlite_tx_db("cancel");
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(sqlite_cfg(31, &path)));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 31, .. }));
+        manual_run(&w, 31, 1, &["insert into t values (1)"]);
+        // Endless recursive CTE on the console's own session: only a cancel stops it.
+        let endless = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c";
+        w.send(Request::Execute { conn: 31, db: None, console: 1, statements: vec![endless.into()], max_rows: 10, manual: true });
+        std::thread::sleep(Duration::from_millis(300));
+        w.send(Request::Cancel { console: 1 });
+        let (_, error, tx, note) = manual_reply(&w, 1);
+        assert_eq!(error.as_deref(), Some(tr("Query cancelled")));
+        // An interrupted read leaves SQLite's transaction (and the insert) in place.
+        assert_eq!((tx.map(|t| t.statements), note), (Some(1), None));
+        let (rs, error, tx, _) = manual_run(&w, 31, 1, &["select count(*) from t"]);
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(rs[0].rows[0][0].as_deref(), Some("1"));
+        assert!(tx.is_some());
+
+        w.send(Request::Disconnect(31));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(31)));
+        assert_eq!(sqlite_file_state(&path), (0, true), "disconnecting rolled the transaction back");
+        w.send(Request::Connect(sqlite_cfg(31, &path)));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 31, .. }));
+        assert_eq!(end_tx(&w, 1, true).0, Err(tr("No transaction is open").to_string()));
+        // The next Manual run opens a new session and transaction.
+        let (_, error, tx, _) = manual_run(&w, 31, 1, &["insert into t values (2)"]);
+        assert!(error.is_none() && tx.is_some_and(|t| t.statements == 1), "{error:?}");
+        assert_eq!(end_tx(&w, 1, true).0, Ok(()));
+        assert_eq!(sqlite_file_state(&path), (1, true));
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sqlite_manual_transaction_survives_a_reconnect_and_a_released_run_ends_it() {
+        let (dir, path) = sqlite_tx_db("reconnect");
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(sqlite_cfg(35, &path)));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 35, .. }));
+        manual_run(&w, 35, 1, &["insert into t values (1)"]);
+        // Reconnecting the data source (as after a lost shared session) keeps the Manual session.
+        w.send(Request::Connect(sqlite_cfg(35, &path)));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 35, .. }));
+        let (_, error, tx, _) = manual_run(&w, 35, 1, &["insert into t values (2)"]);
+        assert!(error.is_none() && tx.is_some_and(|t| t.statements == 2), "{error:?}");
+        assert_eq!(end_tx(&w, 1, true), (Ok(()), None));
+        assert_eq!(sqlite_file_state(&path), (2, true));
+
+        // Released while a statement runs (tab closed, disconnected…): the reply doesn't bring
+        // the transaction back, and it is rolled back.
+        manual_run(&w, 35, 2, &["insert into t values (3)"]);
+        let endless = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c";
+        w.send(Request::Execute { conn: 35, db: None, console: 2, statements: vec![endless.into()], max_rows: 10, manual: true });
+        std::thread::sleep(Duration::from_millis(300));
+        w.send(Request::ReleaseConsole { console: 2 });
+        std::thread::sleep(Duration::from_millis(100));
+        w.send(Request::Cancel { console: 2 });
+        let (_, error, tx, note) = manual_reply(&w, 2);
+        assert_eq!((error.as_deref(), tx, note), (Some(tr("Query cancelled")), None, None));
+        assert_eq!(sqlite_file_state(&path), (2, true), "rolled back");
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The shared main session's loss leaves the Manual sessions alone; only a Disconnect
+    /// (counted when it arrives) retires them, even one opened while it was on its way.
+    #[tokio::test]
+    async fn manual_sessions_outlive_the_shared_session_until_a_disconnect() {
+        let (dir, path) = sqlite_tx_db("generation");
+        let state = State::default();
+        let cfg = sqlite_cfg(36, &path);
+        let live = |main: &SharedSession| Live { cfg: cfg.clone(), default_db: "main".into(), sessions: HashMap::from([(String::new(), main.clone())]), meta: HashMap::new(), monitor: None, monitor_closes: 0 };
+        let main: SharedSession = Arc::new(Mutex::new(Session::connect(&cfg).await.unwrap()));
+        state.live.lock().await.insert(36, live(&main));
+        let first = state.tx_session_for(1, 36, None).await.unwrap();
+        state.forget(36, &main).await;
+        assert!(state.live.lock().await.get(&36).is_none(), "the connection lost its shared session");
+        assert!(state.tx.lock().unwrap().get(&1).is_some_and(|t| Arc::ptr_eq(&t.session, &first)), "the Manual session stays");
+        state.live.lock().await.insert(36, live(&main));
+        assert!(Arc::ptr_eq(&state.tx_session_for(1, 36, None).await.unwrap(), &first), "reused after the reconnect");
+        // A Disconnect counted on arrival retires it, before its handler even runs.
+        state.bump_if_lifecycle(&Request::Disconnect(36));
+        let second = state.tx_session_for(1, 36, None).await.unwrap();
+        assert!(!Arc::ptr_eq(&second, &first));
+        state.forget_tx(36);
+        assert!(state.tx.lock().unwrap().is_empty());
+        drop((first, second, main));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sqlite_manual_mode_keeps_read_only_and_engine_limits() {
+        let (dir, path) = sqlite_tx_db("ro");
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = sqlite_cfg(32, &path);
+        cfg.read_only = true;
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 32, .. }));
+        // Reads run in the transaction; the console's own session is opened read-only too.
+        let (_, error, tx, _) = manual_run(&w, 32, 1, &["select count(*) from t"]);
+        assert!(error.is_none() && tx.is_some(), "{error:?}");
+        let (_, error, _, _) = manual_run(&w, 32, 1, &["insert into t values (1)"]);
+        assert!(error.is_some_and(|e| e.contains("readonly")), "a read-only data source took a write");
+        assert_eq!(end_tx(&w, 1, false).0, Ok(()));
+        assert_eq!(sqlite_file_state(&path).0, 0);
+        drop(w);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Engines without transactions refuse Manual mode.
+        assert!(!Driver::Redis.has_transactions() && !Driver::ClickHouse.has_transactions() && Driver::Oracle.has_transactions());
+    }
+
+    /// Manual transactions on a real PostgreSQL (DATACRAFT_PG_HOST, as `db::postgres`'s tests):
+    /// rollback, commit, the aborted state after an error, savepoints, cancel, read-only and
+    /// disconnect.
+    #[test]
+    #[ignore]
+    fn postgres_manual_transactions() {
+        let Ok(host) = std::env::var("DATACRAFT_PG_HOST") else { return };
+        let var = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let mut cfg = ConnectionConfig::new(33, Driver::Postgres);
+        cfg.host = host;
+        cfg.port = var("DATACRAFT_PG_PORT", "5432").parse().unwrap();
+        cfg.user = var("DATACRAFT_PG_USER", "postgres");
+        cfg.password = var("DATACRAFT_PG_PASSWORD", "");
+        cfg.database = var("DATACRAFT_PG_DB", "postgres");
+        let table = format!("dc_manual_tx_{}", uuid::Uuid::new_v4().simple());
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(cfg.clone()));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        first_rows(&w, 33, 10, &[&format!("create table {table} (id int primary key)")]);
+        let insert = |id: i32| format!("insert into {table} values ({id})");
+
+        // Rollback: never visible, nothing persisted.
+        let (_, error, tx, _) = manual_run(&w, 33, 11, &[&insert(1)]);
+        assert!(error.is_none() && tx.is_some_and(|t| t.statements == 1 && !t.aborted), "{error:?}");
+        assert_eq!(shared_count(&w, 33, 12, &table), "0");
+        assert_eq!(end_tx(&w, 11, false), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "0");
+
+        // Commit: visible to the other console only afterwards.
+        manual_run(&w, 33, 11, &[&insert(2), &insert(3)]);
+        assert_eq!(shared_count(&w, 33, 12, &table), "0");
+        assert_eq!(end_tx(&w, 11, true), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "2");
+
+        // An error aborts the transaction: it stays open, Commit only rolls it back.
+        manual_run(&w, 33, 11, &[&insert(4)]);
+        let (_, error, tx, note) = manual_run(&w, 33, 11, &["select 1 / 0"]);
+        // (Server messages may be localized: the state is checked, not the text.)
+        assert!(error.is_some());
+        assert_eq!((tx.map(|t| (t.statements, t.aborted)), note), (Some((1, true)), None));
+        let (_, error, tx, _) = manual_run(&w, 33, 11, &["select 1"]);
+        assert!(error.is_some(), "PostgreSQL refuses statements until the rollback");
+        assert!(tx.is_some_and(|t| t.aborted));
+        let (result, tx) = end_tx(&w, 11, true);
+        assert_eq!(result, Err(tr("The transaction had failed, so it was rolled back; nothing was committed").to_string()));
+        assert!(tx.is_none());
+        assert_eq!(shared_count(&w, 33, 12, &table), "2");
+
+        // ROLLBACK TO SAVEPOINT recovers the transaction.
+        manual_run(&w, 33, 11, &["savepoint s1"]);
+        let (_, _, tx, _) = manual_run(&w, 33, 11, &[&insert(2)]);
+        assert!(tx.is_some_and(|t| t.aborted), "duplicate key aborts it");
+        let (_, error, tx, _) = manual_run(&w, 33, 11, &["rollback to savepoint s1", &insert(5)]);
+        assert!(error.is_none() && tx.is_some_and(|t| !t.aborted), "{error:?}");
+        assert_eq!(end_tx(&w, 11, true), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // A typed COMMIT of a failed transaction is PostgreSQL's silent ROLLBACK: said so.
+        manual_run(&w, 33, 11, &[&insert(12)]);
+        manual_run(&w, 33, 11, &["select 1 / 0"]);
+        let (_, error, tx, note) = manual_run(&w, 33, 11, &["commit"]);
+        assert_eq!((error, tx, note), (None, None, Some(TxNote::RolledBack)));
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // A COMMIT that hangs (a deferred trigger here) is stopped like a statement.
+        let slow = format!("{table}_slow");
+        first_rows(&w, 33, 10, &[
+            &format!("create function {slow}() returns trigger language plpgsql as $$ begin perform pg_sleep(30); return null; end $$"),
+            &format!("create constraint trigger {slow} after insert on {table} deferrable initially deferred for each row execute function {slow}()"),
+        ]);
+        manual_run(&w, 33, 11, &[&insert(13)]);
+        let started = Instant::now();
+        w.send(Request::EndTransaction { console: 11, commit: true });
+        std::thread::sleep(Duration::from_millis(500));
+        w.send(Request::Cancel { console: 11 });
+        let r = wait_for(&w, |r| matches!(r, Response::TransactionEnded { console: 11, .. }));
+        let Response::TransactionEnded { result, tx, .. } = r else { unreachable!() };
+        assert!(started.elapsed() < Duration::from_secs(10) && result.is_err() && tx.is_none(), "{result:?}");
+        first_rows(&w, 33, 10, &[&format!("drop trigger {slow} on {table}"), &format!("drop function {slow}()")]);
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // Cancel reaches the console's own session (and PostgreSQL aborts the transaction).
+        manual_run(&w, 33, 11, &[&insert(6)]);
+        w.send(Request::Execute { conn: 33, db: None, console: 11, statements: vec!["select pg_sleep(30)".into()], max_rows: 10, manual: true });
+        std::thread::sleep(Duration::from_millis(500));
+        let started = Instant::now();
+        w.send(Request::Cancel { console: 11 });
+        let (_, error, tx, _) = manual_reply(&w, 11);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(error.as_deref(), Some(tr("Query cancelled")));
+        assert!(tx.is_some_and(|t| t.aborted));
+        assert_eq!(end_tx(&w, 11, false), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // Roll Back while a statement runs (the confirmation stops it first): the rollback
+        // waits behind the cancelled statement instead of hanging.
+        manual_run(&w, 33, 11, &[&insert(9)]);
+        w.send(Request::Execute { conn: 33, db: None, console: 11, statements: vec!["select pg_sleep(30)".into()], max_rows: 10, manual: true });
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        w.send(Request::Cancel { console: 11 });
+        w.send(Request::EndTransaction { console: 11, commit: false });
+        let r = wait_for(&w, |r| matches!(r, Response::TransactionEnded { console: 11, .. }));
+        let Response::TransactionEnded { result, tx, .. } = r else { unreachable!() };
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!((result, tx), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // Losing the shared session (here: killed by the server) doesn't end the Manual
+        // transaction, which runs on a connection of its own; it goes on after the reconnect.
+        manual_run(&w, 33, 11, &[&insert(10)]);
+        let pid = first_rows(&w, 33, 12, &["select pg_backend_pid()"])[0].rows[0][0].clone().unwrap();
+        let (_, error, tx, _) = manual_run(&w, 33, 11, &[&format!("select pg_terminate_backend({pid})")]);
+        assert!(error.is_none() && tx.is_some_and(|t| t.statements == 2), "{error:?}");
+        w.send(Request::Execute { conn: 33, db: None, console: 12, statements: vec!["select 1".into()], max_rows: 10, manual: false });
+        wait_for(&w, |r| matches!(r, Response::ConnectFailed { conn: 33, .. }));
+        w.send(Request::Connect(cfg.clone()));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        let (_, error, tx, _) = manual_run(&w, 33, 11, &[&insert(11)]);
+        assert!(error.is_none() && tx.is_some_and(|t| t.statements == 3), "the same transaction goes on: {error:?}");
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+        assert_eq!(end_tx(&w, 11, true), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "5");
+
+        // Read-only data sources stay read-only on the console's own session.
+        let mut ro = cfg.clone();
+        ro.id = 34;
+        ro.read_only = true;
+        w.send(Request::Connect(ro));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 34, .. }));
+        let (_, error, tx, _) = manual_run(&w, 34, 13, &[&format!("select count(*) from {table}")]);
+        assert!(error.is_none() && tx.is_some(), "{error:?}");
+        let (_, error, _, _) = manual_run(&w, 34, 13, &[&insert(7)]);
+        assert!(error.is_some(), "a read-only data source took a write");
+        w.send(Request::Disconnect(34));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(34)));
+
+        // Disconnecting drops the transaction and its locks.
+        manual_run(&w, 33, 11, &[&insert(8)]);
+        w.send(Request::Disconnect(33));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(33)));
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
+        let locks = format!("select count(*) from pg_locks l join pg_class c on c.oid = l.relation where c.relname = '{table}' and l.pid <> pg_backend_pid()");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while first_rows(&w, 33, 12, &[&locks])[0].rows[0][0].as_deref() != Some("0") {
+            assert!(Instant::now() < deadline, "the dropped session still holds its transaction");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(shared_count(&w, 33, 12, &table), "5");
+        assert_eq!(end_tx(&w, 11, true).0, Err(tr("No transaction is open").to_string()));
+        first_rows(&w, 33, 12, &[&format!("drop table {table}")]);
     }
 }

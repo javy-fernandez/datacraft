@@ -298,8 +298,10 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Table editor](docs/table-editor.md) | Keyboard navigation, selections, bulk edits and optional automatic saving |
 | [Navigation and search](docs/navigation-search.md) | Table search, schema search, local groups/colors and tab management |
 | [Database backups](docs/database-backups.md) | Engine support, native utilities, destinations and cancellation |
+| [Session monitor](docs/session-monitor.md) | Server sessions and queries, blocking chains, cancel and terminate per engine |
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Task scheduler](docs/sql-scheduler.md) | Recurring SQL and backup tasks, the background process, time limits and history |
+| [Manual transactions](docs/transactions.md) | Commit / Roll Back in the SQL console, failed transactions and the safeguards |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
 | [Low-power rendering](docs/low-power-rendering.md) | Software adapters, Remote Desktop and frame statistics |
@@ -339,11 +341,11 @@ Thank you to everyone who has contributed code, fixes and translations to DataCr
 
 | # | Contributor | Commits | Share | Lines changed | Share |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 94 | 55.6% | +43,364 / −3,466 | 47.3% |
-| 2 | [YoSiem](https://github.com/YoSiem) | 59 | 34.9% | +31,920 / −6,168 | 38.5% |
-| 3 | [Claude](https://github.com/claude) | 8 | 4.7% | +6,399 / −41 | 6.5% |
-| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.6% | +4,258 / −215 | 4.5% |
-| 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.2% | +2,812 / −274 | 3.1% |
+| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 94 | 52.8% | +43,364 / −3,466 | 44.5% |
+| 2 | [YoSiem](https://github.com/YoSiem) | 68 | 38.2% | +37,810 / −6,587 | 42.2% |
+| 3 | [Claude](https://github.com/claude) | 8 | 4.5% | +6,399 / −41 | 6.1% |
+| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.4% | +4,258 / −215 | 4.3% |
+| 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.1% | +2,812 / −274 | 2.9% |
 
 Counted from non-merge commits on `main`; merge commits, bots and `Cargo.lock` are excluded.
 The chart is refreshed by the [contributors workflow](.github/workflows/contributors.yml).
