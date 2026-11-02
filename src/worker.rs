@@ -830,7 +830,9 @@ fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<s
 }
 
 async fn inspect_restore(state: &State, conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>) -> Vec<Response> {
-    let result = match state.live.lock().await.get(&conn).map(|l| l.cfg.clone()) {
+    // Bound first: a guard in the match scrutinee would hold `live` for the whole inspection.
+    let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+    let result = match cfg {
         Some(cfg) => {
             let password = cfg.password.clone();
             Box::pin(crate::db::restore::inspect(cfg, *request)).await.map_err(|error| redact(format!("{error:#}"), &password))
@@ -841,7 +843,8 @@ async fn inspect_restore(state: &State, conn: ConnId, id: uuid::Uuid, request: B
 }
 
 async fn restore(state: &State, conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, progress: Arc<crate::db::restore::RestoreProgress>) -> Vec<Response> {
-    let result = match state.live.lock().await.get(&conn).map(|l| l.cfg.clone()) {
+    let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+    let result = match cfg {
         Some(cfg) => {
             let password = cfg.password.clone();
             Box::pin(crate::db::restore::run(cfg, *request.clone(), progress)).await.map_err(|error| redact(format!("{error:#}"), &password))
@@ -1960,6 +1963,32 @@ mod tests {
         w.send(Request::Disconnect(71));
         wait_for(&w, |r| matches!(r, Response::Disconnected(71)));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_requests_leave_the_connections_unlocked_while_they_run() {
+        use crate::db::restore::{RestoreFormat, RestoreRequest};
+        // A server that accepts and never answers keeps the request waiting inside the restore code.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let state = State::default();
+        let mut cfg = ConnectionConfig::new(72, Driver::MsSql);
+        cfg.host = "127.0.0.1".into();
+        cfg.port = listener.local_addr().unwrap().port();
+        state.live.lock().await.insert(72, Live { cfg, default_db: "master".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None, monitor_closes: 0 });
+        let mut request = RestoreRequest::new("shop".into());
+        request.source = r"C:\backups\shop.bak".into();
+        let inspect = Request::InspectRestore { conn: 72, id: uuid::Uuid::new_v4(), request: Box::new(request.clone()) };
+        request.format = Some(RestoreFormat::MsSql);
+        request.position = 1;
+        let restore = Request::Restore { conn: 72, id: uuid::Uuid::new_v4(), request: Box::new(request), progress: Arc::default() };
+        for req in [inspect, restore] {
+            let mut running = Box::pin(handle(req, 0, &state));
+            let _socket = tokio::select! {
+                accepted = listener.accept() => accepted.unwrap(),
+                responses = &mut running => panic!("the request ended early: {}", responses.len()),
+            };
+            assert!(state.live.try_lock().is_ok(), "a running restore request holds the connection list");
+        }
     }
 
     #[tokio::test]

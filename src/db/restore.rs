@@ -522,10 +522,20 @@ fn database_statement(driver: Driver, line: &[u8]) -> Option<String> {
 #[derive(Default)]
 struct Switches {
     database: Option<String>,
+    /// MySQL: the quote, or `*` for a block comment, still open after the previous lines.
+    open: Option<u8>,
 }
 impl Switches {
     /// Ok(true): skip the line.
     fn check(&mut self, driver: Driver, line: &[u8]) -> anyhow::Result<bool> {
+        if driver != Driver::Postgres {
+            // A line that continues a string literal or comment is data, whatever it starts with.
+            let continued = self.open.is_some();
+            self.open = mysql_open(self.open, line);
+            if continued {
+                return Ok(false);
+            }
+        }
         let Some(name) = database_statement(driver, line) else { return Ok(false) };
         if driver == Driver::Postgres {
             bail!(tr("The script creates, drops or switches databases (CREATE DATABASE, \\connect); remove those lines or restore it with psql yourself"));
@@ -537,6 +547,31 @@ impl Switches {
         }
         Ok(true)
     }
+}
+
+/// The quote (`'`, `"`, `` ` ``) or block comment (`*`) open at the end of a MySQL line, given the
+/// one open at its start. Versioned comments (`/*!…*/`) are code, as the client runs them.
+fn mysql_open(mut open: Option<u8>, line: &[u8]) -> Option<u8> {
+    let mut i = 0;
+    while i < line.len() {
+        let rest = &line[i..];
+        match open {
+            Some(b'*') if rest.starts_with(b"*/") => (open, i) = (None, i + 1),
+            Some(b'*') => {}
+            Some(q) if rest[0] == b'\\' && q != b'`' => i += 1,
+            Some(q) if rest[0] == q => open = None,
+            Some(_) => {}
+            None => match rest[0] {
+                q @ (b'\'' | b'"' | b'`') => open = Some(q),
+                b'#' => break,
+                b'-' if rest.starts_with(b"--") && rest.get(2).is_none_or(u8::is_ascii_whitespace) => break,
+                b'/' if rest.starts_with(b"/*") && !rest.starts_with(b"/*!") => (open, i) = (Some(b'*'), i + 1),
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    open
 }
 
 /// The end of a utility's diagnostics: the last lines within a byte budget, each one shortened.
@@ -994,6 +1029,26 @@ mod tests {
         assert!(switches.check(Driver::MySql, b"USE `shop`;\n").unwrap());
         assert!(!switches.check(Driver::MySql, b"INSERT INTO t VALUES (1);\n").unwrap());
         assert!(switches.check(Driver::MySql, b"USE `analytics`;\n").is_err());
+        // Lines inside a hand-written multi-line literal or comment are kept as they are.
+        let mut switches = Switches::default();
+        for line in [
+            &b"INSERT INTO notes VALUES ('first line\n"[..],
+            b"USE other; it\\'s still the same string\n",
+            b"connect later');\n",
+            b"INSERT INTO notes VALUES (\"a \"\" quote\n",
+            b"use other\");\n",
+            b"/* a comment that isn't closed here\n",
+            b"USE other;\n",
+            b"*/\n",
+            b"-- it's only a comment\n",
+            b"# so's this\n",
+            b"/*!40101 SET @saved_cs_client = @@character_set_client */;\n",
+            b"INSERT INTO notes VALUES ('it''s', `odd``name`);\n",
+        ] {
+            assert!(!switches.check(Driver::MySql, line).unwrap(), "{}", String::from_utf8_lossy(line));
+        }
+        assert!(switches.check(Driver::MySql, b"USE `shop`;\n").unwrap());
+        assert!(switches.check(Driver::MySql, b"USE other;\n").is_err());
     }
 
     #[test]

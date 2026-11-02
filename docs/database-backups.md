@@ -82,7 +82,8 @@ Every client stops at the first error (`--exit-on-error`, `ON_ERROR_STOP`, the
 transactional: statements that ran before an error or cancellation stay applied.
 They run like any script given to `psql` or `mysql`, including client commands, so
 restore only files you trust. The database-statement checks are line-based, which
-matches what `pg_dump` and `mysqldump` write. Only the last lines of a client's
+matches what `pg_dump` and `mysqldump` write; in MySQL dumps, lines that continue a
+multi-line string literal or comment are left alone. Only the last lines of a client's
 diagnostics are kept, each shortened, so the error that stopped it is shown. Reading
 a backup's contents times out after two minutes. A database created for a restore
 that then fails is kept for inspection. SQL Server reads the backup path on the server, with its service
