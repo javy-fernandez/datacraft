@@ -89,6 +89,12 @@ impl Driver {
         matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MsSql | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake)
     }
 
+    /// Engines whose running statement can be cancelled without closing the session (see
+    /// `Engine::cancel_handle`); elsewhere a cancel abandons the query and closes the session.
+    pub fn has_native_cancel(self) -> bool {
+        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake)
+    }
+
     /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys,
     /// InfluxDB measurements nor Kusto tables.
     pub fn can_copy(self) -> bool {

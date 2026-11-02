@@ -325,6 +325,12 @@ impl Console {
         c
     }
 
+    /// A Manual transaction is open, or may be: the first run is still on its way (its reply
+    /// says whether it began one).
+    pub fn may_hold_tx(&self) -> bool {
+        self.tx.is_some() || (self.manual_tx && self.running && !self.tx_released)
+    }
+
     pub fn is_busy(&self) -> bool {
         self.running || self.ending_tx || self.pending.is_some() || self.table.as_ref().is_some_and(|t| t.counting_page) || self.routine.as_ref().is_some_and(|r| r.dialog.running || r.dialog.loading.is_some())
     }
@@ -1265,7 +1271,8 @@ impl Console {
             let unavailable = (!cx.driver.has_transactions()).then(|| tr("Manual transactions are not available for this engine"));
             self.tx_dropdown(ui, unavailable, actions);
             self.tx_controls(ui, actions);
-            if theme::icon_button(ui, Ico::Stop, self.running, tr("Cancel the running query")).clicked() {
+            // Also stops a Commit / Roll Back that hangs (its session is closed).
+            if theme::icon_button(ui, Ico::Stop, self.running || self.ending_tx, tr("Cancel the running query")).clicked() {
                 actions.push(ConsoleAction::Cancel);
             }
             self.busy_label(ui);

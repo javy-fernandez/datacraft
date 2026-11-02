@@ -200,8 +200,12 @@ pub enum TxNote {
     Lost,
     /// A DDL statement committed it (MySQL, MariaDB, Oracle, Snowflake).
     ImplicitCommit,
-    /// The server rolled it back after an error.
+    /// The server rolled it back after an error (or answered a COMMIT of a failed PostgreSQL
+    /// transaction with a rollback).
     RolledBack,
+    /// A DDL statement failed, but Oracle or Snowflake may have committed the transaction before
+    /// running it.
+    MaybeCommitted,
 }
 
 pub struct Worker {
@@ -287,6 +291,9 @@ struct TxSession {
 struct TxConn {
     session: Session,
     driver: Driver,
+    /// The console's database: selected again before each run, so a typed `USE` lasts one run
+    /// as in Auto mode.
+    db: String,
     tx: Option<TxInfo>,
 }
 
@@ -451,7 +458,7 @@ impl State {
         let mut session = Session::connect(&cfg).await?;
         session.use_database(&target).await?;
         session.manual_session().await?;
-        let session = Arc::new(Mutex::new(TxConn { session, driver: cfg.driver, tx: None }));
+        let session = Arc::new(Mutex::new(TxConn { session, driver: cfg.driver, db: target.clone(), tx: None }));
         let mut map = self.tx.lock().unwrap_or_else(|e| e.into_inner());
         // Disconnected meanwhile: it is not kept (it closes when dropped). Checked under the map's
         // lock, so a Disconnect after the check finds it there and drops it.
@@ -1182,6 +1189,11 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
     let statements_tail = statements.last().cloned();
     let (mut results, mut error, mut abandoned, mut note) = (Vec::new(), None, false, None);
     let mut broken = false;
+    let db = t.db.clone();
+    if let Err(e) = t.session.use_database(&db).await {
+        error = Some(format!("{e:#}"));
+    }
+    let statements = if error.is_some() { Vec::new() } else { statements };
     for stmt in statements {
         // As in `Execute`: `in_flight` first, so either side sees the other.
         running.in_flight.store(true, SeqCst);
@@ -1204,6 +1216,7 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
             }
         }
         let was_open = t.tx.is_some();
+        let was_aborted = t.tx.is_some_and(|tx| tx.aborted);
         if result.is_ok() {
             result = tokio::select! {
                 r = t.session.execute(&stmt, max_rows) => r,
@@ -1238,30 +1251,15 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
         // unsure it stays open: the session never commits by itself, so later statements are
         // still uncommitted and the guards keep asking.
         let server = if t.session.is_closed() { None } else { t.session.transaction_state().await };
-        let open = match server {
-            Some((open, doomed)) => {
-                if let Some(tx) = t.tx.as_mut() {
-                    tx.aborted = doomed;
-                }
-                open
-            }
-            None => match (control, &failed) {
-                (Some(Control::Begin), None) => true,
-                (Some(Control::Commit | Control::Rollback), None) => false,
-                // A failed COMMIT rolls back on PostgreSQL and Oracle (deferred constraints);
-                // elsewhere the outcome is unknown, so it stays open.
-                (Some(Control::Commit | Control::Rollback), Some(_)) => was_open && !matches!(driver, Driver::Postgres | Driver::Oracle),
-                (_, Some(e)) if transaction::rolls_back_on_error(driver, e) => false,
-                _ => was_open,
-            },
-        };
-        // An implicit commit ends the work so far; the statements after it run in a new
-        // transaction (nothing commits by itself on this session).
-        let implicit = was_open
-            && failed.is_none()
-            && (control == Some(Control::ImplicitCommit) || (control == Some(Control::Autocommit) && transaction::enables_autocommit(&stmt)));
-        match (open, t.tx.as_mut()) {
-            (true, Some(tx)) if implicit => {
+        if let (Some((_, doomed)), Some(tx)) = (server, t.tx.as_mut()) {
+            tx.aborted = doomed;
+        }
+        let after = transaction::after(driver, &stmt, failed.as_deref(), was_open, was_aborted, server.map(|(open, _)| open));
+        if after.maybe_committed {
+            note = Some(TxNote::MaybeCommitted);
+        }
+        match (after.open, t.tx.as_mut()) {
+            (true, Some(tx)) if after.implicit => {
                 *tx = TxInfo { began: Instant::now(), statements: 0, aborted: false };
                 note = Some(TxNote::ImplicitCommit);
             }
@@ -1280,7 +1278,7 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
             }
             (true, None) => t.tx = Some(TxInfo { began: Instant::now(), statements: 0, aborted: false }),
             (false, _) => {
-                if was_open && failed.is_some() {
+                if after.rolled_back {
                     note = Some(TxNote::RolledBack);
                 }
                 t.tx = None;
@@ -1321,6 +1319,9 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
     vec![Response::Executed { console, results, error, elapsed: start.elapsed() }, Response::Transaction { console, tx, note }]
 }
 
+/// Longest wait for a console's COMMIT or ROLLBACK before its session is closed.
+const END_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `EndTransaction`: COMMIT or ROLLBACK on the console's own session.
 async fn end_transaction(state: &State, console: ConsoleId, commit: bool) -> Response {
     let start = Instant::now();
@@ -1328,20 +1329,48 @@ async fn end_transaction(state: &State, console: ConsoleId, commit: bool) -> Res
     let Some(shared) = shared else {
         return Response::TransactionEnded { console, commit, result: Err(tr("No transaction is open").into()), tx: None, elapsed: start.elapsed() };
     };
+    // Stop (Request::Cancel) and a time limit reach it like a running statement.
+    let running = Arc::new(Running::default());
+    state.running.lock().unwrap_or_else(|e| e.into_inner()).insert(console, running.clone());
     let mut guard = shared.lock().await;
     let t = &mut *guard;
-    let result = match t.tx {
-        None => Err(tr("No transaction is open").to_string()),
-        // PostgreSQL answers COMMIT with a rollback here: say so instead.
-        Some(tx) if commit && tx.aborted => match t.session.end_transaction(false).await {
-            Ok(()) => Err(tr("The transaction had failed, so it was rolled back; nothing was committed").to_string()),
-            Err(e) => Err(format!("{e:#}")),
+    *running.native.lock().unwrap_or_else(|e| e.into_inner()) = t.session.cancel_handle();
+    running.in_flight.store(true, std::sync::atomic::Ordering::SeqCst);
+    let rollback_failed = commit && t.tx.is_some_and(|tx| tx.aborted);
+    let end = async {
+        match t.tx {
+            None => Err(tr("No transaction is open").to_string()),
+            // PostgreSQL answers COMMIT with a rollback here: say so instead.
+            Some(_) if rollback_failed => match t.session.end_transaction(false).await {
+                Ok(()) => Err(tr("The transaction had failed, so it was rolled back; nothing was committed").to_string()),
+                Err(e) => Err(format!("{e:#}")),
+            },
+            Some(_) => t.session.end_transaction(commit).await.map_err(|e| format!("{e:#}")),
+        }
+    };
+    let (result, stopped) = tokio::select! {
+        r = tokio::time::timeout(END_TIMEOUT, end) => match r {
+            Ok(r) => (r, false),
+            Err(_) => (Ok(()), true),
         },
-        Some(_) => t.session.end_transaction(commit).await.map_err(|e| format!("{e:#}")),
+        _ = running.abandon.notified() => (Ok(()), true),
+    };
+    running.in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+    {
+        let mut map = state.running.lock().unwrap_or_else(|e| e.into_inner());
+        if map.get(&console).is_some_and(|r| Arc::ptr_eq(r, &running)) {
+            map.remove(&console);
+        }
+    }
+    // Stopped or too slow: the session is closed, which rolls back what didn't commit.
+    let result = match stopped {
+        true if commit => Err(tr("The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown").to_string()),
+        true => Err(tr("The rollback was stopped: the console's session was closed, which rolls the transaction back").to_string()),
+        false => result,
     };
     // A failed COMMIT can leave it open: where the engine says so (SQLite: database busy), and
     // when unsure except on PostgreSQL and Oracle, which roll back on a failed COMMIT.
-    let lost = t.session.is_closed();
+    let lost = stopped || t.session.is_closed();
     let server = if lost { None } else { t.session.transaction_state().await };
     t.tx = match server {
         Some((true, doomed)) => t.tx.map(|tx| TxInfo { aborted: doomed, ..tx }),
@@ -2972,6 +3001,30 @@ mod tests {
         let (_, error, tx, _) = manual_run(&w, 33, 11, &["rollback to savepoint s1", &insert(5)]);
         assert!(error.is_none() && tx.is_some_and(|t| !t.aborted), "{error:?}");
         assert_eq!(end_tx(&w, 11, true), (Ok(()), None));
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // A typed COMMIT of a failed transaction is PostgreSQL's silent ROLLBACK: said so.
+        manual_run(&w, 33, 11, &[&insert(12)]);
+        manual_run(&w, 33, 11, &["select 1 / 0"]);
+        let (_, error, tx, note) = manual_run(&w, 33, 11, &["commit"]);
+        assert_eq!((error, tx, note), (None, None, Some(TxNote::RolledBack)));
+        assert_eq!(shared_count(&w, 33, 12, &table), "3");
+
+        // A COMMIT that hangs (a deferred trigger here) is stopped like a statement.
+        let slow = format!("{table}_slow");
+        first_rows(&w, 33, 10, &[
+            &format!("create function {slow}() returns trigger language plpgsql as $$ begin perform pg_sleep(30); return null; end $$"),
+            &format!("create constraint trigger {slow} after insert on {table} deferrable initially deferred for each row execute function {slow}()"),
+        ]);
+        manual_run(&w, 33, 11, &[&insert(13)]);
+        let started = Instant::now();
+        w.send(Request::EndTransaction { console: 11, commit: true });
+        std::thread::sleep(Duration::from_millis(500));
+        w.send(Request::Cancel { console: 11 });
+        let r = wait_for(&w, |r| matches!(r, Response::TransactionEnded { console: 11, .. }));
+        let Response::TransactionEnded { result, tx, .. } = r else { unreachable!() };
+        assert!(started.elapsed() < Duration::from_secs(10) && result.is_err() && tx.is_none(), "{result:?}");
+        first_rows(&w, 33, 10, &[&format!("drop trigger {slow} on {table}"), &format!("drop function {slow}()")]);
         assert_eq!(shared_count(&w, 33, 12, &table), "3");
 
         // Cancel reaches the console's own session (and PostgreSQL aborts the transaction).

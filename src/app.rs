@@ -1412,6 +1412,19 @@ impl DataCraftApp {
             console.result_tab = ResultTab::Output;
             return;
         }
+        if self.consoles.get(idx).is_some_and(|c| c.manual_tx)
+            && let Some(stmt) = statements.iter().flat_map(|s| sql::split_statements(s, driver)).map(|s| s.text).find(|s| crate::db::transaction::outside_transaction(driver, s))
+        {
+            let Some(console) = self.consoles.get_mut(idx) else { return };
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: stmt.trim().to_string(),
+                message: tr("This statement can't run inside a transaction: switch the console to Auto mode to run it").into(),
+                is_error: true,
+            });
+            console.result_tab = ResultTab::Output;
+            return;
+        }
         let Some(console) = self.consoles.get_mut(idx) else { return };
         console.last_statements = statements.clone();
         console.run_started = Some(Instant::now());
@@ -3267,18 +3280,11 @@ impl DataCraftApp {
         if let Some(i) = close {
             self.close_console(i);
         }
-        if close_all
-            && self.tx_guard(self.consoles.iter().map(|c| c.id).collect(), transactions::TxThen::CloseAll)
-            && self.guard(Discard::CloseAll)
-        {
+        if close_all && self.tx_guard(self.consoles.iter().map(|c| c.id).collect(), transactions::TxThen::CloseAll) && self.guard(Discard::CloseAll) {
             self.discard_and_do(Discard::CloseAll);
         }
-        if let Some((id, which)) = close_tabs
-            && self.tx_guard(self.tab_close_indices(id, which).into_iter().map(|i| self.consoles[i].id).collect(), transactions::TxThen::CloseTabs(id, which))
-            && self.guard(Discard::CloseTabs(id, which))
-        {
-            self.close_tabs_now(id, which);
-        }
+        let closing = close_tabs.map(|(id, which)| self.tab_close_indices(id, which).into_iter().map(|i| self.consoles[i].id).collect()).unwrap_or_default();
+        if let Some((id, which)) = close_tabs && self.tx_guard(closing, transactions::TxThen::CloseTabs(id, which)) && self.guard(Discard::CloseTabs(id, which)) { self.close_tabs_now(id, which); }
         if close_objects { self.object_browser.scope = None; self.object_browser.active = false; }
         if new {
             self.new_console_here();
@@ -3420,7 +3426,10 @@ impl DataCraftApp {
                 }
                 ConsoleAction::SetManual(manual) => {
                     let id = self.consoles[idx].id;
-                    if manual || self.tx_guard(vec![id], transactions::TxThen::Auto(id)) {
+                    // Grid changes are saved outside the transaction: they go first.
+                    if manual && self.consoles[idx].results.iter().any(|r| r.is_dirty()) {
+                        self.error(tr("Submit or discard the pending grid changes before switching to Manual mode"));
+                    } else if manual || self.tx_guard(vec![id], transactions::TxThen::Auto(id)) {
                         self.set_manual(id, manual);
                     }
                 }

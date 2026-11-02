@@ -1487,6 +1487,12 @@
     "A statement is still running in “{console}”: stop it before committing.": "「{console}」でステートメントがまだ実行中です。コミットする前に停止してください。",
     "Stop Query": "クエリを停止",
     "Rolling back…": "ロールバック中…",
-    "Waiting for the transaction to end…": "トランザクションの終了を待っています…"
+    "Waiting for the transaction to end…": "トランザクションの終了を待っています…",
+    "The statement failed, but the server may already have committed the open transaction before running it": "ステートメントは失敗しましたが、サーバーは実行前に開いていたトランザクションをすでにコミットした可能性があります",
+    "The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown": "サーバーの応答前にコミットを停止しました。コンソールのセッションは閉じられたため、コミットされたかどうかは不明です",
+    "The rollback was stopped: the console's session was closed, which rolls the transaction back": "ロールバックを停止しました。コンソールのセッションは閉じられ、トランザクションはロールバックされます",
+    "Stopping the statement in “{console}” closes its session, which rolls the transaction back. Wait for it to finish to commit.": "「{console}」のステートメントを停止するとセッションが閉じられ、トランザクションはロールバックされます。コミットするには終了を待ってください。",
+    "Submit or discard the pending grid changes before switching to Manual mode": "手動モードに切り替える前に、グリッドの保留中の変更を送信または破棄してください",
+    "This statement can't run inside a transaction: switch the console to Auto mode to run it": "このステートメントはトランザクション内では実行できません。実行するにはコンソールを自動モードに切り替えてください"
   }
 }

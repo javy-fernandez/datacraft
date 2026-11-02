@@ -1487,6 +1487,12 @@
     "A statement is still running in “{console}”: stop it before committing.": "Une instruction est encore en cours dans « {console} » : arrêtez-la avant de valider.",
     "Stop Query": "Arrêter la requête",
     "Rolling back…": "Annulation…",
-    "Waiting for the transaction to end…": "En attente de la fin de la transaction…"
+    "Waiting for the transaction to end…": "En attente de la fin de la transaction…",
+    "The statement failed, but the server may already have committed the open transaction before running it": "L'instruction a échoué, mais le serveur a peut-être déjà validé la transaction ouverte avant de l'exécuter",
+    "The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown": "La validation a été arrêtée avant la réponse du serveur : la session de la console a été fermée, on ne sait donc pas si elle a été validée",
+    "The rollback was stopped: the console's session was closed, which rolls the transaction back": "L'annulation a été arrêtée : la session de la console a été fermée, ce qui annule la transaction",
+    "Stopping the statement in “{console}” closes its session, which rolls the transaction back. Wait for it to finish to commit.": "Arrêter l'instruction dans « {console} » ferme sa session, ce qui annule la transaction. Attendez qu'elle se termine pour valider.",
+    "Submit or discard the pending grid changes before switching to Manual mode": "Envoyez ou abandonnez les modifications en attente de la grille avant de passer en mode manuel",
+    "This statement can't run inside a transaction: switch the console to Auto mode to run it": "Cette instruction ne peut pas s'exécuter dans une transaction : passez la console en mode automatique pour l'exécuter"
   }
 }

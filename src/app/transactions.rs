@@ -51,7 +51,7 @@ impl DataCraftApp {
     /// and goes ahead afterwards.
     pub(super) fn tx_guard(&mut self, consoles: Vec<u64>, then: TxThen) -> bool {
         let of = |id: &u64| self.consoles.iter().find(|c| c.id == *id);
-        let open: Vec<u64> = consoles.iter().copied().filter(|id| of(id).is_some_and(|c| c.tx.is_some() && !c.ending_tx)).collect();
+        let open: Vec<u64> = consoles.iter().copied().filter(|id| of(id).is_some_and(|c| c.may_hold_tx() && !c.ending_tx)).collect();
         let ending: Vec<u64> = consoles.iter().copied().filter(|id| of(id).is_some_and(|c| c.ending_tx)).collect();
         if open.is_empty() && ending.is_empty() {
             return true;
@@ -98,12 +98,8 @@ impl DataCraftApp {
     /// Saves and deletes data sources (from the connection dialog), asking first about the open
     /// transactions of the connections that close.
     pub(super) fn connections_changed(&mut self, save: Vec<ConnectionConfig>, delete: Vec<ConnId>, close_dialog: bool) {
-        let closing: Vec<u64> = delete
-            .iter()
-            .copied()
-            .chain(save.iter().filter(|cfg| self.conn(cfg.id).is_some_and(|c| c.status != ConnStatus::Disconnected)).map(|cfg| cfg.id))
-            .flat_map(|id| self.consoles_on(id))
-            .collect();
+        let reconnected = save.iter().filter(|cfg| self.conn(cfg.id).is_some_and(|c| c.status != ConnStatus::Disconnected)).map(|cfg| cfg.id);
+        let closing: Vec<u64> = delete.iter().copied().chain(reconnected).flat_map(|id| self.consoles_on(id)).collect();
         if self.tx_guard(closing, TxThen::Connections { save: save.clone(), delete: delete.clone(), close_dialog }) {
             self.apply_connections(save, delete, close_dialog);
         }
@@ -129,6 +125,11 @@ impl DataCraftApp {
         }
         c.manual_tx = manual;
         c.tx = None;
+        // Grids are editable in Auto mode only (changes are saved on the shared session).
+        for v in c.results.iter_mut().filter(|v| !v.is_dirty()) {
+            v.edit_checked = false;
+        }
+        self.attach_edit_targets(id);
     }
 
     /// A Manual console moves to another connection / database: its own session is released
@@ -168,16 +169,17 @@ impl DataCraftApp {
         for c in self.consoles.iter_mut().filter(|c| c.conn == Some(conn) && c.manual_tx) {
             self.worker.send(Request::ReleaseConsole { console: c.id });
             // Replies of a run or end still in flight describe the released session.
-            c.tx_released |= c.running || c.ending_tx;
+            let in_flight = c.running || c.ending_tx;
+            c.tx_released |= in_flight;
             c.ending_tx = false;
-            if c.tx.take().is_some() {
+            if c.tx.take().is_some() || in_flight {
                 c.log.push(OutputEntry { time: now(), statement: String::new(), message: tr("The connection closed, so the open transaction was rolled back").into(), is_error: true });
                 c.result_tab = ResultTab::Output;
             }
         }
         let consoles = &self.consoles;
         if let Some(p) = self.tx_prompt.as_mut() {
-            p.consoles.retain(|id| consoles.iter().any(|c| c.id == *id && c.tx.is_some()));
+            p.consoles.retain(|id| consoles.iter().any(|c| c.id == *id && c.may_hold_tx()));
             p.ending.retain(|id| consoles.iter().any(|c| c.id == *id && c.ending_tx));
         }
     }
@@ -201,6 +203,7 @@ impl DataCraftApp {
             Some(TxNote::Lost) => Some((tr("The session closed, so the open transaction was rolled back"), true)),
             Some(TxNote::ImplicitCommit) => Some((tr("The statement committed the open transaction implicitly; the next statements run in a new one"), false)),
             Some(TxNote::RolledBack) => Some((tr("The server rolled back the transaction after the error"), true)),
+            Some(TxNote::MaybeCommitted) => Some((tr("The statement failed, but the server may already have committed the open transaction before running it"), true)),
             None => None,
         };
         if let Some((message, is_error)) = message {
@@ -263,6 +266,10 @@ impl DataCraftApp {
                 }
             }
         }
+        let consoles = &self.consoles;
+        if let Some(p) = self.tx_prompt.as_mut() {
+            p.consoles.retain(|id| consoles.iter().any(|c| c.id == *id && c.may_hold_tx() && !c.ending_tx));
+        }
         let Some(prompt) = self.tx_prompt.as_ref() else { return };
         // Answered and ended (or gone with their connection): go ahead.
         if prompt.consoles.is_empty() && prompt.ending.is_empty() {
@@ -291,6 +298,10 @@ impl DataCraftApp {
             TxThen::Quit => tr("Commit the changes or roll them back before DataCraft quits."),
         };
         let busy = running.first().and_then(title).map(|name| trf("A statement is still running in “{console}”: stop it before committing.", &[("console", &name)]));
+        // Without a native cancel, stopping closes the session: say so, and Commit stays possible
+        // once the statement finishes by itself.
+        let drops = running.iter().filter_map(|id| self.consoles.iter().find(|c| c.id == *id)).find(|c| c.conn.and_then(|id| self.conn(id)).is_some_and(|s| !s.cfg.driver.has_native_cancel()));
+        let drops = drops.map(|c| trf("Stopping the statement in “{console}” closes its session, which rolls the transaction back. Wait for it to finish to commit.", &[("console", &c.title)]));
         let waiting = (!prompt.ending.is_empty()).then(|| match prompt.chosen {
             Some(true) => tr("Committing…"),
             Some(false) => tr("Rolling back…"),
@@ -308,9 +319,9 @@ impl DataCraftApp {
                 ui.add_space(4.0);
                 ui.label(second);
             }
-            if let Some(busy) = busy {
+            for line in [busy, drops].into_iter().flatten() {
                 ui.add_space(4.0);
-                ui.label(RichText::new(busy).color(theme::pal(ui).warn));
+                ui.label(RichText::new(line).color(theme::pal(ui).warn));
             }
             if let Some(waiting) = waiting {
                 ui.add_space(8.0);
@@ -367,6 +378,12 @@ impl DataCraftApp {
                     }
                     if self.end_transaction(i, commit) {
                         ending.push(id);
+                    } else if !commit {
+                        // A first run still in flight: its session goes, rolling back what it began.
+                        self.worker.send(Request::ReleaseConsole { console: id });
+                        let c = &mut self.consoles[i];
+                        c.tx_released = true;
+                        c.log.push(OutputEntry { time: now(), statement: "ROLLBACK".into(), message: tr("Transaction rolled back").into(), is_error: false });
                     }
                 }
                 if let Some(prompt) = self.tx_prompt.as_mut() {
@@ -620,6 +637,72 @@ mod tests {
         app.consoles[1].tx = None;
         app.connections_changed(Vec::new(), vec![7], false);
         assert!(app.conns.is_empty() && app.consoles[1].conn.is_none());
+    }
+
+    #[test]
+    fn a_first_run_in_flight_is_asked_about_and_logged() {
+        let mut app = app_with_tx(None);
+        app.consoles[1].running = true;
+        app.close_console(1);
+        assert!(app.tx_prompt.as_ref().is_some_and(|p| p.consoles == [2]), "it may have begun a transaction");
+        let mut h = dialog_harness(app);
+        h.get_by_label("Roll Back").click();
+        h.run_steps(3);
+        let app = h.state();
+        assert!(app.tx_prompt.is_none() && app.consoles.len() == 3, "released (rolled back), then closed");
+        // A run that ends without a transaction leaves nothing to ask: the prompt goes ahead.
+        let mut app = app_with_tx(None);
+        app.consoles[1].running = true;
+        assert!(!app.tx_guard(vec![2], TxThen::Auto(2)));
+        let mut h = dialog_harness(app);
+        h.state_mut().consoles[1].running = false;
+        h.run_steps(3);
+        assert!(h.state().tx_prompt.is_none() && !h.state().consoles[1].manual_tx);
+        // Disconnecting during the first run says the work was rolled back.
+        let mut app = app_with_tx(None);
+        app.consoles[1].running = true;
+        app.drop_transactions(7);
+        assert!(app.consoles[1].log.last().is_some_and(|e| e.is_error && e.message.contains("rolled back")));
+    }
+
+    #[test]
+    fn grids_follow_the_transaction_mode() {
+        let mut app = app_with_tx(None);
+        app.consoles[1].manual_tx = false;
+        let rs = crate::db::ResultSet { statement: "select id from t".into(), columns: vec!["id".into()], rows: vec![vec![Some("1".into())]], ..Default::default() };
+        let mut view = ResultView::new(rs, 1);
+        view.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "t".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true, insert_only: false }));
+        app.consoles[1].results.push(view);
+        app.set_manual(2, true);
+        let manual = tr("Grid editing is off in Manual transaction mode: change rows with SQL statements");
+        assert!(app.consoles[1].results[0].edit.is_none() && app.consoles[1].results[0].readonly_reason.as_deref() == Some(manual));
+        app.set_manual(2, false);
+        assert_ne!(app.consoles[1].results[0].readonly_reason.as_deref(), Some(manual), "checked again in Auto mode");
+    }
+
+    #[test]
+    fn statements_that_need_auto_mode_are_refused_before_they_abort_the_transaction() {
+        let mut app = app_with_tx(open_tx(2));
+        app.run_statements(1, vec!["VACUUM ANALYZE orders".into()]);
+        let c = &app.consoles[1];
+        assert!(!c.running && c.tx.is_some(), "nothing sent");
+        let e = c.log.last().expect("explained");
+        assert!(e.is_error && e.statement == "VACUUM ANALYZE orders" && e.message.contains("Auto mode"));
+        // Auto consoles send it as before.
+        app.consoles[1].manual_tx = false;
+        app.run_statements(1, vec!["VACUUM ANALYZE orders".into()]);
+        assert!(app.consoles[1].running);
+    }
+
+    #[test]
+    fn stopping_without_a_native_cancel_is_explained() {
+        let mut app = app_with_tx(open_tx(1));
+        app.conns[0].cfg.driver = Driver::MsSql;
+        app.consoles[1].running = true;
+        app.close_console(1);
+        let h = dialog_harness(app);
+        assert!(h.query_by_label("Stopping the statement in “Query 2” closes its session, which rolls the transaction back. Wait for it to finish to commit.").is_some());
+        assert!(h.query_by_label("Stop Query").is_some());
     }
 
     /// Synthetic workspace for the captures: a Manual console with an open transaction.

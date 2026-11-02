@@ -1487,6 +1487,12 @@
     "A statement is still running in “{console}”: stop it before committing.": "In „{console}“ läuft noch eine Anweisung: Stoppen Sie sie vor dem Commit.",
     "Stop Query": "Abfrage stoppen",
     "Rolling back…": "Rollback läuft…",
-    "Waiting for the transaction to end…": "Warten auf das Ende der Transaktion…"
+    "Waiting for the transaction to end…": "Warten auf das Ende der Transaktion…",
+    "The statement failed, but the server may already have committed the open transaction before running it": "Die Anweisung ist fehlgeschlagen, aber der Server hat die offene Transaktion möglicherweise schon vor ihrer Ausführung committet",
+    "The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown": "Der Commit wurde gestoppt, bevor der Server antwortete: Die Sitzung der Konsole wurde geschlossen, daher ist unbekannt, ob committet wurde",
+    "The rollback was stopped: the console's session was closed, which rolls the transaction back": "Der Rollback wurde gestoppt: Die Sitzung der Konsole wurde geschlossen, wodurch die Transaktion zurückgerollt wird",
+    "Stopping the statement in “{console}” closes its session, which rolls the transaction back. Wait for it to finish to commit.": "Das Stoppen der Anweisung in „{console}“ schließt ihre Sitzung, wodurch die Transaktion zurückgerollt wird. Warten Sie auf ihr Ende, um zu committen.",
+    "Submit or discard the pending grid changes before switching to Manual mode": "Übermitteln oder verwerfen Sie die ausstehenden Rasteränderungen, bevor Sie in den manuellen Modus wechseln",
+    "This statement can't run inside a transaction: switch the console to Auto mode to run it": "Diese Anweisung kann nicht in einer Transaktion laufen: Schalten Sie die Konsole in den automatischen Modus, um sie auszuführen"
   }
 }

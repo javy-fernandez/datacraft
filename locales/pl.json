@@ -1487,6 +1487,12 @@
     "A statement is still running in “{console}”: stop it before committing.": "W „{console}” nadal działa instrukcja: zatrzymaj ją przed zatwierdzeniem.",
     "Stop Query": "Zatrzymaj zapytanie",
     "Rolling back…": "Wycofywanie…",
-    "Waiting for the transaction to end…": "Oczekiwanie na zakończenie transakcji…"
+    "Waiting for the transaction to end…": "Oczekiwanie na zakończenie transakcji…",
+    "The statement failed, but the server may already have committed the open transaction before running it": "Instrukcja nie powiodła się, ale serwer mógł już zatwierdzić otwartą transakcję przed jej wykonaniem",
+    "The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown": "Zatwierdzanie zatrzymano przed odpowiedzią serwera: sesja konsoli została zamknięta, więc nie wiadomo, czy zatwierdzono",
+    "The rollback was stopped: the console's session was closed, which rolls the transaction back": "Wycofywanie zatrzymano: sesja konsoli została zamknięta, co wycofuje transakcję",
+    "Stopping the statement in “{console}” closes its session, which rolls the transaction back. Wait for it to finish to commit.": "Zatrzymanie instrukcji w „{console}” zamyka jej sesję, co wycofuje transakcję. Poczekaj na jej zakończenie, aby zatwierdzić.",
+    "Submit or discard the pending grid changes before switching to Manual mode": "Wyślij lub odrzuć oczekujące zmiany w siatce przed przejściem do trybu ręcznego",
+    "This statement can't run inside a transaction: switch the console to Auto mode to run it": "Tej instrukcji nie można wykonać w transakcji: przełącz konsolę w tryb automatyczny, aby ją wykonać"
   }
 }

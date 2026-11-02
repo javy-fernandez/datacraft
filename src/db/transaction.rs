@@ -97,10 +97,85 @@ pub fn control(driver: Driver, statement: &str) -> Option<Control> {
     }
 }
 
+/// Where the console's transaction stands after a statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct After {
+    pub open: bool,
+    /// The work so far was committed by the statement; the next statements run in a new
+    /// transaction (nothing commits by itself on a Manual session).
+    pub implicit: bool,
+    /// A failed DDL statement may have committed it first (Oracle, Snowflake).
+    pub maybe_committed: bool,
+    /// The server rolled it back: after an error, or for a COMMIT of a failed PostgreSQL
+    /// transaction (answered with a silent ROLLBACK).
+    pub rolled_back: bool,
+}
+
+/// What `statement` did to the transaction (`failed`: its error), from the state before it and,
+/// where the engine can tell, the server's answer (`server_open`). When unsure it stays open:
+/// later statements are still uncommitted and the guards keep asking.
+pub fn after(driver: Driver, statement: &str, failed: Option<&str>, was_open: bool, was_aborted: bool, server_open: Option<bool>) -> After {
+    let control = control(driver, statement);
+    let open = server_open.unwrap_or(match (control, failed) {
+        (Some(Control::Begin), None) => true,
+        (Some(Control::Commit | Control::Rollback), None) => false,
+        // A failed COMMIT rolls back on PostgreSQL and Oracle (deferred constraints); elsewhere
+        // the outcome is unknown.
+        (Some(Control::Commit | Control::Rollback), Some(_)) => was_open && !matches!(driver, Driver::Postgres | Driver::Oracle),
+        (_, Some(e)) if rolls_back_on_error(driver, e) => false,
+        _ => was_open,
+    });
+    // DDL commits before it runs, so a failed one may have committed too; a nested
+    // START TRANSACTION commits the open one on MySQL / MariaDB.
+    let implicit = was_open
+        && open
+        && match (control, failed) {
+            (Some(Control::ImplicitCommit), None) => true,
+            (Some(Control::ImplicitCommit), Some(e)) => failed_ddl_committed(driver, e) == Some(true),
+            (Some(Control::Autocommit), None) => enables_autocommit(statement),
+            (Some(Control::Begin), None) => matches!(driver, Driver::MySql | Driver::MariaDb),
+            _ => false,
+        };
+    let maybe_committed = was_open && control == Some(Control::ImplicitCommit) && failed.is_some_and(|e| failed_ddl_committed(driver, e).is_none());
+    let rolled_back = was_open && !open && (failed.is_some() || (was_aborted && control == Some(Control::Commit)));
+    After { open, implicit, maybe_committed, rolled_back }
+}
+
 /// Server error after which MySQL / MariaDB has rolled the whole transaction back: a deadlock
 /// (error 1213, SQLSTATE 40001; the numbers survive the message's translation).
 pub fn rolls_back_on_error(driver: Driver, error: &str) -> bool {
     matches!(driver, Driver::MySql | Driver::MariaDb) && error.contains("1213") && error.contains("40001")
+}
+
+/// Whether a DDL statement that failed had already committed the open transaction (these engines
+/// commit before running DDL). MySQL / MariaDB commit once the statement parsed, so only a syntax
+/// error (1064, SQLSTATE 42000) keeps the transaction; Oracle and Snowflake can fail before or
+/// after their commit: None (unknown).
+pub fn failed_ddl_committed(driver: Driver, error: &str) -> Option<bool> {
+    match driver {
+        Driver::MySql | Driver::MariaDb => Some(!(error.contains("1064") && error.contains("42000"))),
+        _ => None,
+    }
+}
+
+/// Statements the engine refuses inside a transaction block, which a Manual console always runs
+/// in: the app refuses them before they abort the transaction.
+pub fn outside_transaction(driver: Driver, statement: &str) -> bool {
+    let w = leading_words(statement, 6);
+    let word = |i: usize| w.get(i).map(String::as_str);
+    match driver {
+        Driver::Postgres => match word(0) {
+            Some("VACUUM") => true,
+            Some("CREATE" | "DROP") if matches!(word(1), Some("DATABASE" | "TABLESPACE")) => true,
+            Some("ALTER") => word(1) == Some("SYSTEM"),
+            // CREATE / DROP INDEX CONCURRENTLY, REINDEX … CONCURRENTLY.
+            Some("CREATE" | "DROP" | "REINDEX") => w.iter().any(|x| x == "CONCURRENTLY"),
+            _ => false,
+        },
+        Driver::Sqlite => matches!(word(0), Some("VACUUM" | "ATTACH")),
+        Driver::MsSql => matches!(word(0), Some("BACKUP" | "RESTORE")) || (matches!(word(0), Some("CREATE" | "ALTER" | "DROP")) && word(1) == Some("DATABASE")),
+        _ => false,
+    }
 }
 
 /// `SET autocommit = 1` and the like: turning autocommit on commits the open transaction.
@@ -160,6 +235,7 @@ mod tests {
             (Driver::MySql, "SET @@session.autocommit = 1", Some(Autocommit)),
             (Driver::MariaDb, "set autocommit=0", Some(Autocommit)),
             (Driver::Postgres, "set lock_timeout = 1000", None),
+            (Driver::MySql, "START TRANSACTION", Some(Begin)),
             (Driver::Postgres, "select 1", None),
             (Driver::Postgres, "", None),
         ] {
@@ -173,6 +249,61 @@ mod tests {
         assert!(rolls_back_on_error(Driver::MySql, "Fehler 1213 (SQLSTATE 40001): Deadlock beim Versuch, eine Sperre zu bekommen"));
         assert!(!rolls_back_on_error(Driver::MySql, "Error 1205 (SQLSTATE HY000): Lock wait timeout exceeded"));
         assert!(!rolls_back_on_error(Driver::Postgres, "ERROR 1213 40001"));
+    }
+
+    #[test]
+    fn failed_ddl_and_statements_that_need_auto_mode() {
+        assert_eq!(failed_ddl_committed(Driver::MySql, "Error 1050 (SQLSTATE 42S01): Table 't' already exists"), Some(true));
+        assert_eq!(failed_ddl_committed(Driver::MariaDb, "Fehler 1064 (SQLSTATE 42000): Syntaxfehler"), Some(false));
+        assert_eq!(failed_ddl_committed(Driver::Oracle, "ORA-00955: name is already used by an existing object"), None);
+        for (driver, sql, refused) in [
+            (Driver::Postgres, "VACUUM ANALYZE t", true),
+            (Driver::Postgres, "create database shop2", true),
+            (Driver::Postgres, "CREATE UNIQUE INDEX CONCURRENTLY i ON t (c)", true),
+            (Driver::Postgres, "reindex table concurrently t", true),
+            (Driver::Postgres, "alter system set work_mem = '64MB'", true),
+            (Driver::Postgres, "create index i on t (c)", false),
+            (Driver::Postgres, "alter table t add c int", false),
+            (Driver::Sqlite, "vacuum", true),
+            (Driver::Sqlite, "ATTACH DATABASE 'x.db' AS x", true),
+            (Driver::MsSql, "BACKUP DATABASE shop TO DISK = 'x'", true),
+            (Driver::MsSql, "alter database shop set recovery simple", true),
+            (Driver::MsSql, "create table t (id int)", false),
+            (Driver::MySql, "create database x", false),
+        ] {
+            assert_eq!(outside_transaction(driver, sql), refused, "{driver:?}: {sql}");
+        }
+    }
+
+    #[test]
+    fn where_the_transaction_stands_after_a_statement() {
+        let after = |driver, sql, failed: Option<&str>, was_aborted| super::after(driver, sql, failed, true, was_aborted, None);
+        let state = |a: After| (a.open, a.implicit, a.maybe_committed, a.rolled_back);
+        // MySQL / MariaDB: a nested START TRANSACTION commits the open one.
+        assert_eq!(state(after(Driver::MySql, "START TRANSACTION", None, false)), (true, true, false, false));
+        assert_eq!(state(after(Driver::MariaDb, "begin", None, false)), (true, true, false, false));
+        assert_eq!(state(after(Driver::Postgres, "begin", None, false)), (true, false, false, false), "only a warning on PostgreSQL");
+        // A failed DDL: committed on MySQL unless it didn't parse; maybe on Oracle / Snowflake.
+        assert_eq!(state(after(Driver::MySql, "create table t (id int)", Some("Error 1050 (SQLSTATE 42S01): exists"), false)), (true, true, false, false));
+        assert_eq!(state(after(Driver::MySql, "create tabel t", Some("Error 1064 (SQLSTATE 42000): syntax"), false)), (true, false, false, false));
+        assert_eq!(state(after(Driver::Oracle, "create table t (id int)", Some("ORA-00955: name is already used"), false)), (true, false, true, false));
+        assert_eq!(state(after(Driver::Snowflake, "drop table missing", Some("002003 (42S02): does not exist"), false)), (true, false, true, false));
+        assert_eq!(state(after(Driver::Oracle, "alter session set nls_language = 'GERMAN'", Some("ORA-12705"), false)), (true, false, false, false));
+        // PostgreSQL: COMMIT of a failed transaction is a silent ROLLBACK.
+        assert_eq!(state(after(Driver::Postgres, "commit", None, true)), (false, false, false, true));
+        assert_eq!(state(after(Driver::Postgres, "end", None, false)), (false, false, false, false));
+        assert_eq!(state(after(Driver::Postgres, "rollback", None, true)), (false, false, false, false));
+        // Failed COMMIT: rolled back on PostgreSQL / Oracle, unknown (kept open) elsewhere.
+        assert_eq!(state(after(Driver::Oracle, "commit", Some("ORA-02091"), false)), (false, false, false, true));
+        assert_eq!(state(after(Driver::Snowflake, "commit", Some("error"), false)), (true, false, false, false));
+        // A MySQL deadlock rolls back; other errors leave the transaction as it was.
+        assert_eq!(state(after(Driver::MySql, "update t set x = 1", Some("Error 1213 (SQLSTATE 40001): Deadlock"), false)), (false, false, false, true));
+        assert_eq!(state(after(Driver::MySql, "update t set x = 1", Some("Error 1205 (SQLSTATE HY000): Lock wait timeout"), false)), (true, false, false, false));
+        // DDL and turning autocommit on commit implicitly; the server's answer wins where it exists.
+        assert_eq!(state(after(Driver::Oracle, "create table t (id int)", None, false)), (true, true, false, false));
+        assert_eq!(state(after(Driver::MySql, "set autocommit = 1", None, false)), (true, true, false, false));
+        assert_eq!(state(after(Driver::MySql, "set autocommit = 0", None, false)), (true, false, false, false));
+        assert_eq!(state(super::after(Driver::Sqlite, "commit", None, true, false, Some(true))), (true, false, false, false));
     }
 
     #[test]

@@ -1487,6 +1487,12 @@
     "A statement is still running in “{console}”: stop it before committing.": "“{console}” 中仍有语句在运行：提交前请先停止它。",
     "Stop Query": "停止查询",
     "Rolling back…": "正在回滚…",
-    "Waiting for the transaction to end…": "正在等待事务结束…"
+    "Waiting for the transaction to end…": "正在等待事务结束…",
+    "The statement failed, but the server may already have committed the open transaction before running it": "语句执行失败，但服务器可能在运行它之前就已提交了打开的事务",
+    "The commit was stopped before the server answered: the console's session was closed, so whether it committed is unknown": "提交在服务器响应前被停止：控制台的会话已关闭，因此无法确定是否已提交",
+    "The rollback was stopped: the console's session was closed, which rolls the transaction back": "回滚已被停止：控制台的会话已关闭，事务会因此回滚",
+    "Stopping the statement in “{console}” closes its session, which rolls the transaction back. Wait for it to finish to commit.": "停止 “{console}” 中的语句会关闭其会话，事务会因此回滚。要提交，请等待它运行结束。",
+    "Submit or discard the pending grid changes before switching to Manual mode": "切换到手动模式前，请提交或放弃网格中待处理的更改",
+    "This statement can't run inside a transaction: switch the console to Auto mode to run it": "此语句不能在事务中运行：请将控制台切换到自动模式后再运行"
   }
 }
