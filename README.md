@@ -62,6 +62,8 @@ Use **List** for catalog statistics or **Grid** for compact names arranged from 
 </table>
 
 - Select multiple objects with Shift, Ctrl/Command or a mouse rectangle. Drag them into local groups and assign colors to tables or folders.
+- Right-click a table in the explorer tree or in **Objects** to get the same menu in both places.
+- Open a database's **Procedures** or **Functions** in **Objects** to list them with their parameters and return types. From there you can execute, edit or generate DDL for a routine.
 - Use **Find in Schema…** to search accessible SQL tables across a selected database or schema.
 - Close tabs individually, to either side, or in bulk from their context menu.
 
@@ -71,7 +73,7 @@ Groups and colors are local preferences; they do not change the database. See [o
 
 SQL consoles provide syntax highlighting, completion, formatting, find and replace, query history, execution plans and cancellation. Run the current statement, a selection or the entire script. SQL Server scripts support <code>GO</code> batches.
 
-Schedule SQL or full database backups at a fixed interval, including after closing the window, with the per-user [task scheduler](docs/sql-scheduler.md).
+Schedule SQL or full database backups at a fixed interval, including after closing the window, with the per-user [task scheduler](docs/sql-scheduler.md). Tasks run the same dialect-aware batches as the console, with time limits on each batch. Tasks for the same SQLite file take turns. The background process removes itself once no enabled task remains, and **Turn off** pauses every task in one step.
 
 On PostgreSQL, MySQL and MariaDB, **Explain Plan** (⇧⌘E) shows the plan as a tree with each step's object, estimated rows and cost; **Explain Analyze** in the editor's menu also runs the statement and adds actual rows and time, asking first when the statement writes. The steps that take most of the cost or time are highlighted, and **Show as Text** gives the server's own output. Other engines show their text plans.
 
@@ -101,6 +103,8 @@ The cell editor supports multiline text and a UTF-8 hex view. The inspector swit
 
 To read a whole value, Alt+Click (⌥-click on macOS) any cell, double-click a cell that can't be edited, or choose View Value from its context menu: a popup below the cell shows it, with JSON indented, and Esc or a click outside closes it.
 
+**Help → Keyboard shortcuts…** lists the SQL editor and table navigation shortcuts. Menus, buttons and this list show each platform's own keys: ⌘ ⌥ ⇧ on macOS, Ctrl, Alt and Shift on Windows and Linux.
+
 [Table editing and shortcuts →](docs/table-editor.md)
 
 ## Build filters before applying them
@@ -121,7 +125,7 @@ Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Sc
 - **Copy tables:** transfer selected data between connections, databases or schemas, translate column types between engines and optionally include related rows through foreign keys.
 - **Mask values:** apply consistent per-column masking during table copies or exports.
 - **Manage objects:** create and modify tables and views, review generated DDL, and manage MySQL/MariaDB users or PostgreSQL roles and privileges.
-- **Procedures and functions:** browse, create and edit them with a parameter table, the engine's options and a live DDL preview, then execute them with typed arguments and see output parameters. See [procedures and functions](docs/routines.md).
+- **Procedures and functions:** browse, create and edit them with a parameter table, the engine's options and a live DDL preview, then execute them with typed arguments and see output parameters. An edited routine stays open in its own workspace tab, with **Definition** and **SQL Preview** views and its comment, until you save it. See [procedures and functions](docs/routines.md).
 - **Back up databases:** open **Back up database…** from the Database Explorer, review engine-specific options and choose a destination. Jobs run in the background with cancellation and local history.
 - **Run SQL scripts:** **Run SQL Script…** on a connection or database runs one or more `.sql` files without opening them. They are read in pieces, so a dump of several GB doesn't fill memory, and each engine's separators are respected (`GO` on SQL Server, `DELIMITER` on MySQL, `/` on Oracle). Progress and Cancel are shown; a failing statement asks Retry, Skip, Skip All or Stop, and the summary lists each failure with its file and line.
 
@@ -132,6 +136,23 @@ Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Sc
 </p>
 
 PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLite uses its online backup API. SQL Server, Oracle and Snowflake use server-side backup or export facilities with engine-specific privileges and destinations. See [backup modes, prerequisites and limitations](docs/database-backups.md).
+
+## Work with whole tables
+
+A table's context menu has the same actions in the explorer tree and in **Objects**. Long operations run in the background with progress and cancellation. Changes show their SQL before you apply them.
+
+| Action | What it does |
+| --- | --- |
+| **Show DDL** | Reads the table's definition from the catalog. When the catalog can't be read, the script is built from cached columns, and the status message says so. |
+| **Duplicate Table** | Copies the structure, or the structure and data, to a new name in the same schema. An existing table is never overwritten. Tables the engine can't copy faithfully, such as those with triggers, are refused. |
+| **Export Table…** | Writes the complete table as CSV, TSV or JSON on its own connection, ignoring the grid's page and filters. An existing file is replaced only if you allow it, and only after the export succeeds. |
+| **Dump SQL File** | Writes structure and data, structure only, or data only as SQL, with full binary and long values. |
+| **Print Table…** | Creates an HTML report of the schema, and optionally all the data, and opens it in your browser to print or save as PDF. |
+| **Reverse Tables to Model…** | Draws the selected tables, their direct neighbours and their declared foreign keys. Drag cards to arrange them, then save the model as JSON or export it as SVG. |
+| **Set Privileges…** | Shows a user's or role's explicit grants on the table and previews the exact GRANT and REVOKE statements before applying them. |
+| **Create Open Table Shortcut…** | Saves a `.lnk`, `.command` or `.sh` launcher that starts DataCraft and opens the table on a saved connection. Credentials stay in the system keychain. |
+
+Engine support differs for each action. SQLite and NoSQL engines don't offer table grants, and relationship models need an engine whose foreign keys DataCraft can read. See [table actions, models, exports and privileges](docs/object-browser.md#table-actions).
 
 ## Supported databases
 
@@ -189,6 +210,7 @@ Support varies by engine, server version and account privileges. [Oracle Instant
 - **Light and dark themes:** adjustable interface zoom and editor font size.
 - **Eight interface languages:** English, Spanish, French, Brazilian Portuguese, German, Polish, Simplified Chinese and Japanese. Follow the system language or choose one in Settings.
 - **OS credential storage:** saved passwords use macOS Keychain, Windows Credential Manager or the Linux Secret Service (GNOME Keyring, KWallet), rather than the connections file.
+- **Dialogs that fit small windows:** backup, schema search, routine and scheduler dialogs scroll their content, while their action buttons stay visible at the bottom.
 
 Built with Rust, egui/wgpu and Tokio. Database work runs through background workers to keep the interface responsive.
 
@@ -272,11 +294,14 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | Guide | Contents |
 | --- | --- |
 | [Database workspace](docs/database-workspace.md) | Inspectors, cell editor, structured filters and pagination |
-| [Object browser](docs/object-browser.md) | List/grid layouts, object metadata and row-count semantics |
+| [Object browser](docs/object-browser.md) | List/grid layouts, object metadata, row-count semantics and table actions (models, exports, privileges, launchers) |
 | [Table editor](docs/table-editor.md) | Keyboard navigation, selections, bulk edits and optional automatic saving |
 | [Navigation and search](docs/navigation-search.md) | Table search, schema search, local groups/colors and tab management |
 | [Database backups](docs/database-backups.md) | Engine support, native utilities, destinations and cancellation |
+| [Session monitor](docs/session-monitor.md) | Server sessions and queries, blocking chains, cancel and terminate per engine |
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
+| [Task scheduler](docs/sql-scheduler.md) | Recurring SQL and backup tasks, the background process, time limits and history |
+| [Manual transactions](docs/transactions.md) | Commit / Roll Back in the SQL console, failed transactions and the safeguards |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
 | [Low-power rendering](docs/low-power-rendering.md) | Software adapters, Remote Desktop and frame statistics |
@@ -297,6 +322,36 @@ cargo fmt --all -- --check
 Live integration tests require separately configured database services. Run only the relevant ignored tests against a disposable environment; do not run the entire ignored suite against personal or production databases.
 
 Translations live in <code>locales/&lt;code&gt;.json</code>, keyed by their English labels. The MySQL/MariaDB and PostgreSQL user editors were inspired by [DBCraft](https://github.com/DarkSoe/DBCraft) by DarkSoe.
+
+### Contributors
+
+Thank you to everyone who has contributed code, fixes and translations to DataCraft.
+
+<!-- contributors:start -->
+<!-- Generated by scripts/contributors.py; edits here are overwritten. -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/contributors/top-dark.svg">
+    <img src="docs/contributors/top-light.svg" alt="Top 5 contributors by share of commits and changed lines" width="100%">
+  </picture>
+</p>
+
+<details>
+<summary>Contributor numbers</summary>
+
+| # | Contributor | Commits | Share | Lines changed | Share |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 94 | 52.8% | +43,364 / −3,466 | 44.5% |
+| 2 | [YoSiem](https://github.com/YoSiem) | 68 | 38.2% | +37,810 / −6,587 | 42.2% |
+| 3 | [Claude](https://github.com/claude) | 8 | 4.5% | +6,399 / −41 | 6.1% |
+| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.4% | +4,258 / −215 | 4.3% |
+| 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.1% | +2,812 / −274 | 2.9% |
+
+Counted from non-merge commits on `main`; merge commits, bots and `Cargo.lock` are excluded.
+The chart is refreshed by the [contributors workflow](.github/workflows/contributors.yml).
+
+</details>
+<!-- contributors:end -->
 
 ## License
 

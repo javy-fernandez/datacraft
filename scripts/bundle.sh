@@ -85,7 +85,9 @@ if (( DMG )); then
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
   rm -f "$DMG_FILE"
-  hdiutil create -volname DataCraft -srcfolder "$STAGE" -format UDZO "$DMG_FILE" >/dev/null
+  # hdiutil's own size estimate for -srcfolder can come up short ("No space left on device").
+  SIZE=$(( $(du -sm "$STAGE" | cut -f1) * 12 / 10 + 20 ))
+  hdiutil create -volname DataCraft -srcfolder "$STAGE" -size "${SIZE}m" -format UDZO "$DMG_FILE" >/dev/null
   rm -rf "$STAGE"
   echo "Generated $DMG_FILE"
 fi

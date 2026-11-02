@@ -67,6 +67,9 @@ struct Inner {
     /// over, so there is nothing to abort on the server): no further chunk is fetched.
     stop_chunks: std::sync::atomic::AtomicBool,
     sequence: Mutex<u64>,
+    /// A console's Manual transaction session: an expired session is renewed but never replaced
+    /// by a new login, which would silently lose the transaction (and AUTOCOMMIT = FALSE).
+    keep_session: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -197,6 +200,9 @@ impl Inner {
                 t.master = m.to_string();
             }
             return Ok(());
+        }
+        if self.keep_session.load(std::sync::atomic::Ordering::SeqCst) {
+            bail!(tr("The Snowflake session expired; a new session cannot continue the console's transaction"));
         }
         let fresh = login(&self.http, &self.base, &self.cfg).await?;
         *self.tokens.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
@@ -611,8 +617,14 @@ impl SfSession {
             running: Mutex::new(None),
             stop_chunks: std::sync::atomic::AtomicBool::new(false),
             sequence: Mutex::new(0),
+            keep_session: std::sync::atomic::AtomicBool::new(false),
         };
         Ok(Self { inner: Arc::new(inner), broken: false })
+    }
+
+    /// Manual transactions: the session may be renewed, never replaced (see `Inner::keep_session`).
+    pub fn keep_session(&self) {
+        self.inner.keep_session.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn cancel_handle(&self) -> SfCancel {
@@ -1052,6 +1064,7 @@ mod tests {
             running: Mutex::new(None),
             stop_chunks: std::sync::atomic::AtomicBool::new(false),
             sequence: Mutex::new(0),
+            keep_session: std::sync::atomic::AtomicBool::new(false),
         };
         let mut session = SfSession { inner: Arc::new(inner), broken: false };
         assert!(session.execute("select 1", 10).await.is_err());
