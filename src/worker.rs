@@ -27,6 +27,10 @@ pub enum Request {
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
     InspectTable { conn: ConnId, db: String, schema: String, table: String, console: ConsoleId, generation: u64, count_rows: bool, page_filter: Option<String> },
+    /// Foreign keys of one table for grid navigation, on a session of its own.
+    ForeignKeys { conn: ConnId, db: String, schema: String, table: String },
+    /// "Referenced by…": bounded counts of the child rows referencing one row.
+    ReferenceCounts { conn: ConnId, db: String, request_id: u64, probes: Vec<crate::db::fk_nav::Probe>, cancel: Arc<std::sync::atomic::AtomicBool> },
     SchemaSearch {
         conn: ConnId,
         request_id: u64,
@@ -119,6 +123,8 @@ pub enum Response {
     TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
+    ForeignKeys { conn: ConnId, db: String, schema: String, table: String, result: Result<crate::db::fk_nav::TableKeys, String> },
+    ReferenceCounts { request_id: u64, result: Result<Vec<Result<u64, String>>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
     /// Result of `CopyTable`: rows copied to each target table.
     TableCopied { request_id: u64, result: Result<Vec<(String, u64)>, String> },
@@ -688,6 +694,28 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             let (result, page_rows) = match result { Ok((info, rows)) => (Ok(Box::new(info)), rows), Err(error) => (Err(error), None) };
             vec![Response::InspectTable { console, generation, page_rows, result }]
         }
+        Request::ForeignKeys { conn, db, schema, table } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let result = match cfg {
+                Some(cfg) => {
+                    let password = cfg.password.clone();
+                    Box::pin(crate::db::fk_nav::read(cfg, &db, &schema, &table)).await.map_err(|e| redact(format!("{e:#}"), &password))
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::ForeignKeys { conn, db, schema, table, result }]
+        }
+        Request::ReferenceCounts { conn, db, request_id, probes, cancel } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let result = match cfg {
+                Some(cfg) => {
+                    let password = cfg.password.clone();
+                    Box::pin(crate::db::fk_nav::count(cfg, &db, &probes, &cancel)).await.map_err(|e| redact(format!("{e:#}"), &password))
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::ReferenceCounts { request_id, result }]
+        }
         Request::SchemaSearch { conn, request_id, request, cancel } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             let result = match cfg {
@@ -1025,6 +1053,10 @@ fn report_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
     let path = path.canonicalize()?;
     anyhow::ensure!(path.is_file(), tr("Choose an HTML file for the print report"));
     Ok(path)
+}
+
+fn redact(message: String, password: &str) -> String {
+    if password.is_empty() { message } else { message.replace(password, "[redacted]") }
 }
 
 fn open_table_report(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {

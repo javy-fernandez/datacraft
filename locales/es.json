@@ -1446,5 +1446,15 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "Metadatos de columnas de tabla incompletos"
+  },
+  "fk_navigation": {
+    "Go to referenced row": "Ir a la fila referenciada",
+    "Referenced by…": "Referenciada por…",
+    "Referenced by": "Referenciada por",
+    "Back (⌥←)": "Atrás (⌥←)",
+    "Forward (⌥→)": "Adelante (⌥→)",
+    "The result does not include the referenced columns": "El resultado no incluye las columnas referenciadas",
+    "Open rows": "Abrir filas",
+    "Counting referencing rows…": "Contando las filas que la referencian…"
   }
 }

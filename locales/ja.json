@@ -1446,5 +1446,15 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "テーブルの列メタデータが不完全です"
+  },
+  "fk_navigation": {
+    "Go to referenced row": "参照先の行へ移動",
+    "Referenced by…": "参照元…",
+    "Referenced by": "参照元",
+    "Back (⌥←)": "戻る (⌥←)",
+    "Forward (⌥→)": "進む (⌥→)",
+    "The result does not include the referenced columns": "結果に参照先の列が含まれていません",
+    "Open rows": "行を開く",
+    "Counting referencing rows…": "参照している行を数えています…"
   }
 }

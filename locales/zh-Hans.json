@@ -1446,5 +1446,15 @@
   },
   "table_tools": {
     "Incomplete table column metadata": "表列元数据不完整"
+  },
+  "fk_navigation": {
+    "Go to referenced row": "转到被引用的行",
+    "Referenced by…": "被引用于…",
+    "Referenced by": "被引用于",
+    "Back (⌥←)": "后退 (⌥←)",
+    "Forward (⌥→)": "前进 (⌥→)",
+    "The result does not include the referenced columns": "结果中不包含被引用的列",
+    "Open rows": "打开行",
+    "Counting referencing rows…": "正在统计引用它的行…"
   }
 }

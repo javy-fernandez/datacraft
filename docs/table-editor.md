@@ -17,7 +17,7 @@ Ctrl for the combinations below.
 | Ctrl+Page Up / Page Down | First / last loaded row |
 | Shift+Arrow | Extend a rectangular cell selection |
 | Shift+click | Select the cell rectangle from the anchor |
-| Ctrl+click | Add or remove individual cells from the selection |
+| Ctrl+click | Add or remove individual cells from the selection; on an underlined foreign-key value, open the referenced row instead |
 | Alt+click (⌥-click on macOS) | Show the cell's whole value in a popup below it (JSON indented); Esc or a click outside closes it. Double-clicking a cell that can't be edited, or View Value in the context menu, does the same |
 | Drag with the mouse | Select a cell rectangle; dragging near an edge scrolls the grid |
 | Click a column name | Select that entire column in the loaded, filtered grid |
@@ -30,6 +30,7 @@ Ctrl for the combinations below.
 | Ctrl+S | Submit pending changes |
 | Escape | Discard the active record's pending changes; other records stay unchanged |
 | Ctrl+Z | Undo a grid change (when the inline text editor is not active) |
+| Alt+Left / Alt+Right (⌥←/⌥→ on macOS) | Go back / forward through foreign-key jumps (when no text field has focus) |
 
 Left and right arrows inside the text editor move the text cursor. Navigation
 respects the grid's current filters and sort order, includes newly added rows,
@@ -56,6 +57,48 @@ new selection.
 Column names select columns. The existing sort icon cycles ascending,
 descending and unsorted order; the separate funnel icon opens the value filter.
 Sorting or filtering commits an open editor into pending changes first.
+
+## Follow foreign keys
+
+Cells of declared foreign-key columns have a faint underline. Hold Ctrl (⌘ on
+macOS) over one to show it as a link, then click to open the referenced row: the
+parent table opens filtered to that key, in its existing tab when that tab has no
+pending changes or running query, otherwise in a new tab. Right-click a cell for
+**Go to referenced row** (one item per key using the column, with the parent table
+shown on the right) and **Referenced by…**.
+
+![Context menu with the foreign-key items](screenshots/fk-navigation/context-menu.png)
+
+The jump uses the normal Filter & Sort builder: one `=` condition per key column,
+so the filter can be edited, cleared or re-applied like any other. Values are
+quoted for the connection's dialect; composite keys produce one condition per
+column. A key with a NULL in any of its columns references nothing and is not a
+link, and new (unsaved) rows have no links. Links follow the stored values, not
+pending edits.
+
+![The referenced customer, filtered, with the Back button](screenshots/fk-navigation/referenced-row.png)
+
+**Referenced by…** lists every foreign key that references the row's table, with
+the number of rows referencing this row. Counts stop at 1000 (shown as `1000+`),
+run on a separate session, time out after 30 seconds and are cancelled when the
+dialog closes. **Open rows** opens the child table filtered to the referencing
+rows. A key whose referenced columns are not all in the result is listed without
+a count.
+
+![Referenced by dialog with bounded counts](screenshots/fk-navigation/referenced-by.png)
+
+Every jump is recorded. The Back / Forward arrows at the start of the table
+toolbar, or Alt+Left / Alt+Right, return to the previous table and filter; a
+closed tab is reopened, and a tab with pending changes is only activated.
+
+Keys are read per table, on a session of their own, the first time a result of
+that table is shown, and cached until the schema is refreshed or the table tab is
+reloaded. SQL console results get links only for a simple `SELECT` over one known
+table, and only for columns that map unambiguously to that table's columns. The
+feature is available on PostgreSQL, SQLite (`main` schema), SQL Server,
+MySQL/MariaDB, Oracle and Snowflake; it is hidden for NoSQL engines and
+ClickHouse. On Oracle, references from other owners are not listed, and on
+MySQL/MariaDB only references from the same database.
 
 ## Optional save on row change
 

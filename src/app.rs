@@ -69,6 +69,7 @@ mod views;
 mod table_export;
 mod table_shortcuts;
 mod table_grants;
+mod fk_nav;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -330,6 +331,7 @@ pub struct DataCraftApp {
     views: views::ViewState,
     table_export: table_export::ExportState,
     table_grants: table_grants::State,
+    fk_nav: fk_nav::State,
     /// Procedure and function dialogs and pending definitions.
     routines: routines::RoutineState,
     table_duplicate: table_duplicate::TableDuplicateState,
@@ -436,6 +438,7 @@ impl DataCraftApp {
             views: Default::default(),
             table_export: Default::default(),
             table_grants: Default::default(),
+            fk_nav: Default::default(),
             routines: Default::default(),
             table_duplicate: Default::default(),
             import: None,
@@ -847,6 +850,7 @@ impl DataCraftApp {
                         c.status = ConnStatus::Disconnected;
                         c.clear();
                     }
+                    self.forget_keys(conn, None);
                 }
                 Response::Refreshed { conn, databases } => self.refreshed(conn, databases),
                 Response::DatabaseLoaded { conn, db, result } => {
@@ -881,10 +885,13 @@ impl DataCraftApp {
                         apply_execution(c, results, error, elapsed, salt);
                     }
                     self.attach_edit_targets(console);
+                    self.attach_key_links(console);
                     self.apply_demo_edit(console);
                 }
                 Response::TableShortcut { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::TableModel { request_id, result } => self.table_model_received(request_id, result),
+                Response::ForeignKeys { conn, db, schema, table, result } => self.foreign_keys_received(conn, db, schema, table, result),
+                Response::ReferenceCounts { request_id, result } => self.reference_counts_received(request_id, result),
                 Response::ModelSaved { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
@@ -978,6 +985,7 @@ impl DataCraftApp {
             self.load_database(conn, db);
         }
         self.recheck_edit_targets(conn);
+        self.forget_keys(conn, None);
         self.info(tr("Schema refreshed"));
     }
 
@@ -990,8 +998,12 @@ impl DataCraftApp {
                 for v in c.results.iter_mut().filter(|v| v.edit.is_none()) {
                     v.edit_checked = false;
                 }
+                for v in c.results.iter_mut().filter(|v| v.links.is_none()) {
+                    v.links_checked = false;
+                }
             }
             self.attach_edit_targets(id);
+            self.attach_key_links(id);
         }
     }
 
@@ -2504,6 +2516,13 @@ impl DataCraftApp {
         }
         let in_objects = self.object_browser.active;
         let in_table = !in_objects && self.consoles.get(self.active).is_some_and(|c| c.table.is_some());
+        let unfocused = ctx.memory(|m| m.focused().is_none());
+        let (back, forward) = ctx.input_mut(|i| {
+            (in_table && unfocused && i.consume_key(Modifiers::ALT, Key::ArrowLeft), in_table && unfocused && i.consume_key(Modifiers::ALT, Key::ArrowRight))
+        });
+        if back || forward {
+            self.key_history(forward);
+        }
         let (run_all, run, new_console, reload, quit, save) = ctx.input_mut(|i| {
             let run_all = !in_objects && !in_table && i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter);
             let run = !in_objects && !in_table && i.consume_key(Modifiers::COMMAND, Key::Enter);
@@ -2542,6 +2561,7 @@ impl DataCraftApp {
             || self.views.dialog.is_some()
             || self.table_export.is_open()
             || self.table_grants.is_open()
+            || self.fk_nav.is_open()
             || self.routines.is_open()
             || self.table_model.is_some()
             || self.table_duplicate.is_open()
@@ -3350,7 +3370,9 @@ impl DataCraftApp {
                 columns,
                 auto_complete: self.auto_complete,
             };
+            let history = self.key_history_flags();
             let console = &mut self.consoles[idx];
+            if let Some(t) = console.table.as_mut() { t.history = history; }
             let out = if console.routine.is_some() { console.show_routine(ui, &cx) } else if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
             actions.extend(out);
         });
@@ -3393,6 +3415,13 @@ impl DataCraftApp {
                     if let Some(id) = self.consoles.get(idx).map(|c| c.id)
                         && self.guard(Discard::Reload(id))
                     {
+                        if let Some(c) = self.consoles.get(idx)
+                            && let (Some(conn), Some(t)) = (c.conn, c.table.as_ref())
+                            && let Some(db) = self.conn(conn).and_then(|x| x.resolve_db(c.db.as_deref())).map(str::to_string)
+                        {
+                            let (schema, table) = (t.schema.clone(), t.table.clone());
+                            self.forget_keys(conn, Some((&db, &schema, &table)));
+                        }
                         self.reload_table(idx);
                     }
                 }
@@ -3411,6 +3440,8 @@ impl DataCraftApp {
                 ConsoleAction::Submit(view) => self.submit_now(idx, view),
                 ConsoleAction::CloseResults(which) => self.close_results(idx, which),
                 ConsoleAction::ExportMasked => self.open_mask_export(idx),
+                ConsoleAction::Jump(jump) => self.follow_key(idx, jump),
+                ConsoleAction::History(forward) => self.key_history(forward),
             }
         }
     }
@@ -3424,6 +3455,7 @@ impl DataCraftApp {
         self.table_duplicate_dialog(ctx);
         self.show_table_export(ctx);
         self.table_grants_dialog(ctx);
+        self.references_dialog(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4431,7 +4463,7 @@ mod tests {
             startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
-            modify: None, table_grants: Default::default(),
+            modify: None, table_grants: Default::default(), fk_nav: Default::default(),
         }
     }
 
