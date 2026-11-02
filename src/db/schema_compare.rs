@@ -79,11 +79,14 @@ pub struct SchemaModel {
     pub skipped: Vec<String>,
     /// SQLite: the session's `foreign_keys` and `legacy_alter_table`, restored by the script.
     pub pragmas: Vec<(String, String)>,
+    /// Table and view names match ignoring case (MySQL: unless `lower_case_table_names` is 0).
+    pub names_ignore_case: bool,
 }
 
 impl SchemaModel {
     pub fn new(driver: Driver, db: &str, schema: &str) -> Self {
-        Self { driver, db: db.into(), schema: schema.into(), tables: vec![], views: vec![], sequences: vec![], types: vec![], skipped: vec![], pragmas: vec![] }
+        let names_ignore_case = case_insensitive(driver);
+        Self { driver, db: db.into(), schema: schema.into(), tables: vec![], views: vec![], sequences: vec![], types: vec![], skipped: vec![], pragmas: vec![], names_ignore_case }
     }
 }
 
@@ -177,23 +180,23 @@ fn ident_char(c: char) -> bool {
 /// reference in its SQL text is moved for. Functions, extension objects and other schemas'
 /// objects keep their qualifier (they are shared, not part of the comparison).
 pub struct Names {
-    driver: Driver,
+    ignore_case: bool,
     set: HashSet<String>,
 }
 
 impl Names {
     pub fn of(model: &SchemaModel) -> Self {
         let all = model.tables.iter().map(|t| &t.name).chain(model.views.iter().map(|v| &v.name)).chain(&model.sequences).chain(&model.types);
-        let set = all.map(|n| Self::key(model.driver, n)).collect();
-        Self { driver: model.driver, set }
+        let ignore_case = model.names_ignore_case;
+        Self { ignore_case, set: all.map(|n| Self::key(ignore_case, n)).collect() }
     }
 
-    fn key(driver: Driver, name: &str) -> String {
-        if case_insensitive(driver) { name.to_lowercase() } else { name.to_string() }
+    fn key(ignore_case: bool, name: &str) -> String {
+        if ignore_case { name.to_lowercase() } else { name.to_string() }
     }
 
     fn contains(&self, name: &str) -> bool {
-        self.set.contains(&Self::key(self.driver, name))
+        self.set.contains(&Self::key(self.ignore_case, name))
     }
 }
 
@@ -395,6 +398,20 @@ fn norm_view(driver: Driver, schema: &str, names: &Names, v: &ViewDefinition) ->
     format!("{}|{}", squash(&v.columns), squash(&requalify(driver, &v.body, schema, "", names)))
 }
 
+/// A UNIQUE constraint whose name the server made up (SQLite's are unnamed, SQL Server's
+/// `UQ__orders__A9D1…`, Oracle's `SYS_C0012345`): the same constraint has another name on
+/// each server, so it is matched, created and dropped by its columns.
+fn system_unique(driver: Driver, x: &IndexDef) -> bool {
+    let name = x.name.as_str();
+    x.constraint
+        && match driver {
+            Driver::Sqlite => true,
+            Driver::MsSql => name.starts_with("UQ__") && name.rsplit("__").next().is_some_and(|h| h.len() >= 8 && h.chars().all(|c| c.is_ascii_hexdigit())),
+            Driver::Oracle => name.strip_prefix("SYS_C").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())),
+            _ => false,
+        }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Comparison
 
@@ -404,18 +421,27 @@ struct Ctx<'a> {
     tgt: &'a SchemaModel,
     src_names: Names,
     tgt_names: Names,
-    /// Names match ignoring case (case-insensitive engine, or two different engines).
+    /// Column, index and key names match ignoring case (case-insensitive engine, or two
+    /// different engines).
     fold: bool,
+    /// Table and view names too (MySQL keeps their case with `lower_case_table_names` 0).
+    fold_objects: bool,
 }
 
 impl<'a> Ctx<'a> {
     fn new(src: &'a SchemaModel, tgt: &'a SchemaModel) -> Self {
         let fold = src.driver != tgt.driver || case_insensitive(tgt.driver);
-        Self { src, tgt, src_names: Names::of(src), tgt_names: Names::of(tgt), fold }
+        let fold_objects = src.driver != tgt.driver || (src.names_ignore_case && tgt.names_ignore_case);
+        Self { src, tgt, src_names: Names::of(src), tgt_names: Names::of(tgt), fold, fold_objects }
     }
 
     fn key(&self, name: &str) -> String {
         if self.fold { name.to_lowercase() } else { name.to_string() }
+    }
+
+    /// Key of a table or view name.
+    fn obj(&self, name: &str) -> String {
+        if self.fold_objects { name.to_lowercase() } else { name.to_string() }
     }
 
     fn keys(&self, names: &[String]) -> Vec<String> {
@@ -445,16 +471,16 @@ impl<'a> Ctx<'a> {
             "{}>{}.{}({})|{}|{}",
             self.keys(&fk.columns).join(","),
             schema,
-            self.key(&fk.ref_table),
+            self.obj(&fk.ref_table),
             self.keys(&fk.ref_columns).join(","),
             norm_rule(model.driver, &fk.on_delete),
             norm_rule(model.driver, &fk.on_update)
         )
     }
 
-    /// Index identity: its name, or for a SQLite UNIQUE constraint (auto-named) its columns.
+    /// Index identity: its name, or for a UNIQUE constraint the server named itself its columns.
     fn index_key(&self, driver: Driver, x: &IndexDef) -> String {
-        if driver == Driver::Sqlite && x.constraint { format!("unique({})", self.keys(&x.columns).join(",")) } else { self.key(&x.name) }
+        if system_unique(driver, x) { format!("unique({})", self.keys(&x.columns).join(",")) } else { self.key(&x.name) }
     }
 
     fn index_eq(&self, a: &IndexDef, b: &IndexDef) -> bool {
@@ -498,7 +524,8 @@ fn table_delta<'a>(cx: &Ctx, s: &'a TableModel, t: &'a TableModel) -> TableDelta
         added: vec![],
         dropped: t.details.columns.iter().filter(|c| !scols.contains(&cx.key(&c.name))).collect(),
         changed: vec![],
-        pk: cx.keys(&s.details.primary_key).into_iter().collect::<BTreeSet<_>>() != cx.keys(&t.details.primary_key).into_iter().collect::<BTreeSet<_>>(),
+        // In key order: (a, b) and (b, a) are different keys.
+        pk: cx.keys(&s.details.primary_key) != cx.keys(&t.details.primary_key),
         indexes_added: vec![],
         indexes_dropped: vec![],
         fks_added: vec![],
@@ -763,10 +790,10 @@ pub fn sqlite_features(sql: &str) -> (Vec<String>, HashMap<String, String>) {
 pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
     let cx = Ctx::new(src, tgt);
     let mut objects = vec![];
-    let tgt_tables: HashMap<String, usize> = tgt.tables.iter().enumerate().map(|(i, t)| (cx.key(&t.name), i)).collect();
+    let tgt_tables: HashMap<String, usize> = tgt.tables.iter().enumerate().map(|(i, t)| (cx.obj(&t.name), i)).collect();
     let mut seen = HashSet::new();
     for (i, s) in src.tables.iter().enumerate() {
-        let j = tgt_tables.get(&cx.key(&s.name)).copied();
+        let j = tgt_tables.get(&cx.obj(&s.name)).copied();
         let (status, changes, manual) = match j {
             Some(j) => {
                 seen.insert(j);
@@ -802,10 +829,10 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             manual: None,
         });
     }
-    let tgt_views: HashMap<String, usize> = tgt.views.iter().enumerate().map(|(i, v)| (cx.key(&v.name), i)).collect();
+    let tgt_views: HashMap<String, usize> = tgt.views.iter().enumerate().map(|(i, v)| (cx.obj(&v.name), i)).collect();
     let mut seen = HashSet::new();
     for (i, s) in src.views.iter().enumerate() {
-        let j = tgt_views.get(&cx.key(&s.name)).copied();
+        let j = tgt_views.get(&cx.obj(&s.name)).copied();
         let status = match j {
             Some(j) => {
                 seen.insert(j);
@@ -1181,6 +1208,10 @@ impl<'a> Gen<'a> {
     }
 
     fn create_index(&mut self, table: &str, x: &IndexDef) -> Option<String> {
+        if self.d != Driver::Sqlite && system_unique(self.d, x) {
+            // Unnamed again: the server names it.
+            return Some(format!("alter table {} add unique ({})", self.object(table), self.cols(&x.columns)));
+        }
         if !x.plain {
             self.warnings.push(trf("Index “{name}” is an expression or partial index and is not recreated", &[("name", &x.name)]));
             return None;
@@ -1260,7 +1291,7 @@ impl<'a> Gen<'a> {
     }
 
     /// The edit that turns target table `t` into source table `s`, for `alter::plan`.
-    fn edit(&mut self, s: &TableModel, t: &TableModel) -> (Vec<EditColumn>, Vec<EditIndex>) {
+    fn edit(&mut self, s: &TableModel, t: &TableModel) -> (Vec<EditColumn>, Vec<EditIndex>, Vec<String>) {
         let cx = &self.cx;
         let tcols: HashMap<String, usize> = t.details.columns.iter().enumerate().map(|(i, c)| (cx.key(&c.name), i)).collect();
         let pk: HashSet<String> = cx.keys(&s.details.primary_key).into_iter().collect();
@@ -1310,8 +1341,13 @@ impl<'a> Gen<'a> {
             }
         }
         let mut skipped = vec![];
+        let mut uniques = vec![];
         for x in &s.details.indexes {
             if kept.contains(&cx.index_key(cx.src.driver, x)) {
+                continue;
+            }
+            if system_unique(cx.src.driver, x) {
+                uniques.push(x);
                 continue;
             }
             if !x.plain {
@@ -1326,7 +1362,8 @@ impl<'a> Gen<'a> {
         for c in left_out {
             self.creatable(&t.name, c);
         }
-        (columns, indexes)
+        let uniques = uniques.into_iter().filter_map(|x| self.create_index(&t.name, x)).collect();
+        (columns, indexes, uniques)
     }
 
     /// PostgreSQL `CREATE OR REPLACE VIEW` works when the new view keeps the old one's columns
@@ -1413,7 +1450,7 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     let mut p = Phases::default();
 
     // Changed tables first: what they drop or retype decides which foreign keys must go.
-    let dropped_names: HashSet<String> = dropped.iter().map(|o| g.cx.key(&o.name)).collect();
+    let dropped_names: HashSet<String> = dropped.iter().map(|o| g.cx.obj(&o.name)).collect();
     let mut touched: HashMap<String, HashSet<String>> = HashMap::new();
     // Columns dropped or retyped, by table (lowercase): what blocks a PostgreSQL view.
     let mut retyped: HashMap<String, HashSet<String>> = HashMap::new();
@@ -1433,9 +1470,9 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
         for x in delta.indexes_dropped.iter().filter(|x| x.unique) {
             cols.extend(g.cx.keys(&x.columns));
         }
-        touched.insert(g.cx.key(&t.name), cols);
+        touched.insert(g.cx.obj(&t.name), cols);
         retyped.insert(
-            g.cx.key(&t.name),
+            g.cx.obj(&t.name),
             delta.dropped.iter().map(|c| c.name.to_lowercase()).chain(delta.changed.iter().filter(|c| c.ty).map(|c| c.tgt.name.to_lowercase())).collect(),
         );
         if sqlite {
@@ -1474,7 +1511,7 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
         for c in delta.changed.iter().filter(|c| c.default) {
             g.sequence_for(&mut p.pre, c.src);
         }
-        let (columns, indexes) = g.edit(s, t);
+        let (columns, indexes, uniques) = g.edit(s, t);
         // MySQL repeats a column's EXTRA in MODIFY: give it the source's.
         let mut details = t.details.clone();
         for c in &delta.changed {
@@ -1487,6 +1524,23 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
                 g.warnings.extend(plan.warnings);
             }
             Err(e) => g.warnings.push(trf("Table “{name}”: {error}", &[("name", &t.name), ("error", &e)])),
+        }
+        alter_out.extend(uniques);
+        // `alter::plan` compares key columns as a set: a new order is made here.
+        let pk_set = |pk: &[String]| g.cx.keys(pk).into_iter().collect::<BTreeSet<_>>();
+        if delta.pk && pk_set(&s.details.primary_key) == pk_set(&t.details.primary_key) {
+            let tbl = g.object(&t.name);
+            let tcols: HashMap<String, &str> = t.details.columns.iter().map(|c| (g.cx.key(&c.name), c.name.as_str())).collect();
+            let cols: Vec<String> = s.details.primary_key.iter().map(|c| tcols.get(&g.cx.key(c)).map_or(c.clone(), |n| n.to_string())).collect();
+            let add = format!("add primary key ({})", g.cols(&cols));
+            alter_out.extend(match d {
+                Driver::MySql | Driver::MariaDb => vec![format!("alter table {tbl} drop primary key, {add}")],
+                Driver::Oracle => vec![format!("alter table {tbl} drop primary key"), format!("alter table {tbl} {add}")],
+                _ => {
+                    let name = t.details.pk_name.clone().unwrap_or_else(|| format!("{}_pkey", t.name));
+                    vec![format!("alter table {tbl} drop constraint {}", g.q(&name)), format!("alter table {tbl} {add}")]
+                }
+            });
         }
         // MySQL: a MODIFY from `alter::plan` already carries the new EXTRA.
         let mysql = matches!(d, Driver::MySql | Driver::MariaDb);
@@ -1503,14 +1557,14 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
         }
     };
     if !sqlite {
-        let altered_names: HashSet<String> = altered.iter().map(|o| g.cx.key(&o.name)).collect();
-        let src_tables: HashMap<String, &TableModel> = src.tables.iter().map(|t| (g.cx.key(&t.name), t)).collect();
+        let altered_names: HashSet<String> = altered.iter().map(|o| g.cx.obj(&o.name)).collect();
+        let src_tables: HashMap<String, &TableModel> = src.tables.iter().map(|t| (g.cx.obj(&t.name), t)).collect();
         for t in &tgt.tables {
-            let tkey = g.cx.key(&t.name);
+            let tkey = g.cx.obj(&t.name);
             let source = src_tables.get(&tkey);
             for fk in &t.foreign_keys {
                 let own_ref = fk.ref_schema.is_empty() || fk.ref_schema.eq_ignore_ascii_case(&tgt.schema);
-                let rkey = g.cx.key(&fk.ref_table);
+                let rkey = g.cx.obj(&fk.ref_table);
                 let key = g.cx.fk_key(tgt, fk);
                 let in_source = source.and_then(|s| s.foreign_keys.iter().find(|f| g.cx.fk_key(src, f) == key));
                 let gone = altered_names.contains(&tkey) && in_source.is_none();
@@ -1589,7 +1643,7 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
         if pg {
             queue.extend(tgt.views.iter().filter(|w| w.uses.iter().any(|(t, _)| t.eq_ignore_ascii_case(&v.name))).map(|w| (w, again)));
         }
-        if create_views.iter().any(|(c, _)| g.cx.key(&c.name) == g.cx.key(&v.name)) {
+        if create_views.iter().any(|(c, _)| g.cx.obj(&c.name) == g.cx.obj(&v.name)) {
             recreated.push(v.name.clone());
         } else if again {
             create_views.push((v, false));
@@ -1632,7 +1686,7 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     let create_list: Vec<&ViewModel> = create_views.iter().map(|(v, _)| *v).collect();
     for i in order(&create_list) {
         let (v, from_source) = create_views[i];
-        let dropped_first = drop_views.iter().any(|x| g.cx.key(&x.name) == g.cx.key(&v.name));
+        let dropped_first = drop_views.iter().any(|x| g.cx.obj(&x.name) == g.cx.obj(&v.name));
         let body = if from_source { g.moved(&v.definition.body) } else { v.definition.body.clone() };
         let columns = if from_source { g.moved(&v.definition.columns) } else { v.definition.columns.clone() };
         let spec = ViewSpec { schema: tgt.schema.clone(), name: v.name.clone(), columns, body, algorithm: v.definition.algorithm.clone(), security: v.definition.security.clone(), ..Default::default() };
@@ -1645,10 +1699,10 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     // Created tables: SQLite in foreign key order (parents first), for readability.
     let mut pending: Vec<&TableModel> = created.iter().map(|o| &src.tables[o.source.unwrap_or_default()]).collect();
     while !pending.is_empty() {
-        let names: HashSet<String> = pending.iter().map(|t| g.cx.key(&t.name)).collect();
+        let names: HashSet<String> = pending.iter().map(|t| g.cx.obj(&t.name)).collect();
         let next = pending
             .iter()
-            .position(|t| t.foreign_keys.iter().all(|f| !names.contains(&g.cx.key(&f.ref_table)) || g.cx.key(&f.ref_table) == g.cx.key(&t.name)))
+            .position(|t| t.foreign_keys.iter().all(|f| !names.contains(&g.cx.obj(&f.ref_table)) || g.cx.obj(&f.ref_table) == g.cx.obj(&t.name)))
             .unwrap_or(0);
         let t = pending.remove(next);
         let mut pre = std::mem::take(&mut p.pre);

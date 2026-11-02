@@ -600,3 +600,67 @@ fn sequences_are_created_when_both_schemas_have_the_same_name() {
     assert!(at(&s, "create sequence if not exists public.n_keys") < at(&s, "create table public.n"));
     assert!(!s.statements.iter().any(|x| x.contains("sequence if not exists billing")));
 }
+
+#[test]
+fn unique_constraints_named_by_the_server_match_by_their_columns() {
+    let unique = |name: &str| IndexDef { constraint: true, ..index(name, &["code"], true) };
+    let t = |name: &str| {
+        let mut t = table("orders", vec![required(col("id", "int")), col("code", "varchar(20)")], &["id"]);
+        if !name.is_empty() {
+            t.details.indexes.push(unique(name));
+        }
+        t
+    };
+    for (driver, a, b) in [(Driver::MsSql, "UQ__orders__A9D105347C5E6F11", "UQ__orders__B2C3D4E5F6A7B8C9"), (Driver::Oracle, "SYS_C0012345", "SYS_C0099999")] {
+        let (src, tgt) = (model(driver, "a", vec![t(a)], vec![]), model(driver, "b", vec![t(b)], vec![]));
+        assert!(!compare(&src, &tgt).has_differences(), "{driver:?}");
+        // Only in the source: added unnamed again (the server names it); only in the target:
+        // dropped by its own name.
+        let bare = model(driver, "b", vec![t("")], vec![]);
+        let c = compare(&src, &bare);
+        let s = script(&src, &bare, &c, &all(&c)).unwrap();
+        let unquoted = |s: &Script| s.statements.iter().map(|x| x.replace('"', "")).collect::<Vec<_>>();
+        assert_eq!(unquoted(&s), ["alter table b.orders add unique (code)"], "{driver:?}");
+        let c = compare(&bare, &tgt);
+        let s = script(&bare, &tgt, &c, &all(&c)).unwrap();
+        assert_eq!(unquoted(&s), [format!("alter table b.orders drop constraint {b}")], "{driver:?}");
+    }
+    // A name chosen by someone is still compared by name.
+    let named = |name: &str| model(Driver::MsSql, "dbo", vec![t(name)], vec![]);
+    assert!(compare(&named("uq_orders_code"), &named("uq_code")).has_differences());
+}
+
+#[test]
+fn primary_key_column_order_is_compared_and_scripted() {
+    let t = |pk: &[&str]| {
+        let mut t = table("t", vec![required(col("a", "integer")), required(col("b", "integer"))], pk);
+        t.details.pk_name = Some("t_pkey".into());
+        t
+    };
+    let c = compare(&model(Driver::Postgres, "s", vec![t(&["b", "a"])], vec![]), &model(Driver::Postgres, "s", vec![t(&["a", "b"])], vec![]));
+    assert_eq!(c.objects[0].changes, ["Primary key changed"]);
+    for (driver, expected) in [
+        (Driver::Postgres, vec!["alter table s.t drop constraint t_pkey", "alter table s.t add primary key (b, a)"]),
+        (Driver::MySql, vec!["alter table s.t drop primary key, add primary key (b, a)"]),
+        (Driver::Oracle, vec!["alter table s.t drop primary key", "alter table s.t add primary key (b, a)"]),
+    ] {
+        let (src, tgt) = (model(driver, "s", vec![t(&["b", "a"])], vec![]), model(driver, "s", vec![t(&["a", "b"])], vec![]));
+        let c = compare(&src, &tgt);
+        let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+        // Oracle quotes the lowercase names of these models.
+        let body: Vec<String> = s.statements.iter().filter(|x| !matches!(x.as_str(), "begin" | "commit")).map(|x| x.replace('"', "")).collect();
+        assert_eq!(body, expected, "{driver:?}");
+    }
+}
+
+#[test]
+fn mysql_table_names_fold_only_when_the_server_ignores_their_case() {
+    let both = || vec![table("Users", vec![col("id", "int")], &[]), table("users", vec![col("id", "int")], &[])];
+    let sensitive = |schema: &str| SchemaModel { names_ignore_case: false, ..model(Driver::MySql, schema, both(), vec![]) };
+    let c = compare(&sensitive("a"), &sensitive("b"));
+    assert_eq!(c.objects.len(), 2, "Users and users are two tables");
+    assert!(!c.has_differences());
+    // Folding servers see one table under either spelling.
+    let folding = |schema: &str, name: &str| model(Driver::MySql, schema, vec![table(name, vec![col("id", "int")], &[])], vec![]);
+    assert!(!compare(&folding("a", "Users"), &folding("b", "users")).has_differences());
+}

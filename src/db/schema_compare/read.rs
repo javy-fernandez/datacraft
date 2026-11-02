@@ -303,6 +303,11 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
     let objects = query(s, &objects_sql(driver, schema)).await?;
     progress.total.fetch_add(objects.rows.len(), Ordering::Relaxed);
     let mut model = SchemaModel::new(driver, db, schema);
+    if matches!(driver, Driver::MySql | Driver::MariaDb) {
+        // 0: table names keep their case (Linux); 1 and 2 compare them ignoring it.
+        let lower = query(s, "select @@lower_case_table_names").await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
+        model.names_ignore_case = lower.trim() != "0";
+    }
     for r in &objects.rows {
         anyhow::ensure!(!cancelled(), tr("Cancelled"));
         let name = text(r, 0);
