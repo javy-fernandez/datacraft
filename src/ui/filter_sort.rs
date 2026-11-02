@@ -380,7 +380,7 @@ pub struct SortRule {
     pub descending: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FilterSort {
     pub text_mode: bool,
     pub filter: Group,

@@ -66,6 +66,8 @@ pub enum Ico {
     WordWrap,
     Code,
     Comment,
+    /// Arrow out of a foreign-key value (follow it to the referenced row).
+    FollowKey,
 }
 
 const W: f32 = 1.3;
@@ -387,6 +389,10 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         Ico::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)], color);
             line(&[(12.0, 4.0), (4.0, 12.0)], color);
+        }
+        Ico::FollowKey => {
+            line(&[(4.0, 12.0), (12.0, 4.0)], color);
+            line(&[(6.0, 4.0), (12.0, 4.0), (12.0, 10.0)], color);
         }
         Ico::Export => {
             line(&[(8.0, 2.0), (8.0, 10.5)], color);

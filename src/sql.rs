@@ -336,6 +336,34 @@ pub fn highlight(text: &str, dark_mode: bool, font: egui::FontId) -> egui::text:
     highlight_dialect(text, Dialect::PERMISSIVE, dark_mode, font)
 }
 
+/// Class of a lexed token, for code that rewrites SQL text token by token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TokenClass {
+    Word,
+    /// A string literal, with its prefix (`E'…'`, `N'…'`) or dollar quotes.
+    Str,
+    QuotedIdent,
+    /// Whitespace and comments.
+    Blank,
+    Other,
+}
+
+/// The tokens of `text` in `driver`'s dialect, with their byte ranges.
+pub(crate) fn tokens(text: &str, driver: Driver) -> Vec<(TokenClass, std::ops::Range<usize>)> {
+    Lexer::new(text, Dialect::for_driver(driver))
+        .map(|t| {
+            let class = match t.kind {
+                Kind::Word => TokenClass::Word,
+                Kind::Str => TokenClass::Str,
+                Kind::QuotedIdent => TokenClass::QuotedIdent,
+                Kind::Whitespace | Kind::LineComment | Kind::BlockComment => TokenClass::Blank,
+                _ => TokenClass::Other,
+            };
+            (class, t.start..t.end)
+        })
+        .collect()
+}
+
 /// Like [`highlight`], with the lexical rules of `driver` (MySQL `\'` escapes, Oracle `q'[…]'`).
 pub fn highlight_for(text: &str, driver: Driver, dark_mode: bool, font: egui::FontId) -> egui::text::LayoutJob {
     highlight_dialect(text, Dialect::for_driver(driver), dark_mode, font)

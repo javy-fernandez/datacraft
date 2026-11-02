@@ -125,6 +125,7 @@ Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Sc
 - **Copy tables:** transfer selected data between connections, databases or schemas, translate column types between engines and optionally include related rows through foreign keys.
 - **Mask values:** apply consistent per-column masking during table copies or exports.
 - **Manage objects:** create and modify tables and views, review generated DDL, and manage MySQL/MariaDB users or PostgreSQL roles and privileges.
+- **Compare schemas:** **Compare Schemas…** on a connection, database or schema shows what differs between two schemas (tables, columns, keys, indexes, foreign keys and views), side by side, and generates a script that makes the target match the source, never run on its own. See [schema compare](docs/schema-compare.md).
 - **Procedures and functions:** browse, create and edit them with a parameter table, the engine's options and a live DDL preview, then execute them with typed arguments and see output parameters. An edited routine stays open in its own workspace tab, with **Definition** and **SQL Preview** views and its comment, until you save it. See [procedures and functions](docs/routines.md).
 - **Back up databases:** open **Back up database…** from the Database Explorer, review engine-specific options and choose a destination. Jobs run in the background with cancellation and local history.
 - **Run SQL scripts:** **Run SQL Script…** on a connection or database runs one or more `.sql` files without opening them. They are read in pieces, so a dump of several GB doesn't fill memory, and each engine's separators are respected (`GO` on SQL Server, `DELIMITER` on MySQL, `/` on Oracle). Progress and Cancel are shown; a failing statement asks Retry, Skip, Skip All or Stop, and the summary lists each failure with its file and line.
@@ -301,6 +302,7 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Session monitor](docs/session-monitor.md) | Server sessions and queries, blocking chains, cancel and terminate per engine |
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Task scheduler](docs/sql-scheduler.md) | Recurring SQL and backup tasks, the background process, time limits and history |
+| [Schema compare](docs/schema-compare.md) | Differences between two schemas and the migration script that applies them |
 | [Manual transactions](docs/transactions.md) | Commit / Roll Back in the SQL console, failed transactions and the safeguards |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
@@ -341,11 +343,11 @@ Thank you to everyone who has contributed code, fixes and translations to DataCr
 
 | # | Contributor | Commits | Share | Lines changed | Share |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 94 | 52.8% | +43,364 / −3,466 | 44.5% |
-| 2 | [YoSiem](https://github.com/YoSiem) | 68 | 38.2% | +37,810 / −6,587 | 42.2% |
-| 3 | [Claude](https://github.com/claude) | 8 | 4.5% | +6,399 / −41 | 6.1% |
-| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.4% | +4,258 / −215 | 4.3% |
-| 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.1% | +2,812 / −274 | 2.9% |
+| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 94 | 49.5% | +43,364 / −3,466 | 41.1% |
+| 2 | [YoSiem](https://github.com/YoSiem) | 80 | 42.1% | +45,662 / −7,390 | 46.6% |
+| 3 | [Claude](https://github.com/claude) | 8 | 4.2% | +6,399 / −41 | 5.7% |
+| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.2% | +4,258 / −215 | 3.9% |
+| 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.1% | +2,812 / −274 | 2.7% |
 
 Counted from non-merge commits on `main`; merge commits, bots and `Cargo.lock` are excluded.
 The chart is refreshed by the [contributors workflow](.github/workflows/contributors.yml).

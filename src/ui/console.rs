@@ -201,6 +201,8 @@ pub struct TableTab {
     pub loaded: bool,
     /// Opt-in: submit pending grid changes when leaving the edited rows.
     pub save_on_row_change: bool,
+    /// Foreign-key navigation history can go back / forward (set by the app).
+    pub history: [bool; 2],
 }
 
 impl TableTab {
@@ -252,6 +254,10 @@ pub enum ConsoleAction {
     CloseResults(CloseResults),
     /// Open "Export with Masking" for the last result.
     ExportMasked,
+    /// Follow a foreign key from a result.
+    Jump(crate::ui::fk_nav::Jump),
+    /// Foreign-key navigation history (`true` = forward).
+    History(bool),
 }
 
 fn edit_action(a: results::EditAction, view: usize) -> ConsoleAction {
@@ -321,6 +327,7 @@ impl Console {
             order_by: String::new(),
             loaded: false,
             save_on_row_change: false,
+            history: [false; 2],
         });
         c
     }
@@ -1103,6 +1110,9 @@ impl Console {
             {
                 actions.push(ConsoleAction::Submit(i));
             }
+            if let Some(jump) = response.jump {
+                actions.push(ConsoleAction::Jump(jump));
+            }
         } else if self.is_busy() {
             ui.centered_and_justified(|ui| ui.label(RichText::new(tr("Loading…")).color(p.muted)));
         }
@@ -1291,6 +1301,13 @@ impl Console {
             theme::split_row(ui, |ui, side| match side {
                 theme::Side::Left => {
                     if let Some(t) = &mut self.table {
+                        if t.history.contains(&true) {
+                            let tips = [crate::shortcuts::format(tr("Back (⌥←)")), crate::shortcuts::format(tr("Forward (⌥→)"))];
+                            for (forward, (icon, tip)) in [(Ico::ChevronLeft, &tips[0]), (Ico::ChevronRight, &tips[1])].into_iter().enumerate() {
+                                if theme::icon_button(ui, icon, t.history[forward] && !busy, tip).clicked() { actions.push(ConsoleAction::History(forward == 1)); }
+                            }
+                            theme::toolbar_separator(ui);
+                        }
                         let was_open = t.view.cell_editor;
                         if theme::tool_button(ui, Ico::Edit, tr("Cell Editor"), t.view.cell_editor).clicked() { t.view.cell_editor = !t.view.cell_editor; }
                         if was_open && !t.view.cell_editor && let Some(view) = self.results.last_mut() { view.finish_inline_edit(); }
@@ -1649,6 +1666,9 @@ impl Console {
                     .inner;
                 if let Some(err) = response.error {
                     actions.push(ConsoleAction::Error(err));
+                }
+                if let Some(jump) = response.jump {
+                    actions.push(ConsoleAction::Jump(jump));
                 }
             }
             _ => {
