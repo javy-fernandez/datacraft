@@ -70,6 +70,8 @@ mod views;
 mod table_export;
 mod table_shortcuts;
 mod table_grants;
+mod session_monitor;
+mod transactions;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -350,6 +352,9 @@ pub struct DataCraftApp {
     show_shortcuts: bool,
     show_settings: bool,
     script: Option<crate::ui::script_dialog::ScriptDialog>,
+    /// "Session Monitor…" windows, one per connection.
+    session_monitors: Vec<crate::ui::session_monitor::SessionMonitor>,
+    next_monitor_request: u64,
     check_updates: bool,
     skipped_version: Option<String>,
     /// The update check under way, and whether it was asked for ("Check for Updates…").
@@ -378,6 +383,10 @@ pub struct DataCraftApp {
     applied_zoom: Option<f32>,
     preview: Option<PreviewState>,
     confirm_discard: Option<Discard>,
+    /// "Commit / Roll Back / Cancel" for open Manual transactions.
+    tx_prompt: Option<transactions::TxPrompt>,
+    /// Quitting was confirmed (open transactions dealt with).
+    quit_confirmed: bool,
     /// Demo mode: fixed Database Explorer width (`DATACRAFT_DEMO_EXPLORER_W`).
     demo_explorer_w: Option<f32>,
     /// Demo mode: window size to apply on the first frame (`DATACRAFT_DEMO_WINDOW`).
@@ -452,6 +461,8 @@ impl DataCraftApp {
             show_shortcuts: false,
             show_settings: false,
             script: None,
+            session_monitors: Vec::new(),
+            next_monitor_request: 0,
             check_updates: persisted.check_updates,
             skipped_version: persisted.skipped_version,
             update_check: None,
@@ -473,6 +484,8 @@ impl DataCraftApp {
             applied_zoom: None,
             preview: None,
             confirm_discard: None,
+            tx_prompt: None,
+            quit_confirmed: false,
             demo_explorer_w: None,
             demo_window: None,
             lang: persisted.lang,
@@ -676,6 +689,7 @@ impl DataCraftApp {
     fn disconnect(&mut self, id: ConnId) {
         self.cancel_table_duplicate(id);
         self.cancel_startup_table(id);
+        self.drop_transactions(id);
         if let Some(c) = self.conn_mut(id) {
             c.status = ConnStatus::Disconnected;
             c.clear();
@@ -697,6 +711,7 @@ impl DataCraftApp {
                 }
                 Response::TableReportOpened { request_id, result } => self.table_report_opened(request_id, result),
                 Response::Connected { conn, databases } => {
+                    self.reset_session_monitor(conn);
                     // Stale response: the connection was disconnected, edited or deleted while connecting.
                     if !self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connecting) {
                         self.worker.send(Request::Disconnect(conn));
@@ -712,7 +727,8 @@ impl DataCraftApp {
                         if let Some(statements) = console.pending.take() {
                             console.running = true;
                             let db = console.db.clone();
-                            self.worker.send(Request::Execute { conn, db, console: console.id, statements, max_rows });
+                            console.tx_released = false;
+                            self.worker.send(Request::Execute { conn, db, console: console.id, statements, max_rows, manual: console.manual_tx });
                         }
                     }
                     self.recheck_edit_targets(conn);
@@ -815,6 +831,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::ConnectFailed { conn, error } => {
+                    self.reset_session_monitor(conn);
                     self.cancel_table_duplicate(conn);
                     self.cancel_startup_table(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
@@ -845,11 +862,13 @@ impl DataCraftApp {
                     }
                 }
                 Response::Disconnected(conn) => {
+                    self.reset_session_monitor(conn);
                     if let Some(c) = self.conn_mut(conn)
                         && c.status != ConnStatus::Connecting
                     {
                         c.status = ConnStatus::Disconnected;
                         c.clear();
+                        self.drop_transactions(conn);
                     }
                 }
                 Response::Refreshed { conn, databases } => self.refreshed(conn, databases),
@@ -887,12 +906,16 @@ impl DataCraftApp {
                     self.attach_edit_targets(console);
                     self.apply_demo_edit(console);
                 }
+                Response::Transaction { console, tx, note } => self.transaction_reported(console, tx, note),
+                Response::TransactionEnded { console, commit, result, tx, elapsed } => self.transaction_ended(console, commit, result, tx, elapsed),
                 Response::TableShortcut { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::TableModel { request_id, result } => self.table_model_received(request_id, result),
                 Response::ModelSaved { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
+                Response::Sessions { conn, request_id, epoch, result } => self.session_list_received(conn, request_id, epoch, result),
+                Response::SessionAction { conn, request_id, result } => self.session_action_done(conn, request_id, result),
                 Response::InspectTable { console, generation, page_rows, result } => {
                     if let Some(index) = self.consoles.iter().position(|c| c.id == console) {
                         let mut reload = false;
@@ -1022,6 +1045,8 @@ impl DataCraftApp {
                 _ if matches!(driver, Some(Driver::InfluxDb | Driver::Kusto)) => Err(tr("Editing is not available for this engine").to_string()),
                 // Redis and MongoDB: only a key group or a collection opened in the data editor.
                 (Some(_), None) if nosql => Err(tr("Only data opened from the explorer can be edited on this engine").to_string()),
+                // Grid changes are saved on the shared session, outside the console's transaction.
+                (Some(_), None) if c.manual_tx => Err(tr("Grid editing is off in Manual transaction mode: change rows with SQL statements").to_string()),
                 (Some(conn), Some(t)) => match self.table_info(conn, c.db.as_deref(), &t.schema, &t.table) {
                     Some(info) if driver == Some(Driver::MongoDb) => {
                         editing::document_target(&v.rs.columns, &t.schema, info.kind, &info.name, &info.columns)
@@ -1299,6 +1324,9 @@ impl DataCraftApp {
             }
             Discard::CloseTabs(id, which) => self.close_tabs_now(id, which),
             Discard::CloseAll => {
+                for c in self.consoles.iter().filter(|c| c.manual_tx) {
+                    self.worker.send(Request::ReleaseConsole { console: c.id });
+                }
                 self.consoles.clear();
                 self.active = 0;
                 self.object_browser.scope = None;
@@ -1400,6 +1428,19 @@ impl DataCraftApp {
             console.result_tab = ResultTab::Output;
             return;
         }
+        if self.consoles.get(idx).is_some_and(|c| c.manual_tx)
+            && let Some(stmt) = statements.iter().flat_map(|s| sql::split_statements(s, driver)).map(|s| s.text).find(|s| crate::db::transaction::outside_transaction(driver, s))
+        {
+            let Some(console) = self.consoles.get_mut(idx) else { return };
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: stmt.trim().to_string(),
+                message: tr("This statement can't run inside a transaction: switch the console to Auto mode to run it").into(),
+                is_error: true,
+            });
+            console.result_tab = ResultTab::Output;
+            return;
+        }
         let Some(console) = self.consoles.get_mut(idx) else { return };
         console.last_statements = statements.clone();
         console.run_started = Some(Instant::now());
@@ -1408,7 +1449,9 @@ impl DataCraftApp {
                 console.running = true;
                 let id = console.id;
                 let db = console.db.clone();
-                self.worker.send(Request::Execute { conn, db, console: id, statements, max_rows });
+                let manual = console.manual_tx;
+                console.tx_released = false;
+                self.worker.send(Request::Execute { conn, db, console: id, statements, max_rows, manual });
             }
             ConnStatus::Connecting => console.pending = Some(statements),
             ConnStatus::Disconnected | ConnStatus::Error(_) => {
@@ -1583,9 +1626,14 @@ impl DataCraftApp {
                     }
                 }
                 ExplorerAction::RunScript(conn, db) => self.run_script(conn, db),
+                ExplorerAction::SessionMonitor(conn) => self.open_session_monitor(conn),
                 ExplorerAction::NewConnection => self.open_new_connection_dialog(),
                 ExplorerAction::Connect(id) => self.connect(id),
-                ExplorerAction::Disconnect(id) => self.disconnect(id),
+                ExplorerAction::Disconnect(id) => {
+                    if self.tx_guard(self.consoles_on(id), transactions::TxThen::Disconnect(id)) {
+                        self.disconnect(id);
+                    }
+                }
                 ExplorerAction::Refresh(id) => self.worker.send(Request::Refresh(id)),
                 ExplorerAction::Edit(id) => {
                     if self.conn(id).is_some() {
@@ -2370,6 +2418,7 @@ impl DataCraftApp {
 
     fn delete_connection(&mut self, id: ConnId) {
         self.cancel_startup_table(id);
+        self.drop_transactions(id);
         self.worker.send(Request::Disconnect(id));
         self.conns.retain(|c| c.cfg.id != id);
         self.object_browser.organizations.retain(|o| o.conn != id);
@@ -2425,6 +2474,7 @@ impl DataCraftApp {
 
     fn close_console(&mut self, idx: usize) {
         if let Some(id) = self.consoles.get(idx).map(|c| c.id)
+            && self.tx_guard(vec![id], transactions::TxThen::Close(id))
             && self.guard(Discard::Close(id))
         {
             self.close_console_now(idx);
@@ -2455,7 +2505,10 @@ impl DataCraftApp {
 
     fn close_console_now(&mut self, idx: usize) {
         if idx < self.consoles.len() {
-            self.consoles.remove(idx);
+            let c = self.consoles.remove(idx);
+            if c.manual_tx {
+                self.worker.send(Request::ReleaseConsole { console: c.id });
+            }
             if self.active > idx || self.active >= self.consoles.len() {
                 self.active = self.active.saturating_sub(1);
             }
@@ -2541,7 +2594,7 @@ impl DataCraftApp {
 
     /// A modal dialog is open: shortcuts and run commands are ignored.
     fn modal_open(&self) -> bool {
-        self.backup.is_some() || self.scheduler.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
+        self.backup.is_some() || self.scheduler.is_some() || self.script.is_some() || self.session_monitors.iter().any(|m| m.confirming()) || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_analyze.is_some()
             || self.create.is_some()
@@ -2562,6 +2615,7 @@ impl DataCraftApp {
             || self.show_settings
             || self.preview.as_ref().is_some_and(|p| p.visible)
             || self.confirm_discard.is_some()
+            || self.tx_prompt.is_some()
             || self.modify.is_some()
     }
 
@@ -2885,6 +2939,14 @@ impl DataCraftApp {
         let needs_connect = self.conn(id).is_some_and(|c| matches!(c.status, ConnStatus::Disconnected | ConnStatus::Error(_)));
         if let Some(c) = self.consoles.get_mut(self.active) {
             if c.is_busy() || c.table.is_some() || c.routine.is_some() || c.conn == Some(id) {
+                return;
+            }
+            // A Manual console releases its own session first (asking if a transaction is open).
+            if c.manual_tx {
+                let console = c.id;
+                if self.tx_guard(vec![console], transactions::TxThen::Source(console, Some(id), None)) {
+                    self.set_console_source(console, Some(id), None);
+                }
                 return;
             }
             c.conn = Some(id);
@@ -3237,10 +3299,11 @@ impl DataCraftApp {
         if let Some(i) = close {
             self.close_console(i);
         }
-        if close_all && self.guard(Discard::CloseAll) {
+        if close_all && self.tx_guard(self.consoles.iter().map(|c| c.id).collect(), transactions::TxThen::CloseAll) && self.guard(Discard::CloseAll) {
             self.discard_and_do(Discard::CloseAll);
         }
-        if let Some((id, which)) = close_tabs && self.guard(Discard::CloseTabs(id, which)) { self.close_tabs_now(id, which); }
+        let closing = close_tabs.map(|(id, which)| self.tab_close_indices(id, which).into_iter().map(|i| self.consoles[i].id).collect()).unwrap_or_default();
+        if let Some((id, which)) = close_tabs && self.tx_guard(closing, transactions::TxThen::CloseTabs(id, which)) && self.guard(Discard::CloseTabs(id, which)) { self.close_tabs_now(id, which); }
         if close_objects { self.object_browser.scope = None; self.object_browser.active = false; }
         if new {
             self.new_console_here();
@@ -3380,6 +3443,24 @@ impl DataCraftApp {
                     let console = self.consoles[idx].id;
                     self.worker.send(Request::Cancel { console });
                 }
+                ConsoleAction::SetManual(manual) => {
+                    let id = self.consoles[idx].id;
+                    // Grid changes are saved outside the transaction: they go first.
+                    if manual && self.consoles[idx].results.iter().any(|r| r.is_dirty()) {
+                        self.error(tr("Submit or discard the pending grid changes before switching to Manual mode"));
+                    } else if manual || self.tx_guard(vec![id], transactions::TxThen::Auto(id)) {
+                        self.set_manual(id, manual);
+                    }
+                }
+                ConsoleAction::EndTransaction(commit) => {
+                    self.end_transaction(idx, commit);
+                }
+                ConsoleAction::ChangeSource(conn, db) => {
+                    let id = self.consoles[idx].id;
+                    if self.tx_guard(vec![id], transactions::TxThen::Source(id, conn, db.clone())) {
+                        self.set_console_source(id, conn, db);
+                    }
+                }
                 ConsoleAction::ExplainAnalyze { statement, explain } => {
                     let id = self.consoles[idx].id;
                     if self.consoles[idx].table.is_none() && !self.consoles[idx].is_busy() && self.guard(Discard::Run(id, false)) {
@@ -3432,6 +3513,7 @@ impl DataCraftApp {
         self.table_duplicate_dialog(ctx);
         self.show_table_export(ctx);
         self.table_grants_dialog(ctx);
+        self.show_session_monitors(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -3456,17 +3538,8 @@ impl DataCraftApp {
 
         if let Some(dialog) = self.dialog.as_mut() {
             match dialog.show(ctx) {
-                Some(DialogResult::Save { save, delete, close }) => {
-                    if close {
-                        self.dialog = None;
-                    }
-                    for id in delete {
-                        self.delete_connection(id);
-                    }
-                    for cfg in save {
-                        self.save_connection(cfg);
-                    }
-                }
+                // The dialog stays open while open transactions are asked about.
+                Some(DialogResult::Save { save, delete, close }) => self.connections_changed(save, delete, close),
                 Some(DialogResult::Test(cfg)) => self.worker.send(Request::Test(*cfg)),
                 Some(DialogResult::Cancel) => self.dialog = None,
                 None => {}
@@ -3593,7 +3666,7 @@ impl DataCraftApp {
             match decision {
                 Some(true) => {
                     self.confirm_delete = None;
-                    self.delete_connection(id);
+                    self.connections_changed(Vec::new(), vec![id], false);
                 }
                 Some(false) => self.confirm_delete = None,
                 None => {}
@@ -3717,6 +3790,7 @@ impl DataCraftApp {
         }
 
         self.preview_dialog(ctx, frame);
+        self.tx_dialog(ctx, frame);
 
         if self.show_shortcuts {
             let resp = egui::Modal::new(egui::Id::new("keyboard_shortcuts")).frame(frame).show(ctx, |ui| {
@@ -4300,6 +4374,7 @@ impl eframe::App for DataCraftApp {
         // First of all: the menu's edit commands are injected as events of this frame.
         self.menu_commands(ctx);
         self.handle_responses();
+        self.guard_quit(ctx);
         if self.applied_zoom != Some(self.zoom) {
             ctx.set_zoom_factor(self.zoom);
             self.applied_zoom = Some(self.zoom);
@@ -4432,10 +4507,10 @@ mod tests {
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(), table_model: None,
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), table_export: Default::default(), routines: Default::default(), table_duplicate: Default::default(), import: None, copy: None, compare: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
+            show_about: false, show_shortcuts: false, show_settings: false, script: None, session_monitors: Vec::new(), next_monitor_request: 0, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
-            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
+            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None, tx_prompt: None, quit_confirmed: false,
             startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),

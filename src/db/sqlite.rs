@@ -126,6 +126,11 @@ impl SqliteSession {
     pub async fn introspect(&mut self) -> anyhow::Result<Vec<SchemaInfo>> {
         self.with_conn(load_schema).await
     }
+
+    /// true while a transaction is open (SQLite may roll one back by itself, e.g. when interrupted).
+    pub async fn in_transaction(&self) -> anyhow::Result<bool> {
+        self.with_conn(|conn| Ok(!conn.is_autocommit())).await
+    }
 }
 
 fn run_batch(conn: &Connection, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {

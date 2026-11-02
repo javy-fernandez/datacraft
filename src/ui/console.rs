@@ -132,6 +132,16 @@ pub struct Console {
     scroll_to: Option<usize>,
     /// The `DATACRAFT_DEMO_*` hooks of the console already ran.
     demo_done: bool,
+    /// Manual transaction mode: statements run on the console's own session, in a transaction
+    /// that stays open until Commit or Roll Back.
+    pub manual_tx: bool,
+    /// The open Manual transaction, as the worker last reported it.
+    pub tx: Option<crate::worker::TxInfo>,
+    /// Commit or Roll Back in progress.
+    pub ending_tx: bool,
+    /// Its Manual session was released while a run or end was in flight: their replies about
+    /// the transaction are stale.
+    pub tx_released: bool,
 }
 
 /// State of the editor's find / replace bar.
@@ -221,6 +231,13 @@ pub enum ConsoleAction {
     ExplainAnalyze { statement: String, explain: String },
     /// Cancel the running query.
     Cancel,
+    /// Manual (true) or Auto transaction mode; the app asks first if a transaction is open.
+    SetManual(bool),
+    /// Commit (true) or roll back the Manual transaction.
+    EndTransaction(bool),
+    /// Another connection / database for a Manual console; the app asks first if a
+    /// transaction is open.
+    ChangeSource(Option<ConnId>, Option<String>),
     /// Reload the table editor data (with the current filters).
     Reload,
     /// Generate the DDL of the data editor's table.
@@ -284,6 +301,10 @@ impl Console {
             history_anchor: None,
             scroll_to: None,
             demo_done: false,
+            manual_tx: false,
+            tx: None,
+            ending_tx: false,
+            tx_released: false,
         }
     }
 
@@ -304,8 +325,14 @@ impl Console {
         c
     }
 
+    /// A Manual transaction is open, or may be: the first run is still on its way (its reply
+    /// says whether it began one).
+    pub fn may_hold_tx(&self) -> bool {
+        self.tx.is_some() || (self.manual_tx && self.running && !self.tx_released)
+    }
+
     pub fn is_busy(&self) -> bool {
-        self.running || self.pending.is_some() || self.table.as_ref().is_some_and(|t| t.counting_page) || self.routine.as_ref().is_some_and(|r| r.dialog.running || r.dialog.loading.is_some())
+        self.running || self.ending_tx || self.pending.is_some() || self.table.as_ref().is_some_and(|t| t.counting_page) || self.routine.as_ref().is_some_and(|r| r.dialog.running || r.dialog.loading.is_some())
     }
 
     /// Result whose changes are being edited: the last one in the data editor or the
@@ -1094,16 +1121,59 @@ impl Console {
         }
     }
 
-    /// "Tx: Auto" dropdown.
-    fn tx_dropdown(&self, ui: &mut Ui) {
-        let resp = theme::flat_button(ui, None, "Tx: Auto", FontId::proportional(13.0), true, true)
+    /// "Tx: Auto / Manual" dropdown. `unavailable`: why Manual can't be chosen here.
+    fn tx_dropdown(&self, ui: &mut Ui, unavailable: Option<&str>, actions: &mut Vec<ConsoleAction>) {
+        let manual = self.manual_tx;
+        let mode = if manual { tr("Manual") } else { tr("Auto") };
+        // Auto consoles keep the menu while busy; a Manual one can't leave its session mid-run.
+        let resp = theme::flat_button(ui, None, &trf("Tx: {mode}", &[("mode", &mode)]), FontId::proportional(13.0), true, !(manual && self.is_busy()))
             .on_hover_text(tr("Transaction mode"));
         egui::Popup::menu(&resp).show(|ui| {
-            let _ = ui.add(egui::Button::new("✓  Auto").frame(false));
-            ui.add_enabled(false, egui::Button::new(format!("    {}", tr("Manual"))).frame(false));
+            ui.set_min_width(230.0);
+            if ui.add(egui::Button::selectable(!manual, tr("Auto"))).clicked() {
+                if manual {
+                    actions.push(ConsoleAction::SetManual(false));
+                }
+                ui.close();
+            }
+            let item = ui.add_enabled(unavailable.is_none(), egui::Button::selectable(manual, tr("Manual")));
+            match unavailable {
+                Some(reason) => {
+                    item.on_disabled_hover_text(reason);
+                }
+                None if item.clicked() => {
+                    if !manual {
+                        actions.push(ConsoleAction::SetManual(true));
+                    }
+                    ui.close();
+                }
+                None => {}
+            }
             ui.separator();
-            ui.label(RichText::new(tr("Each statement is committed when run")).small().color(pal(ui).muted));
+            let help = if manual { tr("Statements run in one transaction until you commit or roll back") } else { tr("Each statement is committed when run") };
+            ui.label(RichText::new(help).small().color(pal(ui).muted));
         });
+    }
+
+    /// Manual mode: Commit, Roll Back and the open transaction's pill.
+    fn tx_controls(&self, ui: &mut Ui, actions: &mut Vec<ConsoleAction>) {
+        if !self.manual_tx {
+            return;
+        }
+        let font = FontId::proportional(12.5);
+        let ready = self.tx.is_some() && !self.is_busy();
+        let aborted = self.tx.is_some_and(|t| t.aborted);
+        if theme::flat_button(ui, Some(Ico::Submit), tr("Commit"), font.clone(), false, ready && !aborted).on_hover_text(tr("Commit the transaction")).clicked() {
+            actions.push(ConsoleAction::EndTransaction(true));
+        }
+        if theme::flat_button(ui, Some(Ico::Revert), tr("Roll Back"), font, false, ready).on_hover_text(tr("Roll back the transaction")).clicked() {
+            actions.push(ConsoleAction::EndTransaction(false));
+        }
+        if let Some(tx) = &self.tx {
+            ui.add_space(4.0);
+            tx_pill(ui, tx);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+        }
     }
 
     /// Console "connection · database" selector (disabled while busy).
@@ -1150,6 +1220,13 @@ impl Console {
             }
         });
         if (self.conn, self.db.clone()) != before {
+            if self.manual_tx {
+                // The app closes this console's own session first (asking if a transaction is open).
+                let (conn, db) = (self.conn, self.db.take());
+                (self.conn, self.db) = before;
+                actions.push(ConsoleAction::ChangeSource(conn, db));
+                return;
+            }
             // Pending statements were for the previous connection/database.
             self.pending = None;
             self.run_started = None;
@@ -1191,8 +1268,11 @@ impl Console {
             if theme::icon_button(ui, Ico::Search, true, &crate::shortcuts::format(tr("Find and replace (⌘F)"))).clicked() {
                 cmds.push(EditCmd::Find);
             }
-            self.tx_dropdown(ui);
-            if theme::icon_button(ui, Ico::Stop, self.running, tr("Cancel the running query")).clicked() {
+            let unavailable = (!cx.driver.has_transactions()).then(|| tr("Manual transactions are not available for this engine"));
+            self.tx_dropdown(ui, unavailable, actions);
+            self.tx_controls(ui, actions);
+            // Also stops a Commit / Roll Back that hangs (its session is closed).
+            if theme::icon_button(ui, Ico::Stop, self.running || self.ending_tx, tr("Cancel the running query")).clicked() {
                 actions.push(ConsoleAction::Cancel);
             }
             self.busy_label(ui);
@@ -1218,7 +1298,7 @@ impl Console {
                         if !cx.driver.is_nosql() && theme::tool_button(ui, Ico::Info, tr("Information"), t.view.inspector).clicked() { t.view.inspector = !t.view.inspector; }
                     }
                     theme::toolbar_separator(ui);
-                    self.tx_dropdown(ui);
+                    self.tx_dropdown(ui, Some(tr("Manual transactions are available in SQL consoles")), actions);
                     theme::toolbar_separator(ui);
                     if theme::icon_button(ui, Ico::Ddl, cx.columns.is_some(), tr("Show table DDL"))
                         .clicked()
@@ -2503,6 +2583,30 @@ fn edit_status_icon(ui: &mut Ui, v: &ResultView) {
         let text = if n == 1 { tr("1 change").to_string() } else { trf("{n} changes", &[("n", &n)]) };
         ui.label(RichText::new(text).color(p.accent).size(12.5));
     }
+}
+
+/// Coloured "Transaction open · n statements · m:ss" pill (red once the transaction failed).
+fn tx_pill(ui: &mut Ui, tx: &crate::worker::TxInfo) {
+    let p = pal(ui);
+    let secs = tx.began.elapsed().as_secs();
+    let time = format!("{}:{:02}", secs / 60, secs % 60);
+    let (text, color, hover) = if tx.aborted {
+        (tr("Transaction failed · roll back").to_string(), p.error, tr("A statement failed and the server aborted the transaction: only Roll Back is possible"))
+    } else {
+        let text = if tx.statements == 1 {
+            trf("Transaction open · 1 statement · {time}", &[("time", &time)])
+        } else {
+            trf("Transaction open · {n} statements · {time}", &[("n", &tx.statements), ("time", &time)])
+        };
+        (text, p.warn, tr("Nothing is committed until you click Commit"))
+    };
+    let galley = ui.painter().layout_no_wrap(text.clone(), FontId::proportional(12.0), color);
+    let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 26.0, 20.0), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+    ui.painter().rect(rect, 10.0, theme::blend(p.island_bg, color.gamma_multiply(0.16)), Stroke::new(1.0, color.gamma_multiply(0.55)), egui::StrokeKind::Inside);
+    ui.painter().circle_filled(rect.left_center() + vec2(10.0, 0.0), 3.5, color);
+    ui.painter().galley(rect.left_center() + vec2(18.0, -galley.size().y / 2.0), galley, color);
+    resp.on_hover_text(hover);
 }
 
 /// Thin full-width horizontal line (separator inside an island).

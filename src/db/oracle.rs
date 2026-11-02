@@ -34,6 +34,8 @@ pub struct OraSession {
     broken: bool,
     /// Container/database name, computed once so the explorer node stays stable.
     db_name: Option<String>,
+    /// Console statements commit themselves; off on a console's Manual transaction session.
+    autocommit: bool,
 }
 
 impl OraSession {
@@ -48,7 +50,7 @@ impl OraSession {
             .await
             .map_err(|_| anyhow!(trf("Timed out connecting to {host}:{port}", &[("host", &host), ("port", &port)])))??
             .map_err(ora_error)?;
-        Ok(Self { conn: Arc::new(conn), gate: Arc::new(Mutex::new(())), broken: false, db_name: None })
+        Ok(Self { conn: Arc::new(conn), gate: Arc::new(Mutex::new(())), broken: false, db_name: None, autocommit: true })
     }
 
     /// Connection handle to cancel the running statement (`break_execution`).
@@ -89,7 +91,14 @@ impl OraSession {
         if sql.is_empty() {
             return Ok(Vec::new());
         }
-        self.with_conn(move |conn| run(conn, &sql, display, max_rows).map(|rs| vec![rs])).await
+        let commit = self.autocommit;
+        self.with_conn(move |conn| run(conn, &sql, display, max_rows, commit).map(|rs| vec![rs])).await
+    }
+
+    /// Manual transactions: statements stop committing themselves (Oracle has no BEGIN; the
+    /// transaction starts with the first change and ends with COMMIT or ROLLBACK).
+    pub fn set_autocommit(&mut self, on: bool) {
+        self.autocommit = on;
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
@@ -409,7 +418,7 @@ fn cell(row: &Row, i: usize, kind: &CellKind) -> Cell {
     value.unwrap_or_else(|e| Some(format!("<{e}>")))
 }
 
-fn run(conn: &Connection, sql: &str, display: String, max_rows: usize) -> Result<ResultSet, oracle::Error> {
+fn run(conn: &Connection, sql: &str, display: String, max_rows: usize, commit: bool) -> Result<ResultSet, oracle::Error> {
     let start = Instant::now();
     let fetch = if max_rows == 0 {
         1000
@@ -439,8 +448,10 @@ fn run(conn: &Connection, sql: &str, display: String, max_rows: usize) -> Result
         if stmt.is_dml() {
             rs.affected = Some(stmt.row_count()?);
         }
-        // The console works in auto-commit mode.
-        conn.commit()?;
+        // The console works in auto-commit mode (unless it is in a Manual transaction).
+        if commit {
+            conn.commit()?;
+        }
         if matches!(leading_words(sql, 1).first().map(String::as_str), Some("BEGIN" | "DECLARE")) {
             let lines = dbms_output(conn, max_rows)?;
             if !lines.is_empty() {
