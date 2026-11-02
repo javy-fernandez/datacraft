@@ -504,6 +504,9 @@ mod tests {
     #[test]
     fn existing_targets_need_confirmation_and_new_databases_start_directly() {
         let mut dialog = RestoreDialog::sample_postgres();
+        // The sample's Windows path is not absolute elsewhere, and validation needs one.
+        dialog.request.source = std::env::temp_dir().join("shop_20261101.dump").display().to_string();
+        dialog.inspected = dialog.request.source.clone();
         dialog.request.create = true;
         dialog.request.db = "shop_copy".into();
         let mut h = harness(dialog, egui::vec2(900.0, 760.0), true);
