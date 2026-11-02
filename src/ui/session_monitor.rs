@@ -16,6 +16,19 @@ use std::time::{Duration, Instant};
 const INTERVALS: [u64; 4] = [0, 2, 5, 10];
 /// The longest query text a tooltip shows.
 const TOOLTIP_CHARS: usize = 2000;
+/// Auto-refresh interval while DataCraft is not the focused window, in seconds.
+const BACKGROUND_INTERVAL: u64 = 30;
+
+/// How often to refresh: the chosen interval while focused, at most every 30 s in the
+/// background, never while minimized or covered (no frames are drawn for nothing).
+fn auto_interval(auto: u64, focused: bool, hidden: bool) -> Option<Duration> {
+    match auto {
+        0 => None,
+        _ if hidden => None,
+        _ if !focused => Some(Duration::from_secs(auto.max(BACKGROUND_INTERVAL))),
+        every => Some(Duration::from_secs(every)),
+    }
+}
 
 /// What the window asks the app to do.
 #[derive(Debug, PartialEq, Eq)]
@@ -74,6 +87,19 @@ impl SessionMonitor {
             filter: String::new(),
             confirm: None,
             outcome: None,
+        }
+    }
+
+    /// Follows the connection's current settings (edited data sources): another engine makes the
+    /// list meaningless, read-only changes which actions are offered.
+    pub fn sync(&mut self, driver: Driver, read_only: bool, name: &str) {
+        if driver != self.driver {
+            self.driver = driver;
+            self.reset();
+        }
+        self.read_only = read_only;
+        if self.name != name {
+            self.name = name.to_string();
         }
     }
 
@@ -200,16 +226,14 @@ impl SessionMonitor {
             actions.push(MonitorAction::Close);
         }
         // First list on open, then on the timer; never two at once.
+        let (focused, hidden) = ctx.input(|i| (i.focused, i.viewport().minimized.unwrap_or(false) || i.viewport().occluded.unwrap_or(false)));
         if connected && self.pending.is_none() && self.acting.is_none() {
-            match self.last {
-                None => actions.push(MonitorAction::Refresh),
-                Some(last) if self.auto > 0 => {
-                    let every = Duration::from_secs(self.auto);
-                    match every.checked_sub(last.elapsed()) {
-                        Some(left) if !left.is_zero() => ctx.request_repaint_after(left),
-                        _ => actions.push(MonitorAction::Refresh),
-                    }
-                }
+            match (self.last, auto_interval(self.auto, focused, hidden)) {
+                (None, _) => actions.push(MonitorAction::Refresh),
+                (Some(last), Some(every)) => match every.checked_sub(last.elapsed()) {
+                    Some(left) if !left.is_zero() => ctx.request_repaint_after(left),
+                    _ => actions.push(MonitorAction::Refresh),
+                },
                 _ => {}
             }
         }
@@ -244,12 +268,21 @@ impl SessionMonitor {
                 if refresh.clicked() {
                     actions.push(MonitorAction::Refresh);
                 }
-                ui.label(tr("Auto-refresh"));
-                egui::ComboBox::from_id_salt(("session_auto", self.conn)).width(64.0).selected_text(interval_label(self.auto)).show_ui(ui, |ui| {
-                    for every in INTERVALS {
-                        ui.selectable_value(&mut self.auto, every, interval_label(every));
-                    }
-                });
+                let background = tr("In the background, auto-refresh runs at most every 30 s, and it pauses while DataCraft is minimized");
+                ui.label(tr("Auto-refresh")).on_hover_text(background);
+                egui::ComboBox::from_id_salt(("session_auto", self.conn))
+                    .width(64.0)
+                    .selected_text(interval_label(self.auto))
+                    .show_ui(ui, |ui| {
+                        for every in INTERVALS {
+                            ui.selectable_value(&mut self.auto, every, interval_label(every));
+                        }
+                    })
+                    .response
+                    .on_hover_text(background);
+                if self.auto > 0 && !ui.input(|i| i.focused) {
+                    ui.label(RichText::new(tr("every 30 s in the background")).color(p.muted)).on_hover_text(background);
+                }
                 ui.checkbox(&mut self.hide_idle, tr("Hide idle sessions"));
                 ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Filter sessions")).desired_width(200.0));
                 if self.pending.is_some() {
@@ -644,6 +677,29 @@ mod tests {
         ms.selected = Some("10".into());
         assert_eq!(ms.disabled_reason(ActionKind::Cancel, true), sessions::cancel_unsupported(Driver::MsSql));
         assert_eq!(ms.disabled_reason(ActionKind::Terminate, true), None);
+    }
+
+    #[test]
+    fn auto_refresh_slows_in_the_background_and_pauses_when_hidden() {
+        let s = Duration::from_secs;
+        assert_eq!(auto_interval(0, true, false), None);
+        assert_eq!(auto_interval(2, true, false), Some(s(2)));
+        assert_eq!(auto_interval(2, false, false), Some(s(30)));
+        assert_eq!(auto_interval(10, false, false), Some(s(30)));
+        assert_eq!(auto_interval(5, true, true), None);
+        assert_eq!(auto_interval(5, false, true), None);
+    }
+
+    #[test]
+    fn follows_the_edited_data_source() {
+        let mut m = monitor(Driver::Postgres, false);
+        m.selected = Some("10".into());
+        m.sync(Driver::Postgres, true, "renamed");
+        assert!(m.list.is_some() && m.name == "renamed");
+        assert!(m.disabled_reason(ActionKind::Terminate, true).is_some(), "now read-only");
+        m.sync(Driver::MySql, true, "renamed");
+        assert!(m.list.is_none() && m.selected.is_none(), "another engine: the old list is dropped");
+        assert_eq!(m.driver, Driver::MySql);
     }
 
     #[test]

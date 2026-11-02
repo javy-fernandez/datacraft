@@ -22,6 +22,15 @@ impl DataCraftApp {
         let mut closed = Vec::new();
         for i in 0..self.session_monitors.len() {
             let conn = self.session_monitors[i].conn;
+            // The data source may have been edited since the window opened.
+            if let Some(c) = self.conn(conn) {
+                let (driver, read_only, name) = (c.cfg.driver, c.cfg.read_only, c.cfg.name.clone());
+                if !crate::db::sessions::supported(driver) {
+                    closed.push(conn);
+                    continue;
+                }
+                self.session_monitors[i].sync(driver, read_only, &name);
+            }
             let connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
             for action in self.session_monitors[i].show(ctx, connected) {
                 self.next_monitor_request += 1;
