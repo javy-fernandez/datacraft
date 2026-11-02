@@ -73,7 +73,9 @@ statement leaves the target as it was: PostgreSQL and SQLite wait for a `ROLLBAC
 also run the pragmas at the end of the script, which turned foreign key checks off before
 the transaction began); SQL Server rolls back by itself (`XACT_ABORT`) and the following
 batches don't run. MySQL, MariaDB and Oracle commit each DDL statement, so the statements
-before a failing one stay applied.
+before a failing one stay applied. The script brings its own transaction: run it in a console
+in Auto mode. A SQLite script that turns foreign key checks off is refused in Manual mode,
+where the console's transaction would make that pragma do nothing.
 
 Statements are ordered so that they can run top to bottom:
 

@@ -1,5 +1,5 @@
 //! Foreign-key links of a result grid: which result columns hold which declared key, and the
-//! jump a Ctrl/⌘-click or the row menu asks the app for.
+//! jump a key cell's follow button or the row menu asks the app for.
 
 use crate::db::fk_nav::TableKeys;
 use crate::db::subset::ForeignKey;

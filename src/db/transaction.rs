@@ -159,7 +159,8 @@ pub fn failed_ddl_committed(driver: Driver, error: &str) -> Option<bool> {
 }
 
 /// Statements the engine refuses inside a transaction block, which a Manual console always runs
-/// in: the app refuses them before they abort the transaction.
+/// in: the app refuses them before they abort the transaction (or, setting SQLite's
+/// `foreign_keys`, before it is silently ignored).
 pub fn outside_transaction(driver: Driver, statement: &str) -> bool {
     let w = leading_words(statement, 6);
     let word = |i: usize| w.get(i).map(String::as_str);
@@ -172,7 +173,13 @@ pub fn outside_transaction(driver: Driver, statement: &str) -> bool {
             Some("CREATE" | "DROP" | "REINDEX") => w.iter().any(|x| x == "CONCURRENTLY"),
             _ => false,
         },
-        Driver::Sqlite => matches!(word(0), Some("VACUUM" | "ATTACH")),
+        Driver::Sqlite => match word(0) {
+            Some("VACUUM" | "ATTACH") => true,
+            // Setting `foreign_keys` is a no-op inside a transaction: the checks would stay as
+            // they were (a schema-compare script turns them off before its own `begin`).
+            Some("PRAGMA") => statement.to_ascii_uppercase().split_once("FOREIGN_KEYS").is_some_and(|(name, value)| !name.contains('=') && value.trim_start().starts_with(['=', '('])),
+            _ => false,
+        },
         Driver::MsSql => matches!(word(0), Some("BACKUP" | "RESTORE")) || (matches!(word(0), Some("CREATE" | "ALTER" | "DROP")) && word(1) == Some("DATABASE")),
         _ => false,
     }
@@ -266,6 +273,11 @@ mod tests {
             (Driver::Postgres, "alter table t add c int", false),
             (Driver::Sqlite, "vacuum", true),
             (Driver::Sqlite, "ATTACH DATABASE 'x.db' AS x", true),
+            (Driver::Sqlite, "pragma foreign_keys = off", true),
+            (Driver::Sqlite, "PRAGMA main.foreign_keys(0)", true),
+            (Driver::Sqlite, "pragma foreign_keys", false),
+            (Driver::Sqlite, "pragma foreign_key_check", false),
+            (Driver::Sqlite, "pragma legacy_alter_table = on", false),
             (Driver::MsSql, "BACKUP DATABASE shop TO DISK = 'x'", true),
             (Driver::MsSql, "alter database shop set recovery simple", true),
             (Driver::MsSql, "create table t (id int)", false),

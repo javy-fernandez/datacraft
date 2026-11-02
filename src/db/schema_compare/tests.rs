@@ -453,6 +453,8 @@ fn sqlite_rebuilds_warn_about_lost_data_and_restore_the_session() {
         assert!(s.warnings.iter().any(|x| x.contains(w)), "{w}: {:?}", s.warnings);
     }
     assert_eq!(&s.statements[..2], ["pragma foreign_keys = off", "pragma legacy_alter_table = on"]);
+    // A Manual console would open its transaction first and make the pragma a no-op: it refuses the script.
+    assert!(crate::db::transaction::outside_transaction(Driver::Sqlite, &s.statements[0]));
     let n = s.statements.len();
     assert_eq!(&s.statements[n - 2..], ["pragma foreign_keys = on", "pragma legacy_alter_table = off"]);
     // Run as SQLite runs a console script (one batch): the settings come back.
