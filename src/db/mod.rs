@@ -18,6 +18,7 @@ pub mod mongo;
 pub mod mssql;
 pub mod object_info;
 pub mod table_model;
+pub mod fk_nav;
 pub mod schema_search;
 pub mod schema_compare;
 pub mod script;

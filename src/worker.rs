@@ -27,6 +27,10 @@ pub enum Request {
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
     InspectTable { conn: ConnId, db: String, schema: String, table: String, console: ConsoleId, generation: u64, count_rows: bool, page_filter: Option<String> },
+    /// Foreign keys of one table for grid navigation, on the metadata session of `db`.
+    ForeignKeys { conn: ConnId, db: String, schema: String, table: String, request_id: u64 },
+    /// "Referenced by…": bounded counts of the child rows referencing one row.
+    ReferenceCounts { conn: ConnId, db: String, request_id: u64, probes: Vec<crate::db::fk_nav::Probe>, cancel: Arc<std::sync::atomic::AtomicBool> },
     SchemaSearch {
         conn: ConnId,
         request_id: u64,
@@ -141,6 +145,8 @@ pub enum Response {
     TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
+    ForeignKeys { conn: ConnId, db: String, schema: String, table: String, request_id: u64, result: Result<crate::db::fk_nav::TableKeys, String> },
+    ReferenceCounts { request_id: u64, result: Result<Vec<Result<u64, String>>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
     /// Result of `CopyTable`: rows copied to each target table.
     TableCopied { request_id: u64, result: Result<Vec<(String, u64)>, String> },
@@ -625,6 +631,61 @@ async fn fetch_object_info(
     result
 }
 
+/// Foreign keys of one table. Built outside `handle` and boxed: in debug builds even a boxed
+/// driver future is first laid out in the caller's frame, which `handle` keeps for every arm.
+fn foreign_keys(state: &State, conn: ConnId, db: String, schema: String, table: String, request_id: u64) -> futures_util::future::BoxFuture<'_, Vec<Response>> {
+    Box::pin(async move {
+        let result = fetch_foreign_keys(state, conn, &db, &schema, &table).await;
+        vec![Response::ForeignKeys { conn, db, schema, table, request_id, result }]
+    })
+}
+
+/// "Referenced by…" counts on a session of their own, cancelled through `cancel` (boxed like
+/// `foreign_keys`).
+fn reference_counts(state: &State, conn: ConnId, db: String, request_id: u64, probes: Vec<crate::db::fk_nav::Probe>, cancel: Arc<std::sync::atomic::AtomicBool>) -> futures_util::future::BoxFuture<'_, Vec<Response>> {
+    Box::pin(async move {
+        let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+        let result = match cfg {
+            Some(cfg) => {
+                let password = cfg.password.clone();
+                crate::db::fk_nav::count(cfg, &db, &probes, &cancel, crate::db::fk_nav::PROBE_TIMEOUT).await.map_err(|e| redact(format!("{e:#}"), &password))
+            }
+            None => Err(tr("The connection is not open").into()),
+        };
+        vec![Response::ReferenceCounts { request_id, result }]
+    })
+}
+
+/// A table's foreign keys, on the metadata session for `db` (15 s at most, like
+/// `fetch_object_info`): opening tables does not open a connection each.
+async fn fetch_foreign_keys(state: &State, conn: ConnId, db: &str, schema: &str, table: &str) -> Result<crate::db::fk_nav::TableKeys, String> {
+    let Some(driver) = state.live.lock().await.get(&conn).map(|l| l.cfg.driver) else {
+        return Err(tr("Connection lost").into());
+    };
+    let (session, target) = state.meta_session_for(conn, db).await.map_err(|e| format!("{e:#}"))?;
+    let mut s = session.lock().await;
+    let cancel = s.cancel_handle();
+    let query = async {
+        s.use_database(&target).await?;
+        crate::db::fk_nav::load(&mut s, driver, &target, schema, table).await
+    };
+    let (result, broken) = match tokio::time::timeout(std::time::Duration::from_secs(15), query).await {
+        Ok(result) => (result.map_err(|e| format!("{e:#}")), s.is_closed()),
+        Err(_) => {
+            let cancelled = match cancel {
+                Some(h) => h.cancel().await.is_ok(),
+                None => false,
+            };
+            (Err(tr("Reading the foreign keys timed out").into()), !cancelled)
+        }
+    };
+    drop(s);
+    if broken {
+        state.forget_meta(conn, &session).await;
+    }
+    result
+}
+
 /// A view's definition, on the metadata session for `db` (15 s at most, like `fetch_object_info`).
 async fn fetch_view_definition(state: &State, conn: ConnId, db: &str, schema: &str, view: &str) -> Result<crate::db::views::ViewDefinition, String> {
     let Some(driver) = state.live.lock().await.get(&conn).map(|l| l.cfg.driver) else {
@@ -953,6 +1014,8 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             let (result, page_rows) = match result { Ok((info, rows)) => (Ok(Box::new(info)), rows), Err(error) => (Err(error), None) };
             vec![Response::InspectTable { console, generation, page_rows, result }]
         }
+        Request::ForeignKeys { conn, db, schema, table, request_id } => foreign_keys(state, conn, db, schema, table, request_id).await,
+        Request::ReferenceCounts { conn, db, request_id, probes, cancel } => reference_counts(state, conn, db, request_id, probes, cancel).await,
         Request::SchemaSearch { conn, request_id, request, cancel } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             let result = match cfg {
@@ -1545,6 +1608,10 @@ fn report_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
     let path = path.canonicalize()?;
     anyhow::ensure!(path.is_file(), tr("Choose an HTML file for the print report"));
     Ok(path)
+}
+
+fn redact(message: String, password: &str) -> String {
+    if password.is_empty() { message } else { message.replace(password, "[redacted]") }
 }
 
 fn open_table_report(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {

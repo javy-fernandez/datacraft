@@ -15,6 +15,7 @@ pub mod mask_export_dialog;
 pub mod modify_table_dialog;
 pub mod editing;
 pub mod filter_sort;
+pub mod fk_nav;
 pub mod explorer;
 pub mod icons;
 pub mod object_browser;

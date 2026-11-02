@@ -1,7 +1,7 @@
 //! Grid data editing (pure logic, no UI): pending changes, detection of editable
 //! single-table queries and conversion to `edit::Change`.
 
-use crate::db::{Cell, ColumnInfo, ObjectKind, ResultSet, SchemaInfo};
+use crate::db::{Cell, ColumnInfo, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::edit::{Change, is_lossy_display};
 use crate::i18n::{tr, trf};
 use std::collections::{BTreeMap, BTreeSet};
@@ -668,6 +668,12 @@ pub fn document_target(result_cols: &[String], schema: &str, kind: ObjectKind, c
 /// Edit target of a console result, if the query is trivial over a table known in
 /// `schemas`.
 pub fn console_target(statement: &str, result_cols: &[String], schemas: &[SchemaInfo]) -> Result<EditTarget, String> {
+    let (s, t) = query_table(statement, schemas)?;
+    target_for(result_cols, &s.name, t.kind, &t.name, &t.columns)
+}
+
+/// The one table known in `schemas` that a trivial query reads.
+pub fn query_table<'a>(statement: &str, schemas: &'a [SchemaInfo]) -> Result<(&'a SchemaInfo, &'a TableInfo), String> {
     let q = single_table_query(statement).ok_or_else(|| tr("Read-only query (not a simple SELECT over one table)").to_string())?;
     let mut found = Vec::new();
     for s in schemas {
@@ -695,7 +701,7 @@ pub fn console_target(statement: &str, result_cols: &[String], schemas: &[Schema
         }
     }
     match found.as_slice() {
-        [(s, t)] => target_for(result_cols, &s.name, t.kind, &t.name, &t.columns),
+        [(s, t)] => Ok((s, t)),
         [] => Err(trf("Unknown table “{table}”", &[("table", &q.table)])),
         _ => Err(trf("Ambiguous table “{table}”", &[("table", &q.table)])),
     }

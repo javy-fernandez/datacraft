@@ -1447,6 +1447,22 @@
   "table_tools": {
     "Incomplete table column metadata": "Métadonnées des colonnes de table incomplètes"
   },
+  "fk_navigation": {
+    "Go to referenced row": "Aller à la ligne référencée",
+    "Referenced by…": "Référencée par…",
+    "Referenced by": "Référencée par",
+    "Back (⌥←)": "Précédent (⌥←)",
+    "Forward (⌥→)": "Suivant (⌥→)",
+    "The result does not include the referenced columns": "Le résultat n’inclut pas les colonnes référencées",
+    "Open rows": "Ouvrir les lignes",
+    "Counting referencing rows…": "Décompte des lignes qui la référencent…",
+    "Counting timed out": "Le décompte a expiré",
+    "Reading the foreign keys timed out": "La lecture des clés étrangères a expiré",
+    "Could not read the foreign keys of {table}: {error}": "Impossible de lire les clés étrangères de {table} : {error}",
+    "Only references from tables of the same owner are listed.": "Seules les références depuis des tables du même propriétaire sont listées.",
+    "Only references from tables of the same database are listed.": "Seules les références depuis des tables de la même base de données sont listées.",
+    "Only references between tables of the main schema are listed.": "Seules les références entre tables du schéma main sont listées."
+  },
   "session_monitor": {
     "Session Monitor…": "Moniteur de sessions…",
     "Session Monitor": "Moniteur de sessions",
