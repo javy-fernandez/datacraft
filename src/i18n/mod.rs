@@ -254,7 +254,8 @@ mod tests {
                 if path.extension().is_none_or(|e| e != "rs") {
                     continue;
                 }
-                let source = std::fs::read_to_string(&path).unwrap();
+                // CRLF checkouts (Git for Windows) split like LF ones.
+                let source = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
                 let code: String = source
                     .split("#[cfg(test)]\nmod ")
                     .next()

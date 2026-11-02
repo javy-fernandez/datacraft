@@ -172,7 +172,7 @@ impl BackupDialog {
             }
             footer.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let validation = self.request.validate(self.driver);
-                let valid = validation.is_ok() && !(self.read_only && !BackupRequest::local(self.driver));
+                let valid = validation.is_ok() && (!self.read_only || BackupRequest::local(self.driver));
                 let start = ui.add_enabled_ui(!self.running && valid, |ui| crate::ui::theme::primary_button(ui, tr("Start backup"))).inner;
                 let start = if let Err(error) = validation { start.on_disabled_hover_text(error.to_string()) } else { start };
                 if start.clicked() {
