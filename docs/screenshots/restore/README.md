@@ -20,6 +20,8 @@ Regenerate on Windows with a working GPU:
 cargo test --locked render_restore_screenshots -- --ignored
 ```
 
-Review the PNG files in `target/restore-snapshots/`, then copy them here unchanged.
-Keep the full 1600 × 1000 frame. These are Windows UI captures; the restore itself was
+Review the PNG files in `target/restore-snapshots/`, then store them here reduced to a
+256-colour palette without dithering (about 80 KiB each instead of 300), keeping the full
+1600 × 1000 frame, for example with Pillow:
+`Image.open(src).convert("RGB").quantize(256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).save(dst, optimize=True)`. These are Windows UI captures; the restore itself was
 tested separately against PostgreSQL (see [database backups](../../database-backups.md)).
