@@ -312,3 +312,49 @@ async fn sqlite_tables_with_triggers_are_left_to_a_manual_migration() {
     assert!(script.statements.is_empty(), "{:#?}", script.statements);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// `public` against `public` in another database (the usual production → staging case): the
+/// sequences the new columns and tables take values from are created in the target.
+#[tokio::test]
+#[ignore]
+async fn postgres_same_schema_in_two_databases_creates_the_sequences() {
+    let Some(cfg) = pg_config() else { return };
+    let tag = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let (prod, staging) = (format!("dc_cmp_prod_{tag}"), format!("dc_cmp_stage_{tag}"));
+    let mut admin = Session::connect(&cfg).await.unwrap();
+    for db in [&prod, &staging] {
+        admin.execute(&format!("create database {db}"), 10).await.unwrap();
+    }
+    let on = |db: &str| {
+        let mut c = cfg.clone();
+        c.database = db.into();
+        c
+    };
+    let mut s = Session::connect(&on(&prod)).await.unwrap();
+    s.execute(
+        "create sequence invoice_numbers start 1000;
+         create table t (id serial primary key, y serial, z int default nextval('public.invoice_numbers'));
+         create sequence n_keys; create table n (id int primary key default nextval('n_keys'), label text);",
+        10,
+    )
+    .await
+    .unwrap();
+    drop(s);
+    let mut s = Session::connect(&on(&staging)).await.unwrap();
+    s.execute("create table t (id serial primary key); insert into t default values;", 10).await.unwrap();
+    drop(s);
+    let side = |db: &str| Side { db: db.into(), schema: "public".into() };
+    let result = tokio::spawn({
+        let (a, b, sa, sb) = (on(&prod), on(&staging), side(&prod), side(&staging));
+        async move { round_trip(a, b, sa, sb).await }
+    })
+    .await;
+    for db in [&prod, &staging] {
+        admin.execute(&format!("drop database {db} with (force)"), 10).await.unwrap();
+    }
+    let (_, script) = result.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+    let text = script.statements.join(";\n");
+    for seq in ["public.t_y_seq", "public.invoice_numbers", "public.n_keys"] {
+        assert!(text.contains(&format!("create sequence if not exists {seq}")), "{seq}: {text}");
+    }
+}

@@ -584,3 +584,19 @@ fn sqlite_tables_differing_in_generated_columns_or_options_are_different_and_reb
     let c = compare(&model(Driver::Sqlite, "main", vec![wider], vec![]), &tgt);
     assert_eq!(c.objects[0].manual, None);
 }
+
+#[test]
+fn sequences_are_created_when_both_schemas_have_the_same_name() {
+    let d = Driver::Postgres;
+    let seq_default = |seq: &str| format!("nextval('public.{seq}'::regclass)");
+    let mut src = model(d, "public", vec![table("t", vec![required(col("id", "integer")), with_default(required(col("y", "integer")), &seq_default("t_y_seq"))], &["id"]), table("n", vec![with_default(required(col("id", "integer")), &seq_default("n_keys"))], &["id"])], vec![]);
+    src.sequences = vec!["t_y_seq".into(), "n_keys".into()];
+    // A shared sequence of another schema is left alone.
+    src.tables[1].details.columns.push(with_default(col("z", "integer"), "nextval('billing.numbers'::regclass)"));
+    let tgt = model(d, "public", vec![table("t", vec![required(col("id", "integer"))], &["id"])], vec![]);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(at(&s, "create sequence if not exists public.t_y_seq") < at(&s, "add column y integer"), "{:#?}", s.statements);
+    assert!(at(&s, "create sequence if not exists public.n_keys") < at(&s, "create table public.n"));
+    assert!(!s.statements.iter().any(|x| x.contains("sequence if not exists billing")));
+}

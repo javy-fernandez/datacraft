@@ -1137,14 +1137,15 @@ impl<'a> Gen<'a> {
     }
 
     /// PostgreSQL: the source schema's sequence a default takes values from, created first in
-    /// the target (a sequence of another schema is shared, and left alone).
+    /// the target, also when both schemas have the same name (a sequence of another schema is
+    /// shared, and left alone).
     fn sequence_for(&self, pre: &mut Vec<String>, c: &ColumnDef) {
         if self.d != Driver::Postgres {
             return;
         }
-        let Some(default) = c.default.as_deref() else { return };
-        let moved = self.moved(default);
-        if let Some(seq) = nextval_sequence(&moved).filter(|_| moved != default) {
+        let Some(source) = c.default.as_deref().and_then(nextval_sequence) else { return };
+        let own = requalify(self.d, source, &self.cx.src.schema, "", &self.cx.src_names) != source;
+        if let Some(seq) = c.default.as_deref().map(|d| self.moved(d)).as_deref().and_then(nextval_sequence).filter(|_| own) {
             let stmt = format!("create sequence if not exists {seq}");
             if !pre.contains(&stmt) {
                 pre.push(stmt);
