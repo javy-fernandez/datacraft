@@ -106,7 +106,7 @@ mod tests {
         assert!(!d.running());
         assert!(progress.cancel.load(Ordering::Relaxed), "the replaced dialog's comparison was cancelled");
         let text = d.outcome.as_ref().unwrap().text.clone();
-        assert!(text.contains("alter table shop_staging.orders"), "{text}");
+        assert!(text.contains("create table shop_staging.payments"), "{text}");
         // Changing a picker makes the result stale: nothing leaves the dialog until compared again.
         let compared = d.target.clone();
         d.target.schema = "elsewhere".into();

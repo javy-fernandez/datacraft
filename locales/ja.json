@@ -1506,7 +1506,6 @@
     "Drops table “{name}” and all its data": "テーブル「{name}」とそのすべてのデータを削除します",
     "View “{name}” uses a dropped table: it is dropped and not created again": "ビュー「{name}」は削除されるテーブルを使用しています: 削除され、再作成されません",
     "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "削除して再作成するビューは、権限、所有者、コメント、オプション (security_barrier、security_invoker、check option) を失います: {views}",
-    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "スクリプトは一括で実行してください: 外部キーの検査をオフにし、最後にセッションの設定を元に戻します。",
     "partitioned table": "パーティション テーブル",
     "partition": "パーティション",
     "materialized view": "マテリアライズド ビュー",
@@ -1522,6 +1521,12 @@
     "rebuilding the table would drop its triggers ({triggers})": "テーブルを再構築するとトリガーが削除されます ({triggers})",
     "Table “{name}” needs a manual migration: {reason}": "テーブル「{name}」は手動での移行が必要です: {reason}",
     "manual": "手動",
-    "Needs a manual migration, not scripted: {reason}": "手動での移行が必要なため、スクリプトには含めません: {reason}"
+    "Needs a manual migration, not scripted: {reason}": "手動での移行が必要なため、スクリプトには含めません: {reason}",
+    "The script runs in one transaction: if a statement fails, run ROLLBACK and nothing is changed.": "スクリプトは 1 つのトランザクションで実行されます: ステートメントが失敗したら ROLLBACK を実行すれば何も変更されません。",
+    "Run the script as a whole, in one transaction: it turns foreign key checks off and restores the session's settings at its end. If a statement fails, run ROLLBACK and those last statements.": "スクリプトは 1 つのトランザクションで一括実行してください: 外部キーの検査をオフにし、最後にセッションの設定を元に戻します。ステートメントが失敗したら ROLLBACK と最後のステートメントを実行してください。",
+    "The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.": "スクリプトは 1 つのトランザクション (XACT_ABORT) で実行されます: 失敗したステートメントは他のすべてを元に戻します。",
+    "This engine commits each DDL statement: if one fails, the statements before it stay applied.": "このエンジンは DDL ステートメントごとにコミットします: 1 つが失敗しても、それより前のステートメントは適用されたままです。",
+    "alter, loses data": "変更 (データ損失)",
+    "Drops columns or changes their type: left out of the script unless checked.": "列の削除または型の変更を含みます: チェックしない限りスクリプトには含まれません。"
   }
 }

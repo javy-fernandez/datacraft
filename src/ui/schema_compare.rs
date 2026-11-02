@@ -481,6 +481,7 @@ fn object_list(ui: &mut Ui, o: &mut Outcome, selected: &mut Option<usize>, colla
                         }
                         let (tag, color) = match status {
                             _ if obj.manual.is_some() => (tr("manual"), p.error),
+                            Status::Different if obj.destructive => (tr("alter, loses data"), p.error),
                             Status::OnlyInSource => (tr("create"), status_color(p, status)),
                             Status::OnlyInTarget => (tr("drop"), status_color(p, status)),
                             Status::Different => (tr("alter"), status_color(p, status)),
@@ -507,6 +508,8 @@ fn detail(ui: &mut Ui, o: &Outcome, selected: Option<usize>, p: &Palette, dark: 
             ui.label(RichText::new(obj.status.label()).color(status_color(p, obj.status)));
             if obj.status == Status::OnlyInTarget {
                 ui.label(RichText::new(tr("Dropping it deletes its data: it is left out of the script unless checked.")).small().color(p.error));
+            } else if obj.destructive {
+                ui.label(RichText::new(tr("Drops columns or changes their type: left out of the script unless checked.")).small().color(p.error));
             }
         });
         if let Some(why) = &obj.manual {

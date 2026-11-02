@@ -133,6 +133,8 @@ pub struct ObjectDiff {
     pub target_ddl: String,
     /// Why the script can't make this change (it needs a manual migration): never scripted.
     pub manual: Option<String>,
+    /// The change drops columns or changes their type: in the script only if chosen.
+    pub destructive: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,10 +159,10 @@ impl Comparison {
         self.objects.iter().any(|o| o.status != Status::Identical)
     }
 
-    /// What goes into the script at first: everything but drops, identical objects and what
-    /// needs a manual migration.
+    /// What goes into the script at first: new and changed objects, but no drops, no changes
+    /// that drop columns or change their type, and nothing that needs a manual migration.
     pub fn default_selection(&self) -> Vec<bool> {
-        self.objects.iter().map(|o| matches!(o.status, Status::OnlyInSource | Status::Different) && o.manual.is_none()).collect()
+        self.objects.iter().map(|o| matches!(o.status, Status::OnlyInSource | Status::Different) && o.manual.is_none() && !o.destructive).collect()
     }
 }
 
@@ -794,15 +796,16 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
     let mut seen = HashSet::new();
     for (i, s) in src.tables.iter().enumerate() {
         let j = tgt_tables.get(&cx.obj(&s.name)).copied();
-        let (status, changes, manual) = match j {
+        let (status, changes, manual, destructive) = match j {
             Some(j) => {
                 seen.insert(j);
                 let delta = table_delta(&cx, s, &tgt.tables[j]);
                 let changes = describe(&delta);
                 let manual = if changes.is_empty() { None } else { sqlite_manual(&cx, &delta, s, &tgt.tables[j]) };
-                (if changes.is_empty() { Status::Identical } else { Status::Different }, changes, manual)
+                let destructive = !delta.dropped.is_empty() || delta.changed.iter().any(|c| c.ty);
+                (if changes.is_empty() { Status::Identical } else { Status::Different }, changes, manual, destructive)
             }
-            None => (Status::OnlyInSource, vec![], None),
+            None => (Status::OnlyInSource, vec![], None, false),
         };
         objects.push(ObjectDiff {
             kind: Kind::Table,
@@ -814,6 +817,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             source_ddl: table_text(src, &cx.src_names, s),
             target_ddl: j.map(|j| table_text(tgt, &cx.tgt_names, &tgt.tables[j])).unwrap_or_default(),
             manual,
+            destructive,
         });
     }
     for (j, t) in tgt.tables.iter().enumerate().filter(|(j, _)| !seen.contains(j)) {
@@ -827,6 +831,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             source_ddl: String::new(),
             target_ddl: table_text(tgt, &cx.tgt_names, t),
             manual: None,
+            destructive: false,
         });
     }
     let tgt_views: HashMap<String, usize> = tgt.views.iter().enumerate().map(|(i, v)| (cx.obj(&v.name), i)).collect();
@@ -851,6 +856,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             source_ddl: view_text(src, &cx.src_names, s),
             target_ddl: j.map(|j| view_text(tgt, &cx.tgt_names, &tgt.views[j])).unwrap_or_default(),
             manual: None,
+            destructive: false,
         });
     }
     for (j, t) in tgt.views.iter().enumerate().filter(|(j, _)| !seen.contains(j)) {
@@ -864,6 +870,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             source_ddl: String::new(),
             target_ddl: view_text(tgt, &cx.tgt_names, t),
             manual: None,
+            destructive: false,
         });
     }
     objects.sort_by_key(|o| (o.status, o.kind, o.name.to_lowercase()));
@@ -1021,6 +1028,9 @@ impl Script {
 fn side_label(m: &SchemaModel) -> String {
     if m.schema.is_empty() || m.schema == m.db || m.driver == Driver::Sqlite { m.db.clone() } else { format!("{}.{}", m.db, m.schema) }
 }
+
+/// SQL Server: after an error XACT_ABORT has rolled back, so the following batches compile only.
+const MSSQL_GUARD: &str = "if @@trancount = 0 set noexec on";
 
 /// Statements in their order of execution.
 #[derive(Default)]
@@ -1723,15 +1733,41 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
         // Renaming the rebuilt table must not re-check the views on the old one (see alter.rs).
         pragmas.push(("legacy_alter_table", "on"));
     }
-    for (i, (name, value)) in pragmas.iter().enumerate() {
-        p.pre.insert(i, format!("pragma {name} = {value}"));
-        p.post.push(format!("pragma {name} = {}", pragma(name)));
-    }
-    if !pragmas.is_empty() {
-        g.warnings.push(tr("Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.").into());
-    }
     let Phases { pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views, post } = p;
-    let statements = [pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views, post].concat();
+    let body = [pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views, post].concat();
+    // One transaction where DDL is transactional. SQLite's `foreign_keys` can't change inside
+    // one: it is set before and restored after. SQL Server: XACT_ABORT undoes everything on an
+    // error, and NOEXEC keeps the following batches from running outside the transaction.
+    let mut statements = vec![];
+    if !body.is_empty() {
+        match d {
+            Driver::Postgres | Driver::Sqlite => {
+                statements.extend(pragmas.iter().map(|(name, value)| format!("pragma {name} = {value}")));
+                statements.push("begin".into());
+                statements.extend(body);
+                statements.push("commit".into());
+                statements.extend(pragmas.iter().map(|(name, _)| format!("pragma {name} = {}", pragma(name))));
+                g.warnings.push(if pragmas.is_empty() {
+                    tr("The script runs in one transaction: if a statement fails, run ROLLBACK and nothing is changed.").into()
+                } else {
+                    tr("Run the script as a whole, in one transaction: it turns foreign key checks off and restores the session's settings at its end. If a statement fails, run ROLLBACK and those last statements.").into()
+                });
+            }
+            Driver::MsSql => {
+                statements.extend(["set xact_abort on".to_string(), "begin transaction".into()]);
+                for stmt in body {
+                    statements.push(stmt);
+                    statements.push(MSSQL_GUARD.into());
+                }
+                statements.extend(["commit transaction".to_string(), "set noexec off".into()]);
+                g.warnings.push(tr("The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.").into());
+            }
+            _ => {
+                statements = body;
+                g.warnings.push(tr("This engine commits each DDL statement: if one fails, the statements before it stay applied.").into());
+            }
+        }
+    }
     let mut warnings = vec![];
     for w in g.warnings {
         if !warnings.contains(&w) {

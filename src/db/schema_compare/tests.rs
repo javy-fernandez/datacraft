@@ -62,6 +62,12 @@ fn all(c: &Comparison) -> Vec<bool> {
     vec![true; c.objects.len()]
 }
 
+/// The statements without the transaction around them.
+fn body(script: &Script) -> Vec<String> {
+    let control = ["begin", "commit", "set xact_abort on", "begin transaction", "commit transaction", "set noexec off", MSSQL_GUARD];
+    script.statements.iter().filter(|x| !control.contains(&x.as_str())).cloned().collect()
+}
+
 /// Position of the first statement containing `needle`.
 fn at(script: &Script, needle: &str) -> usize {
     script.statements.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("no statement with {needle:?} in {:#?}", script.statements))
@@ -185,10 +191,12 @@ fn statuses_and_changes_are_reported() {
     ] {
         assert!(changes.contains(expected), "{expected:?} not in {changes}");
     }
-    // Drops and identical objects are left out of the script at first.
+    // Drops, changes that drop columns or change their type, and identical objects are left
+    // out of the script at first.
     let selection = c.default_selection();
+    assert!(orders.destructive && !c.objects.iter().find(|o| o.name == "order_totals").unwrap().destructive);
     for (o, on) in c.objects.iter().zip(&selection) {
-        assert_eq!(*on, matches!(o.status, Status::OnlyInSource | Status::Different), "{}", o.name);
+        assert_eq!(*on, matches!(o.status, Status::OnlyInSource | Status::Different) && !o.destructive, "{}", o.name);
     }
     // The definitions differ only on the changed lines.
     let (a, b) = changed_lines(&orders.source_ddl, &orders.target_ddl);
@@ -352,7 +360,8 @@ fn expression_indexes_and_generated_columns_are_reported_not_scripted() {
     let c = compare(&src, &tgt);
     let script = script(&src, &tgt, &c, &all(&c)).unwrap();
     assert!(!script.statements.iter().any(|x| x.contains("t_expr")));
-    assert_eq!(script.warnings.len(), 2, "{:?}", script.warnings);
+    assert!(script.warnings.iter().any(|w| w.contains("t.g is a computed column")), "{:?}", script.warnings);
+    assert!(script.warnings.iter().any(|w| w.contains("“t_expr” is an expression")), "{:?}", script.warnings);
     assert!(script.text(&src, &tgt).starts_with("-- Makes db.b match db.a\n-- "));
 }
 
@@ -619,7 +628,7 @@ fn unique_constraints_named_by_the_server_match_by_their_columns() {
         let bare = model(driver, "b", vec![t("")], vec![]);
         let c = compare(&src, &bare);
         let s = script(&src, &bare, &c, &all(&c)).unwrap();
-        let unquoted = |s: &Script| s.statements.iter().map(|x| x.replace('"', "")).collect::<Vec<_>>();
+        let unquoted = |s: &Script| body(s).iter().map(|x| x.replace('"', "")).collect::<Vec<_>>();
         assert_eq!(unquoted(&s), ["alter table b.orders add unique (code)"], "{driver:?}");
         let c = compare(&bare, &tgt);
         let s = script(&bare, &tgt, &c, &all(&c)).unwrap();
@@ -648,7 +657,7 @@ fn primary_key_column_order_is_compared_and_scripted() {
         let c = compare(&src, &tgt);
         let s = script(&src, &tgt, &c, &all(&c)).unwrap();
         // Oracle quotes the lowercase names of these models.
-        let body: Vec<String> = s.statements.iter().filter(|x| !matches!(x.as_str(), "begin" | "commit")).map(|x| x.replace('"', "")).collect();
+        let body: Vec<String> = body(&s).iter().map(|x| x.replace('"', "")).collect();
         assert_eq!(body, expected, "{driver:?}");
     }
 }
@@ -663,4 +672,47 @@ fn mysql_table_names_fold_only_when_the_server_ignores_their_case() {
     // Folding servers see one table under either spelling.
     let folding = |schema: &str, name: &str| model(Driver::MySql, schema, vec![table(name, vec![col("id", "int")], &[])], vec![]);
     assert!(!compare(&folding("a", "Users"), &folding("b", "users")).has_differences());
+}
+
+#[test]
+fn scripts_run_in_one_transaction_where_ddl_is_transactional() {
+    let t = |ty: &str| table("t", vec![required(col("id", "int")), col("n", ty)], &["id"]);
+    let pair = |d: Driver| (model(d, "a", vec![t("bigint")], vec![]), model(d, "b", vec![t("int")], vec![]));
+    let (src, tgt) = pair(Driver::Postgres);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert_eq!((s.statements.first().unwrap().as_str(), s.statements.last().unwrap().as_str()), ("begin", "commit"));
+    // SQL Server: XACT_ABORT, and after each statement a guard that stops the following batches
+    // once an error has rolled the transaction back.
+    let (src, tgt) = pair(Driver::MsSql);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert_eq!(s.statements, ["set xact_abort on", "begin transaction", "alter table b.t alter column n bigint null", MSSQL_GUARD, "commit transaction", "set noexec off"]);
+    // MySQL commits each DDL statement: no transaction, and the script says so.
+    let (src, tgt) = pair(Driver::MySql);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(!s.statements.iter().any(|x| x.contains("begin") || x.contains("commit")));
+    assert!(s.warnings.iter().any(|w| w.contains("commits each DDL statement")));
+}
+
+#[test]
+fn a_failing_sqlite_rebuild_leaves_nothing_after_rollback() {
+    // The new NOT NULL column has no default: copying the rows fails half way through.
+    let src = model(Driver::Sqlite, "main", vec![table("a", vec![required(col("id", "INTEGER")), col("n", "TEXT"), required(col("must", "TEXT"))], &["id"])], vec![]);
+    let mut tgt = model(Driver::Sqlite, "main", vec![table("a", vec![required(col("id", "INTEGER")), col("n", "TEXT")], &["id"])], vec![]);
+    tgt.pragmas = vec![("foreign_keys".into(), "on".into()), ("legacy_alter_table".into(), "off".into())];
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("pragma foreign_keys = on; create table a (id INTEGER not null, n TEXT, primary key (id)); insert into a values (1, 'x');").unwrap();
+    assert!(db.execute_batch(&s.text(&src, &tgt)).is_err());
+    db.execute_batch("rollback").unwrap();
+    let tables: Vec<String> = db.prepare("select name from sqlite_master where type = 'table' order by name").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(tables, ["a"], "the temporary table is gone");
+    assert_eq!(db.query_row("select n from a", [], |r| r.get::<_, String>(0)).unwrap(), "x");
+    // The settings at the end of the script restore the session.
+    let n = s.statements.len();
+    db.execute_batch(&s.statements[n - 2..].join(";")).unwrap();
+    assert_eq!(db.query_row("pragma foreign_keys", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
 }

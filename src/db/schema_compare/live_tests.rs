@@ -358,3 +358,45 @@ async fn postgres_same_schema_in_two_databases_creates_the_sequences() {
         assert!(text.contains(&format!("create sequence if not exists {seq}")), "{seq}: {text}");
     }
 }
+
+/// A script that fails half way through changes nothing once rolled back: it runs in one
+/// transaction.
+#[tokio::test]
+#[ignore]
+async fn postgres_failing_script_is_rolled_back_whole() {
+    let Some(cfg) = pg_config() else { return };
+    let tag = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+    let (a, b) = (format!("dc_cmp_src_{tag}"), format!("dc_cmp_tgt_{tag}"));
+    let mut admin = Session::connect(&cfg).await.unwrap();
+    admin
+        .execute(
+            &format!(
+                "create schema {a}; create schema {b};
+                 create table {a}.extra (id int primary key); create table {a}.t (id int primary key, v integer);
+                 create table {b}.t (id int primary key, v text); insert into {b}.t values (1, 'not a number');"
+            ),
+            10,
+        )
+        .await
+        .unwrap();
+    let side = |schema: &str| Side { db: cfg.database.clone(), schema: schema.into() };
+    let (s, t) = run(cfg.clone(), cfg.clone(), side(&a), side(&b), Arc::new(Progress::default())).await.unwrap();
+    let c = compare(&s, &t);
+    let script = script(&s, &t, &c, &vec![true; c.objects.len()]).unwrap();
+    let text = script.text(&s, &t);
+    let mut session = Session::connect(&cfg).await.unwrap();
+    let mut failed = false;
+    for batch in crate::sql::split_batches(&text, Driver::Postgres) {
+        if session.execute(&batch.text, 10).await.is_err() {
+            failed = true;
+            break;
+        }
+    }
+    session.execute("rollback", 10).await.unwrap();
+    let extra = admin.execute(&format!("select count(*) from pg_tables where schemaname = '{b}' and tablename = 'extra'"), 10).await.unwrap();
+    let v = admin.execute(&format!("select v from {b}.t"), 10).await.unwrap();
+    admin.execute(&format!("drop schema {a} cascade; drop schema {b} cascade"), 10).await.unwrap();
+    assert!(failed, "{text}");
+    assert_eq!(extra[0].rows[0][0].as_deref(), Some("0"), "the table created before the failure is gone");
+    assert_eq!(v[0].rows[0][0].as_deref(), Some("not a number"));
+}

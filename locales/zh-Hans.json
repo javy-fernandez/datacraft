@@ -1506,7 +1506,6 @@
     "Drops table “{name}” and all its data": "删除表“{name}”及其所有数据",
     "View “{name}” uses a dropped table: it is dropped and not created again": "视图“{name}”使用了被删除的表：它会被删除且不会重新创建",
     "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "被删除并重新创建的视图会丢失其权限、所有者、注释和选项（security_barrier、security_invoker、check option）：{views}",
-    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "请完整运行该脚本：它会关闭外键检查，并在结束时恢复会话设置。",
     "partitioned table": "分区表",
     "partition": "分区",
     "materialized view": "物化视图",
@@ -1522,6 +1521,12 @@
     "rebuilding the table would drop its triggers ({triggers})": "重建该表会删除其触发器（{triggers}）",
     "Table “{name}” needs a manual migration: {reason}": "表“{name}”需要手动迁移：{reason}",
     "manual": "手动",
-    "Needs a manual migration, not scripted: {reason}": "需要手动迁移，未包含在脚本中：{reason}"
+    "Needs a manual migration, not scripted: {reason}": "需要手动迁移，未包含在脚本中：{reason}",
+    "The script runs in one transaction: if a statement fails, run ROLLBACK and nothing is changed.": "脚本在一个事务中运行：如果某条语句失败，执行 ROLLBACK 后不会有任何更改。",
+    "Run the script as a whole, in one transaction: it turns foreign key checks off and restores the session's settings at its end. If a statement fails, run ROLLBACK and those last statements.": "请在一个事务中完整运行该脚本：它会关闭外键检查，并在结束时恢复会话设置。如果某条语句失败，请执行 ROLLBACK 以及最后这些语句。",
+    "The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.": "脚本在一个事务（XACT_ABORT）中运行：失败的语句会撤销所有其他语句。",
+    "This engine commits each DDL statement: if one fails, the statements before it stay applied.": "此引擎会提交每条 DDL 语句：如果某条失败，之前的语句仍会保留。",
+    "alter, loses data": "修改，会丢失数据",
+    "Drops columns or changes their type: left out of the script unless checked.": "删除列或更改其类型：除非勾选，否则不会包含在脚本中。"
   }
 }

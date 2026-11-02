@@ -24,7 +24,7 @@ there is one.
 | --- | --- | --- |
 | Only in source | The target lacks it | Created (checked) |
 | Only in target | The source lacks it | Dropped, only if you check it (it deletes its data) |
-| Different | Both have it, with changes | Altered (checked) |
+| Different | Both have it, with changes | Altered (checked), unless the change drops columns or changes their type (marked *alter, loses data*): then only if you check it |
 | Identical | Nothing to do | Hidden unless **Show identical** is on |
 
 Select an object to see what changed and both definitions side by side; the changed lines
@@ -67,6 +67,13 @@ writes it to a file and **Open in Console** opens it in a new console on the com
 database, where you review it and run it yourself. On a read-only target the console still
 opens, with a warning that it can't be run there. Run the script as a whole: on SQL Server
 each statement is a batch of its own, ended by `GO`.
+
+On PostgreSQL, SQLite and SQL Server the script runs in one transaction, so a failing
+statement leaves the target as it was: PostgreSQL and SQLite wait for a `ROLLBACK` (SQLite:
+also run the pragmas at the end of the script, which turned foreign key checks off before
+the transaction began); SQL Server rolls back by itself (`XACT_ABORT`) and the following
+batches don't run. MySQL, MariaDB and Oracle commit each DDL statement, so the statements
+before a failing one stay applied.
 
 Statements are ordered so that they can run top to bottom:
 
