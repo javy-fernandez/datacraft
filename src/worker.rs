@@ -758,6 +758,28 @@ fn redact(message: String, password: &str) -> String {
     if password.is_empty() { message } else { message.replace(password, "[redacted]") }
 }
 
+async fn inspect_restore(state: &State, conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>) -> Vec<Response> {
+    let result = match state.live.lock().await.get(&conn).map(|l| l.cfg.clone()) {
+        Some(cfg) => {
+            let password = cfg.password.clone();
+            Box::pin(crate::db::restore::inspect(cfg, *request)).await.map_err(|error| redact(format!("{error:#}"), &password))
+        }
+        None => Err(tr("The connection is not open").into()),
+    };
+    vec![Response::RestoreInspected { id, result }]
+}
+
+async fn restore(state: &State, conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, progress: Arc<crate::db::restore::RestoreProgress>) -> Vec<Response> {
+    let result = match state.live.lock().await.get(&conn).map(|l| l.cfg.clone()) {
+        Some(cfg) => {
+            let password = cfg.password.clone();
+            Box::pin(crate::db::restore::run(cfg, *request.clone(), progress)).await.map_err(|error| redact(format!("{error:#}"), &password))
+        }
+        None => Err(tr("The connection is not open").into()),
+    };
+    vec![Response::Restored { conn, id, request, result }]
+}
+
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
         Request::TableShortcut { path, target } => {
@@ -901,28 +923,9 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             };
             vec![Response::Backup { conn, id, request, result }]
         }
-        Request::InspectRestore { conn, id, request } => {
-            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
-            let result = match cfg {
-                Some(cfg) => {
-                    let password = cfg.password.clone();
-                    crate::db::restore::inspect(cfg, *request).await.map_err(|error| redact(format!("{error:#}"), &password))
-                }
-                None => Err(tr("The connection is not open").into()),
-            };
-            vec![Response::RestoreInspected { id, result }]
-        }
-        Request::Restore { conn, id, request, progress } => {
-            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
-            let result = match cfg {
-                Some(cfg) => {
-                    let password = cfg.password.clone();
-                    crate::db::restore::run(cfg, *request.clone(), progress).await.map_err(|error| redact(format!("{error:#}"), &password))
-                }
-                None => Err(tr("The connection is not open").into()),
-            };
-            vec![Response::Restored { conn, id, request, result }]
-        }
+        // Boxed: their state would otherwise enlarge every request's stack frame.
+        Request::InspectRestore { conn, id, request } => Box::pin(inspect_restore(state, conn, id, request)).await,
+        Request::Restore { conn, id, request, progress } => Box::pin(restore(state, conn, id, request, progress)).await,
         Request::InspectTable { conn, db, schema, table, console, generation, count_rows, page_filter } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             let result = match cfg {
