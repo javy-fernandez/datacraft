@@ -17,7 +17,7 @@ Ctrl for the combinations below.
 | Ctrl+Page Up / Page Down | First / last loaded row |
 | Shift+Arrow | Extend a rectangular cell selection |
 | Shift+click | Select the cell rectangle from the anchor |
-| Ctrl+click | Add or remove individual cells from the selection; on an underlined foreign-key value, open the referenced row instead |
+| Ctrl+click | Add or remove individual cells from the selection |
 | Alt+click (⌥-click on macOS) | Show the cell's whole value in a popup below it (JSON indented); Esc or a click outside closes it. Double-clicking a cell that can't be edited, or View Value in the context menu, does the same |
 | Drag with the mouse | Select a cell rectangle; dragging near an edge scrolls the grid |
 | Click a column name | Select that entire column in the loaded, filtered grid |
@@ -60,12 +60,15 @@ Sorting or filtering commits an open editor into pending changes first.
 
 ## Follow foreign keys
 
-Cells of declared foreign-key columns have a faint underline. Hold Ctrl (⌘ on
-macOS) over one to show it as a link, then click to open the referenced row: the
-parent table opens filtered to that key, in its existing tab when that tab has no
-pending changes or running query, otherwise in a new tab. Right-click a cell for
-**Go to referenced row** (one item per key using the column, with the parent table
-shown on the right) and **Referenced by…**.
+Cells of declared foreign-key columns have a faint underline. Hovering one shows
+a small arrow button at the edge of the cell away from the value; click it to open
+the referenced row. Clicking the value itself, with or without Ctrl/⌘, still
+selects cells as usual. The parent table opens filtered to that key, in its
+existing tab when that tab has no pending changes or running query, otherwise in
+a new tab. Right-click a cell for **Go to referenced row** (one item per key using
+the column, with the parent table shown on the right) and **Referenced by…**.
+
+![The follow button of a foreign-key value](screenshots/fk-navigation/grid-links.png)
 
 ![Context menu with the foreign-key items](screenshots/fk-navigation/context-menu.png)
 
@@ -79,9 +82,11 @@ pending edits.
 ![The referenced customer, filtered, with the Back button](screenshots/fk-navigation/referenced-row.png)
 
 **Referenced by…** lists every foreign key that references the row's table, with
-the number of rows referencing this row. Counts stop at 1000 (shown as `1000+`),
-run on a separate session, time out after 30 seconds and are cancelled when the
-dialog closes. **Open rows** opens the child table filtered to the referencing
+the number of rows referencing this row. Counts stop at 1000 (shown as `1000+`)
+and run on a separate session, one table at a time. Each count gets 10 seconds:
+a slow one (for example on an unindexed key column) is stopped on the server and
+shown as timed out, while the others still run. Closing the dialog cancels the
+counting. **Open rows** opens the child table filtered to the referencing
 rows. A key whose referenced columns are not all in the result is listed without
 a count.
 
@@ -91,14 +96,21 @@ Every jump is recorded. The Back / Forward arrows at the start of the table
 toolbar, or Alt+Left / Alt+Right, return to the previous table and filter; a
 closed tab is reopened, and a tab with pending changes is only activated.
 
-Keys are read per table, on a session of their own, the first time a result of
-that table is shown, and cached until the schema is refreshed or the table tab is
-reloaded. SQL console results get links only for a simple `SELECT` over one known
+Keys are read per table on the database's metadata session (the one the object
+browser uses, so opening many tables does not open a connection each), the first
+time a result of that table is shown, and cached until the schema is refreshed,
+the table tab is reloaded or the connection closes. If they cannot be read, the
+status bar says why and the table has no links until it is reloaded. On
+PostgreSQL, keys between partitioned tables are shown once, for the partitioned
+tables, not for each partition. SQL console results get links only for a simple `SELECT` over one known
 table, and only for columns that map unambiguously to that table's columns. The
 feature is available on PostgreSQL, SQLite (`main` schema), SQL Server,
 MySQL/MariaDB, Oracle and Snowflake; it is hidden for NoSQL engines and
-ClickHouse. On Oracle, references from other owners are not listed, and on
-MySQL/MariaDB only references from the same database.
+ClickHouse. On Oracle, references from other owners are not listed; on
+MySQL/MariaDB and Snowflake only references within the same database are; on
+SQLite, only keys between tables of the `main` schema. The **Referenced by…**
+dialog repeats this limit at the bottom. SQLite keys written with other letter
+case (`REFERENCES Parent(ID)`) resolve to the declared names.
 
 ## Optional save on row change
 
