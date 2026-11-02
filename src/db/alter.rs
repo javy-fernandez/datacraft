@@ -2,6 +2,7 @@
 //! turns the edited structure into the ALTER TABLE statements of each engine.
 
 use crate::db::{Cell, Driver, ResultSet, Session};
+use std::collections::BTreeMap;
 use crate::i18n::{tr, trf};
 use crate::ui::create_dialog::NewColumn;
 use crate::ui::drop_dialog::{DropKind, effective_name, object_sql};
@@ -160,125 +161,47 @@ fn group_indexes(rows: impl IntoIterator<Item = (String, bool, Option<String>, b
 
 /// Full structure of `schema.table`, read with the engine's catalog queries.
 pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: &str) -> anyhow::Result<TableDetails> {
+    let mut d = match driver {
+        Driver::ClickHouse | Driver::Snowflake => load_one(s, driver, schema, table).await?,
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => anyhow::bail!(tr("Not available for this engine")),
+        _ => load_tables(s, driver, schema, Some(table)).await?.remove(table).unwrap_or_default(),
+    };
+    if driver == Driver::Sqlite && !d.columns.is_empty() {
+        let tab = lit(table);
+        let create = query(s, &format!("select sql from sqlite_master where type = 'table' and name = {tab}"))
+            .await?
+            .rows
+            .first()
+            .map(|r| text(&r[0]))
+            .unwrap_or_default();
+        let triggers = query(s, &format!("select count(*) from sqlite_master where type = 'trigger' and tbl_name = {tab}")).await?;
+        let referenced = query(
+            s,
+            &format!(
+                "select count(*) from sqlite_master m join pragma_foreign_key_list(m.name) f \
+                 where m.type = 'table' and m.name <> {tab} and lower(f.\"table\") = lower({tab})"
+            ),
+        )
+        .await?;
+        let count = |rs: &ResultSet| rs.rows.first().map(|r| text(&r[0])).unwrap_or_default() != "0";
+        let lower = create.to_ascii_lowercase();
+        d.autoincrement = lower.contains("autoincrement");
+        let constraints = ["check", "references", "foreign", "unique", "generated", "collate", "without rowid", "on conflict"];
+        d.rebuild_blocker = (constraints.iter().any(|w| lower.contains(w)) || count(&triggers) || count(&referenced)).then(|| {
+            tr("SQLite can only make this change by rebuilding the table, and this table has constraints, triggers or foreign keys that a rebuild would lose. Use a console instead.").to_string()
+        });
+    }
+    if d.columns.is_empty() {
+        anyhow::bail!(trf("Table “{name}” not found", &[("name", &table)]));
+    }
+    Ok(d)
+}
+
+/// ClickHouse and Snowflake: one table at a time.
+async fn load_one(s: &mut Session, driver: Driver, schema: &str, table: &str) -> anyhow::Result<TableDetails> {
     let (sch, tab) = (lit(schema), lit(table));
     let mut d = TableDetails::default();
     match driver {
-        Driver::Postgres => {
-            let rel = format!("n.nspname = {sch} and c.relname = {tab}");
-            let rs = query(
-                s,
-                &format!(
-                    "select a.attname, format_type(a.atttypid, a.atttypmod), case when a.attnotnull then '0' else '1' end, \
-                     pg_get_expr(ad.adbin, ad.adrelid), case when a.attgenerated <> '' then '1' else '0' end \
-                     from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace \
-                     left join pg_attrdef ad on ad.adrelid = a.attrelid and ad.adnum = a.attnum \
-                     where {rel} and a.attnum > 0 and not a.attisdropped order by a.attnum"
-                ),
-            )
-            .await?;
-            d.columns = rs
-                .rows
-                .iter()
-                .map(|r| {
-                    let generated = flag(&r[4]);
-                    ColumnDef {
-                        name: text(&r[0]),
-                        data_type: text(&r[1]),
-                        nullable: flag(&r[2]),
-                        default: if generated { None } else { r[3].clone() },
-                        generated,
-                        ..Default::default()
-                    }
-                })
-                .collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select con.conname, a.attname from pg_constraint con join pg_class c on c.oid = con.conrelid \
-                     join pg_namespace n on n.oid = c.relnamespace \
-                     cross join lateral unnest(con.conkey) with ordinality k(attnum, ord) \
-                     join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum \
-                     where con.contype = 'p' and {rel} order by k.ord"
-                ),
-            )
-            .await?;
-            d.pk_name = rs.rows.first().map(|r| text(&r[0]));
-            d.primary_key = rs.rows.iter().map(|r| text(&r[1])).collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select i.relname, case when ix.indisunique then '1' else '0' end, a.attname, \
-                     case when exists (select 1 from pg_constraint k where k.conindid = ix.indexrelid and k.contype in ('u', 'x')) then '1' else '0' end, \
-                     case when ix.indpred is null then '1' else '0' end \
-                     from pg_index ix join pg_class i on i.oid = ix.indexrelid join pg_class c on c.oid = ix.indrelid \
-                     join pg_namespace n on n.oid = c.relnamespace \
-                     cross join lateral unnest(ix.indkey::int2[]) with ordinality k(attnum, ord) \
-                     left join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum and k.attnum > 0 \
-                     where {rel} and not ix.indisprimary order by i.relname, k.ord"
-                ),
-            )
-            .await?;
-            let partial: Vec<String> = rs.rows.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
-            d.indexes = group_indexes(rs.rows.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
-            for x in d.indexes.iter_mut().filter(|x| partial.contains(&x.name)) {
-                x.plain = false;
-            }
-        }
-        Driver::MySql | Driver::MariaDb => {
-            d.version = query(s, "select version()").await?.rows.first().map(|r| text(&r[0])).unwrap_or_default();
-            let mariadb = d.version.to_ascii_lowercase().contains("mariadb");
-            let rs = query(
-                s,
-                &format!(
-                    "select column_name, column_type, is_nullable, column_default, extra, column_comment, collation_name \
-                     from information_schema.columns where table_schema = {sch} and table_name = {tab} order by ordinal_position"
-                ),
-            )
-            .await?;
-            d.columns = rs
-                .rows
-                .iter()
-                .map(|r| {
-                    let extra = text(&r[4]);
-                    let lower = extra.to_ascii_lowercase();
-                    let generated = lower.contains("virtual generated") || lower.contains("stored generated") || lower.contains("persistent");
-                    let default_generated = lower.contains("default_generated");
-                    let extra = extra.split_whitespace().filter(|w| !w.eq_ignore_ascii_case("DEFAULT_GENERATED")).collect::<Vec<_>>().join(" ");
-                    let default = match r[3].clone() {
-                        _ if generated => None,
-                        // MariaDB writes NULL as the word and quotes literals.
-                        Some(v) if mariadb && v == "NULL" => None,
-                        Some(v) if mariadb || default_generated => Some(v),
-                        // MySQL shows literals without quotes.
-                        Some(v) => Some(lit(&v)),
-                        None => None,
-                    };
-                    ColumnDef {
-                        name: text(&r[0]),
-                        data_type: text(&r[1]),
-                        nullable: text(&r[2]).eq_ignore_ascii_case("YES"),
-                        default,
-                        extra,
-                        comment: text(&r[5]),
-                        collation: r[6].clone().filter(|c| !c.is_empty()),
-                        generated,
-                        ..Default::default()
-                    }
-                })
-                .collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select index_name, non_unique, column_name from information_schema.statistics \
-                     where table_schema = {sch} and table_name = {tab} order by index_name = 'PRIMARY' desc, index_name, seq_in_index"
-                ),
-            )
-            .await?;
-            d.primary_key = rs.rows.iter().filter(|r| text(&r[0]) == "PRIMARY").map(|r| text(&r[2])).collect();
-            d.indexes = group_indexes(
-                rs.rows.iter().filter(|r| text(&r[0]) != "PRIMARY").map(|r| (text(&r[0]), text(&r[1]) == "0", r[2].clone(), false)),
-            );
-        }
         Driver::ClickHouse => {
             let rs = query(
                 s,
@@ -311,121 +234,6 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
             // Data-skipping indexes are not part of this view (they can't be changed here).
             d.primary_key = rs.rows.iter().filter(|r| text(&r[5]) == "1").map(|r| text(&r[0])).collect();
         }
-        Driver::MsSql => {
-            let obj = lit(&format!("{}.{}", Driver::MsSql.quote_ident(schema), Driver::MsSql.quote_ident(table)));
-            let rs = query(
-                s,
-                &format!(
-                    "select c.name, type_name(c.user_type_id) + case \
-                     when type_name(c.user_type_id) in ('varchar', 'char', 'varbinary', 'binary') then '(' + case when c.max_length = -1 then 'max' else cast(c.max_length as varchar(10)) end + ')' \
-                     when type_name(c.user_type_id) in ('nvarchar', 'nchar') then '(' + case when c.max_length = -1 then 'max' else cast(c.max_length / 2 as varchar(10)) end + ')' \
-                     when type_name(c.user_type_id) in ('decimal', 'numeric') then '(' + cast(c.precision as varchar(10)) + ',' + cast(c.scale as varchar(10)) + ')' \
-                     when type_name(c.user_type_id) in ('datetime2', 'time', 'datetimeoffset') then '(' + cast(c.scale as varchar(10)) + ')' \
-                     else '' end, \
-                     case when c.is_nullable = 1 then '1' else '0' end, dc.definition, dc.name, \
-                     case when c.is_computed = 1 then '1' else '0' end \
-                     from sys.columns c left join sys.default_constraints dc on dc.object_id = c.default_object_id \
-                     where c.object_id = object_id({obj}) order by c.column_id"
-                ),
-            )
-            .await?;
-            d.columns = rs
-                .rows
-                .iter()
-                .map(|r| ColumnDef {
-                    name: text(&r[0]),
-                    data_type: text(&r[1]),
-                    nullable: flag(&r[2]),
-                    default: r[3].clone(),
-                    default_constraint: r[4].clone(),
-                    generated: flag(&r[5]),
-                    ..Default::default()
-                })
-                .collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select kc.name, c.name from sys.key_constraints kc \
-                     join sys.index_columns ic on ic.object_id = kc.parent_object_id and ic.index_id = kc.unique_index_id \
-                     join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id \
-                     where kc.parent_object_id = object_id({obj}) and kc.type = 'PK' order by ic.key_ordinal"
-                ),
-            )
-            .await?;
-            d.pk_name = rs.rows.first().map(|r| text(&r[0]));
-            d.primary_key = rs.rows.iter().map(|r| text(&r[1])).collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select i.name, case when i.is_unique = 1 then '1' else '0' end, c.name, \
-                     case when i.is_unique_constraint = 1 then '1' else '0' end, case when i.has_filter = 1 then '0' else '1' end \
-                     from sys.indexes i join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id \
-                     join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id \
-                     where i.object_id = object_id({obj}) and i.is_primary_key = 0 and i.type > 0 and ic.is_included_column = 0 \
-                     order by i.name, ic.key_ordinal"
-                ),
-            )
-            .await?;
-            let filtered: Vec<String> = rs.rows.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
-            d.indexes = group_indexes(rs.rows.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
-            for x in d.indexes.iter_mut().filter(|x| filtered.contains(&x.name)) {
-                x.plain = false;
-            }
-        }
-        Driver::Oracle => {
-            let rs = query(
-                s,
-                &format!(
-                    "select column_name, data_type, data_length, char_length, data_precision, data_scale, nullable, data_default, virtual_column \
-                     from all_tab_cols where owner = {sch} and table_name = {tab} and hidden_column = 'NO' order by column_id"
-                ),
-            )
-            .await?;
-            d.columns = rs
-                .rows
-                .iter()
-                .map(|r| {
-                    let generated = text(&r[8]) == "YES";
-                    ColumnDef {
-                        name: text(&r[0]),
-                        data_type: oracle_type(&text(&r[1]), &text(&r[2]), &text(&r[3]), r[4].as_deref(), r[5].as_deref()),
-                        nullable: text(&r[6]) == "Y",
-                        default: if generated { None } else { r[7].clone().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) },
-                        generated,
-                        ..Default::default()
-                    }
-                })
-                .collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select c.constraint_name, cc.column_name from all_constraints c \
-                     join all_cons_columns cc on cc.owner = c.owner and cc.constraint_name = c.constraint_name \
-                     where c.owner = {sch} and c.table_name = {tab} and c.constraint_type = 'P' order by cc.position"
-                ),
-            )
-            .await?;
-            d.pk_name = rs.rows.first().map(|r| text(&r[0]));
-            d.primary_key = rs.rows.iter().map(|r| text(&r[1])).collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select i.index_name, case when i.uniqueness = 'UNIQUE' then '1' else '0' end, ic.column_name, \
-                     case when exists (select 1 from all_constraints k where k.owner = i.table_owner and k.index_name = i.index_name and k.constraint_type = 'U') then '1' else '0' end, \
-                     case when i.index_type like 'FUNCTION%' then '0' else '1' end \
-                     from all_indexes i join all_ind_columns ic on ic.index_owner = i.owner and ic.index_name = i.index_name \
-                     where i.table_owner = {sch} and i.table_name = {tab} and i.index_type <> 'LOB' \
-                     and not exists (select 1 from all_constraints p where p.owner = i.table_owner and p.index_name = i.index_name and p.constraint_type = 'P') \
-                     order by i.index_name, ic.column_position"
-                ),
-            )
-            .await?;
-            let functional: Vec<String> = rs.rows.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
-            d.indexes = group_indexes(rs.rows.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
-            for x in d.indexes.iter_mut().filter(|x| functional.contains(&x.name)) {
-                x.plain = false;
-            }
-        }
         Driver::Snowflake => {
             let rs = query(
                 s,
@@ -455,68 +263,352 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
                 d.pk_name = col("constraint_name").and_then(|i| rs.rows.first().map(|r| text(&r[i])));
             }
         }
-        Driver::Sqlite => {
-            d.version = query(s, "select sqlite_version()").await?.rows.first().map(|r| text(&r[0])).unwrap_or_default();
-            let rs = query(s, &format!("select name, type, \"notnull\", dflt_value, pk from pragma_table_info({tab})")).await?;
-            let mut pk: Vec<(u32, String)> = vec![];
-            for r in &rs.rows {
-                let pos: u32 = text(&r[4]).parse().unwrap_or(0);
-                if pos > 0 {
-                    pk.push((pos, text(&r[0])));
-                }
-                d.columns.push(ColumnDef {
-                    name: text(&r[0]),
-                    data_type: text(&r[1]),
-                    nullable: !flag(&r[2]),
-                    default: r[3].clone(),
-                    ..Default::default()
-                });
-            }
-            pk.sort();
-            d.primary_key = pk.into_iter().map(|(_, c)| c).collect();
-            let rs = query(
-                s,
-                &format!(
-                    "select il.name, il.\"unique\", ii.name, case when il.partial then '0' else '1' end \
-                     from pragma_index_list({tab}) il join pragma_index_info(il.name) ii \
-                     where il.origin = 'c' order by il.name, ii.seqno"
-                ),
-            )
-            .await?;
-            let partial: Vec<String> = rs.rows.iter().filter(|r| !flag(&r[3])).map(|r| text(&r[0])).collect();
-            d.indexes = group_indexes(rs.rows.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), false)));
-            for x in d.indexes.iter_mut().filter(|x| partial.contains(&x.name)) {
-                x.plain = false;
-            }
-            let create = query(s, &format!("select sql from sqlite_master where type = 'table' and name = {tab}"))
-                .await?
-                .rows
-                .first()
-                .map(|r| text(&r[0]))
-                .unwrap_or_default();
-            let triggers = query(s, &format!("select count(*) from sqlite_master where type = 'trigger' and tbl_name = {tab}")).await?;
-            let referenced = query(
-                s,
-                &format!(
-                    "select count(*) from sqlite_master m join pragma_foreign_key_list(m.name) f \
-                     where m.type = 'table' and m.name <> {tab} and lower(f.\"table\") = lower({tab})"
-                ),
-            )
-            .await?;
-            let count = |rs: &ResultSet| rs.rows.first().map(|r| text(&r[0])).unwrap_or_default() != "0";
-            let lower = create.to_ascii_lowercase();
-            d.autoincrement = lower.contains("autoincrement");
-            let constraints = ["check", "references", "foreign", "unique", "generated", "collate", "without rowid", "on conflict"];
-            d.rebuild_blocker = (constraints.iter().any(|w| lower.contains(w)) || count(&triggers) || count(&referenced)).then(|| {
-                tr("SQLite can only make this change by rebuilding the table, and this table has constraints, triggers or foreign keys that a rebuild would lose. Use a console instead.").to_string()
-            });
-        }
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => anyhow::bail!(tr("Not available for this engine")),
-    }
-    if d.columns.is_empty() {
-        anyhow::bail!(trf("Table “{name}” not found", &[("name", &table)]));
+        _ => anyhow::bail!(tr("Not available for this engine")),
     }
     Ok(d)
+}
+
+/// Rows grouped by their first cell (the table), keeping their order; each row without it.
+fn by_table(rs: &ResultSet) -> BTreeMap<String, Vec<&[Cell]>> {
+    let mut out: BTreeMap<String, Vec<&[Cell]>> = BTreeMap::new();
+    for r in &rs.rows {
+        out.entry(text(&r[0])).or_default().push(&r[1..]);
+    }
+    out
+}
+
+/// Columns, primary key and indexes of `table`, or of every table of `schema` with one query of
+/// each kind (PostgreSQL, MySQL / MariaDB, SQL Server, Oracle, SQLite), by table name.
+pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: Option<&str>) -> anyhow::Result<BTreeMap<String, TableDetails>> {
+    let sch = lit(schema);
+    let one = |column: &str| table.map(|t| format!(" and {column} = {}", lit(t))).unwrap_or_default();
+    let mut all: BTreeMap<String, TableDetails> = BTreeMap::new();
+    let mut version = String::new();
+    // One query of each kind may cover a whole schema: a truncated catalog is an error.
+    async fn rows(s: &mut Session, sql: &str) -> anyhow::Result<ResultSet> {
+        let rs = s.execute(sql, 2_000_000).await?.into_iter().find(|r| !r.columns.is_empty()).unwrap_or_default();
+        anyhow::ensure!(!rs.truncated, tr("The schema catalog is too large to compare"));
+        Ok(rs)
+    }
+    match driver {
+        Driver::Postgres => {
+            let rel = match table {
+                Some(_) => format!("n.nspname = {sch}{}", one("c.relname")),
+                None => format!("n.nspname = {sch} and c.relkind in ('r', 'p')"),
+            };
+            let rs = rows(
+                s,
+                &format!(
+                    "select c.relname, a.attname, format_type(a.atttypid, a.atttypmod), case when a.attnotnull then '0' else '1' end, \
+                     pg_get_expr(ad.adbin, ad.adrelid), case when a.attgenerated <> '' then '1' else '0' end \
+                     from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace \
+                     left join pg_attrdef ad on ad.adrelid = a.attrelid and ad.adnum = a.attnum \
+                     where {rel} and a.attnum > 0 and not a.attisdropped order by c.relname, a.attnum"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                all.entry(t).or_default().columns = rs
+                    .iter()
+                    .map(|r| {
+                        let generated = flag(&r[4]);
+                        ColumnDef {
+                            name: text(&r[0]),
+                            data_type: text(&r[1]),
+                            nullable: flag(&r[2]),
+                            default: if generated { None } else { r[3].clone() },
+                            generated,
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select c.relname, con.conname, a.attname from pg_constraint con join pg_class c on c.oid = con.conrelid \
+                     join pg_namespace n on n.oid = c.relnamespace \
+                     cross join lateral unnest(con.conkey) with ordinality k(attnum, ord) \
+                     join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum \
+                     where con.contype = 'p' and {rel} order by c.relname, k.ord"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let d = all.entry(t).or_default();
+                d.pk_name = rs.first().map(|r| text(&r[0]));
+                d.primary_key = rs.iter().map(|r| text(&r[1])).collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select c.relname, i.relname, case when ix.indisunique then '1' else '0' end, a.attname, \
+                     case when exists (select 1 from pg_constraint k where k.conindid = ix.indexrelid and k.contype in ('u', 'x')) then '1' else '0' end, \
+                     case when ix.indpred is null then '1' else '0' end \
+                     from pg_index ix join pg_class i on i.oid = ix.indexrelid join pg_class c on c.oid = ix.indrelid \
+                     join pg_namespace n on n.oid = c.relnamespace \
+                     cross join lateral unnest(ix.indkey::int2[]) with ordinality k(attnum, ord) \
+                     left join pg_attribute a on a.attrelid = c.oid and a.attnum = k.attnum and k.attnum > 0 \
+                     where {rel} and not ix.indisprimary order by c.relname, i.relname, k.ord"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let partial: Vec<String> = rs.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
+                let d = all.entry(t).or_default();
+                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
+                for x in d.indexes.iter_mut().filter(|x| partial.contains(&x.name)) {
+                    x.plain = false;
+                }
+            }
+        }
+        Driver::MySql | Driver::MariaDb => {
+            version = query(s, "select version()").await?.rows.first().map(|r| text(&r[0])).unwrap_or_default();
+            let mariadb = version.to_ascii_lowercase().contains("mariadb");
+            let rs = rows(
+                s,
+                &format!(
+                    "select table_name, column_name, column_type, is_nullable, column_default, extra, column_comment, collation_name \
+                     from information_schema.columns where table_schema = {sch}{} order by table_name, ordinal_position",
+                    one("table_name")
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                all.entry(t).or_default().columns = rs
+                    .iter()
+                    .map(|r| {
+                        let extra = text(&r[4]);
+                        let lower = extra.to_ascii_lowercase();
+                        let generated = lower.contains("virtual generated") || lower.contains("stored generated") || lower.contains("persistent");
+                        let default_generated = lower.contains("default_generated");
+                        let extra = extra.split_whitespace().filter(|w| !w.eq_ignore_ascii_case("DEFAULT_GENERATED")).collect::<Vec<_>>().join(" ");
+                        let default = match r[3].clone() {
+                            _ if generated => None,
+                            // MariaDB writes NULL as the word and quotes literals.
+                            Some(v) if mariadb && v == "NULL" => None,
+                            Some(v) if mariadb || default_generated => Some(v),
+                            // MySQL shows literals without quotes.
+                            Some(v) => Some(lit(&v)),
+                            None => None,
+                        };
+                        ColumnDef {
+                            name: text(&r[0]),
+                            data_type: text(&r[1]),
+                            nullable: text(&r[2]).eq_ignore_ascii_case("YES"),
+                            default,
+                            extra,
+                            comment: text(&r[5]),
+                            collation: r[6].clone().filter(|c| !c.is_empty()),
+                            generated,
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select table_name, index_name, non_unique, column_name from information_schema.statistics \
+                     where table_schema = {sch}{} order by table_name, index_name = 'PRIMARY' desc, index_name, seq_in_index",
+                    one("table_name")
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let d = all.entry(t).or_default();
+                d.primary_key = rs.iter().filter(|r| text(&r[0]) == "PRIMARY").map(|r| text(&r[2])).collect();
+                d.indexes = group_indexes(rs.iter().filter(|r| text(&r[0]) != "PRIMARY").map(|r| (text(&r[0]), text(&r[1]) == "0", r[2].clone(), false)));
+            }
+        }
+        Driver::MsSql => {
+            let ids = match table {
+                Some(t) => format!("= object_id({})", lit(&format!("{}.{}", Driver::MsSql.quote_ident(schema), Driver::MsSql.quote_ident(t)))),
+                None => format!("in (select object_id from sys.tables where schema_id = schema_id({sch}))"),
+            };
+            let rs = rows(
+                s,
+                &format!(
+                    "select object_name(c.object_id), c.name, type_name(c.user_type_id) + case \
+                     when type_name(c.user_type_id) in ('varchar', 'char', 'varbinary', 'binary') then '(' + case when c.max_length = -1 then 'max' else cast(c.max_length as varchar(10)) end + ')' \
+                     when type_name(c.user_type_id) in ('nvarchar', 'nchar') then '(' + case when c.max_length = -1 then 'max' else cast(c.max_length / 2 as varchar(10)) end + ')' \
+                     when type_name(c.user_type_id) in ('decimal', 'numeric') then '(' + cast(c.precision as varchar(10)) + ',' + cast(c.scale as varchar(10)) + ')' \
+                     when type_name(c.user_type_id) in ('datetime2', 'time', 'datetimeoffset') then '(' + cast(c.scale as varchar(10)) + ')' \
+                     else '' end, \
+                     case when c.is_nullable = 1 then '1' else '0' end, dc.definition, dc.name, \
+                     case when c.is_computed = 1 then '1' else '0' end \
+                     from sys.columns c left join sys.default_constraints dc on dc.object_id = c.default_object_id \
+                     where c.object_id {ids} order by object_name(c.object_id), c.column_id"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                all.entry(t).or_default().columns = rs
+                    .iter()
+                    .map(|r| ColumnDef {
+                        name: text(&r[0]),
+                        data_type: text(&r[1]),
+                        nullable: flag(&r[2]),
+                        default: r[3].clone(),
+                        default_constraint: r[4].clone(),
+                        generated: flag(&r[5]),
+                        ..Default::default()
+                    })
+                    .collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select object_name(kc.parent_object_id), kc.name, c.name from sys.key_constraints kc \
+                     join sys.index_columns ic on ic.object_id = kc.parent_object_id and ic.index_id = kc.unique_index_id \
+                     join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id \
+                     where kc.parent_object_id {ids} and kc.type = 'PK' order by object_name(kc.parent_object_id), ic.key_ordinal"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let d = all.entry(t).or_default();
+                d.pk_name = rs.first().map(|r| text(&r[0]));
+                d.primary_key = rs.iter().map(|r| text(&r[1])).collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select object_name(i.object_id), i.name, case when i.is_unique = 1 then '1' else '0' end, c.name, \
+                     case when i.is_unique_constraint = 1 then '1' else '0' end, case when i.has_filter = 1 then '0' else '1' end \
+                     from sys.indexes i join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id \
+                     join sys.columns c on c.object_id = ic.object_id and c.column_id = ic.column_id \
+                     where i.object_id {ids} and i.is_primary_key = 0 and i.type > 0 and ic.is_included_column = 0 \
+                     order by object_name(i.object_id), i.name, ic.key_ordinal"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let filtered: Vec<String> = rs.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
+                let d = all.entry(t).or_default();
+                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
+                for x in d.indexes.iter_mut().filter(|x| filtered.contains(&x.name)) {
+                    x.plain = false;
+                }
+            }
+        }
+        Driver::Oracle => {
+            let rs = rows(
+                s,
+                &format!(
+                    "select table_name, column_name, data_type, data_length, char_length, data_precision, data_scale, nullable, data_default, virtual_column \
+                     from all_tab_cols where owner = {sch}{} and hidden_column = 'NO' order by table_name, column_id",
+                    one("table_name")
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                all.entry(t).or_default().columns = rs
+                    .iter()
+                    .map(|r| {
+                        let generated = text(&r[8]) == "YES";
+                        ColumnDef {
+                            name: text(&r[0]),
+                            data_type: oracle_type(&text(&r[1]), &text(&r[2]), &text(&r[3]), r[4].as_deref(), r[5].as_deref()),
+                            nullable: text(&r[6]) == "Y",
+                            default: if generated { None } else { r[7].clone().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) },
+                            generated,
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select c.table_name, c.constraint_name, cc.column_name from all_constraints c \
+                     join all_cons_columns cc on cc.owner = c.owner and cc.constraint_name = c.constraint_name \
+                     where c.owner = {sch}{} and c.constraint_type = 'P' order by c.table_name, cc.position",
+                    one("c.table_name")
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let d = all.entry(t).or_default();
+                d.pk_name = rs.first().map(|r| text(&r[0]));
+                d.primary_key = rs.iter().map(|r| text(&r[1])).collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select i.table_name, i.index_name, case when i.uniqueness = 'UNIQUE' then '1' else '0' end, ic.column_name, \
+                     case when exists (select 1 from all_constraints k where k.owner = i.table_owner and k.index_name = i.index_name and k.constraint_type = 'U') then '1' else '0' end, \
+                     case when i.index_type like 'FUNCTION%' then '0' else '1' end \
+                     from all_indexes i join all_ind_columns ic on ic.index_owner = i.owner and ic.index_name = i.index_name \
+                     where i.table_owner = {sch}{} and i.index_type <> 'LOB' \
+                     and not exists (select 1 from all_constraints p where p.owner = i.table_owner and p.index_name = i.index_name and p.constraint_type = 'P') \
+                     order by i.table_name, i.index_name, ic.column_position",
+                    one("i.table_name")
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let functional: Vec<String> = rs.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
+                let d = all.entry(t).or_default();
+                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
+                for x in d.indexes.iter_mut().filter(|x| functional.contains(&x.name)) {
+                    x.plain = false;
+                }
+            }
+        }
+        Driver::Sqlite => {
+            version = query(s, "select sqlite_version()").await?.rows.first().map(|r| text(&r[0])).unwrap_or_default();
+            // The tables of the schema, joined with each pragma function.
+            let master = format!("{}.sqlite_master m", Driver::Sqlite.quote_ident(schema));
+            let tables = format!("m.type = 'table' and m.name not like 'sqlite\\_%' escape '\\'{}", one("m.name"));
+            let rs = rows(
+                s,
+                &format!("select m.name, p.name, p.type, p.\"notnull\", p.dflt_value, p.pk from {master} join pragma_table_info(m.name, {sch}) p where {tables} order by m.name, p.cid"),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let d = all.entry(t).or_default();
+                let mut pk: Vec<(u32, String)> = vec![];
+                for r in rs {
+                    let pos: u32 = text(&r[4]).parse().unwrap_or(0);
+                    if pos > 0 {
+                        pk.push((pos, text(&r[0])));
+                    }
+                    d.columns.push(ColumnDef { name: text(&r[0]), data_type: text(&r[1]), nullable: !flag(&r[2]), default: r[3].clone(), ..Default::default() });
+                }
+                pk.sort();
+                d.primary_key = pk.into_iter().map(|(_, c)| c).collect();
+            }
+            let rs = rows(
+                s,
+                &format!(
+                    "select m.name, il.name, il.\"unique\", ii.name, case when il.partial then '0' else '1' end \
+                     from {master} join pragma_index_list(m.name, {sch}) il join pragma_index_info(il.name, {sch}) ii \
+                     where {tables} and il.origin = 'c' order by m.name, il.name, ii.seqno"
+                ),
+            )
+            .await?;
+            for (t, rs) in by_table(&rs) {
+                let partial: Vec<String> = rs.iter().filter(|r| !flag(&r[3])).map(|r| text(&r[0])).collect();
+                let d = all.entry(t).or_default();
+                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), false)));
+                for x in d.indexes.iter_mut().filter(|x| partial.contains(&x.name)) {
+                    x.plain = false;
+                }
+            }
+            for r in &rows(s, &format!("select m.name, m.sql from {master} where {tables}")).await?.rows {
+                if let Some(d) = all.get_mut(&text(&r[0])) {
+                    d.autoincrement = text(&r[1]).to_ascii_lowercase().contains("autoincrement");
+                }
+            }
+        }
+        _ => anyhow::bail!(tr("Not available for this engine")),
+    }
+    all.retain(|_, d| !d.columns.is_empty());
+    for d in all.values_mut() {
+        d.version.clone_from(&version);
+    }
+    Ok(all)
 }
 
 /// Oracle column type from ALL_TAB_COLUMNS.
@@ -948,7 +1040,7 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
 
 /// MySQL column definition for CHANGE / MODIFY: the type, NOT NULL, default and the attributes
 /// it would otherwise lose (auto_increment, on update, comment, collation).
-fn column_def_mysql(c: &NewColumn, old: &ColumnDef, same_type: bool) -> String {
+pub(crate) fn column_def_mysql(c: &NewColumn, old: &ColumnDef, same_type: bool) -> String {
     let mut s = c.data_type.trim().to_string();
     if same_type && let Some(coll) = &old.collation {
         s.push_str(&format!(" collate {coll}"));

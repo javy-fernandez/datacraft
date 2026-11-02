@@ -98,6 +98,8 @@ pub enum ExplorerAction {
     GenerateInsert(TableRef),
     GenerateDdl(TableRef),
     TableModel(Vec<TableRef>),
+    /// "Compare Schemas…" with the connection (and database and schema) as the source.
+    CompareSchemas { conn: ConnId, db: Option<String>, schema: Option<String> },
     /// Load (or reload) the "Users" / "Roles" folder.
     LoadUsers(ConnId),
     NewUser(ConnId),
@@ -526,6 +528,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             actions.push(ExplorerAction::RunScript(id, None));
             ui.close();
         }
+        if crate::db::schema_compare::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Compare Schemas…"))).clicked() {
+            actions.push(ExplorerAction::CompareSchemas { conn: id, db: None, schema: None });
+            ui.close();
+        }
         if crate::db::sessions::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Session Monitor…"))).clicked() {
             actions.push(ExplorerAction::SessionMonitor(id));
             ui.close();
@@ -745,6 +751,10 @@ fn database_rows(
             actions.push(ExplorerAction::RunScript(id, Some(db_name.clone())));
             ui.close();
         }
+        if crate::db::schema_compare::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Compare Schemas…"))).clicked() {
+            actions.push(ExplorerAction::CompareSchemas { conn: id, db: Some(db_name.clone()), schema: None });
+            ui.close();
+        }
         let sql = !c.cfg.driver.is_nosql();
         if sql && ui.add_enabled(connected, egui::Button::new(tr("New Table…"))).clicked() {
             actions.push(ExplorerAction::NewTable { conn: id, db: db_name.clone(), schema: None });
@@ -870,6 +880,10 @@ fn schema_rows(
         }
         if routines.is_some() {
             new_routine_buttons(ui, actions, conn, db, Some(&s.name), true);
+        }
+        if crate::db::schema_compare::supported(table_context.driver) && ui.add_enabled(table_context.connected, egui::Button::new(tr("Compare Schemas…"))).clicked() {
+            actions.push(ExplorerAction::CompareSchemas { conn, db: Some(db.to_string()), schema: Some(s.name.clone()) });
+            ui.close();
         }
         if ui.button(tr("Copy Name")).clicked() {
             ui.ctx().copy_text(s.name.clone());

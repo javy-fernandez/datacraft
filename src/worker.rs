@@ -27,6 +27,10 @@ pub enum Request {
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
     InspectTable { conn: ConnId, db: String, schema: String, table: String, console: ConsoleId, generation: u64, count_rows: bool, page_filter: Option<String> },
+    /// Foreign keys of one table for grid navigation, on the metadata session of `db`.
+    ForeignKeys { conn: ConnId, db: String, schema: String, table: String, request_id: u64 },
+    /// "Referenced by…": bounded counts of the child rows referencing one row.
+    ReferenceCounts { conn: ConnId, db: String, request_id: u64, probes: Vec<crate::db::fk_nav::Probe>, cancel: Arc<std::sync::atomic::AtomicBool> },
     SchemaSearch {
         conn: ConnId,
         request_id: u64,
@@ -40,6 +44,14 @@ pub enum Request {
         request_id: u64,
         request: crate::db::copy::CopyRequest,
         cancel: Arc<tokio::sync::Notify>,
+    },
+    /// "Compare Schemas…": reads both schemas on sessions of their own.
+    SchemaCompare {
+        source: ConnId,
+        target: ConnId,
+        request_id: u64,
+        sides: Box<(crate::db::schema_compare::read::Side, crate::db::schema_compare::read::Side)>,
+        progress: Arc<crate::db::schema_compare::read::Progress>,
     },
     /// Opens (or reopens) the connection, lists its databases and loads the default database's schema.
     Connect(ConnectionConfig),
@@ -133,9 +145,13 @@ pub enum Response {
     TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
+    ForeignKeys { conn: ConnId, db: String, schema: String, table: String, request_id: u64, result: Result<crate::db::fk_nav::TableKeys, String> },
+    ReferenceCounts { request_id: u64, result: Result<Vec<Result<u64, String>>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
     /// Result of `CopyTable`: rows copied to each target table.
     TableCopied { request_id: u64, result: Result<Vec<(String, u64)>, String> },
+    /// Result of `SchemaCompare`: the source and target models.
+    SchemaCompared { request_id: u64, result: Result<Box<(crate::db::schema_compare::SchemaModel, crate::db::schema_compare::SchemaModel)>, String> },
     /// `databases` in order; the default one has `current = true` and its schema loaded.
     Connected { conn: ConnId, databases: Vec<DatabaseInfo> },
     ConnectFailed { conn: ConnId, error: String },
@@ -231,8 +247,12 @@ impl Worker {
         std::thread::Builder::new()
             .name("datacraft-worker".into())
             .spawn(move || {
+                // `handle` dispatches every request from one async fn: unoptimised builds keep all
+                // its arms' temporaries in one poll frame, under the composed driver futures. 8 MB
+                // instead of Tokio's 2 MB keeps adding a request kind from overflowing the stack.
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
+                    .thread_stack_size(8 * 1024 * 1024)
                     .build()
                     .expect("tokio runtime");
                 rt.block_on(async move {
@@ -611,6 +631,61 @@ async fn fetch_object_info(
     result
 }
 
+/// Foreign keys of one table. Built outside `handle` and boxed: in debug builds even a boxed
+/// driver future is first laid out in the caller's frame, which `handle` keeps for every arm.
+fn foreign_keys(state: &State, conn: ConnId, db: String, schema: String, table: String, request_id: u64) -> futures_util::future::BoxFuture<'_, Vec<Response>> {
+    Box::pin(async move {
+        let result = fetch_foreign_keys(state, conn, &db, &schema, &table).await;
+        vec![Response::ForeignKeys { conn, db, schema, table, request_id, result }]
+    })
+}
+
+/// "Referenced by…" counts on a session of their own, cancelled through `cancel` (boxed like
+/// `foreign_keys`).
+fn reference_counts(state: &State, conn: ConnId, db: String, request_id: u64, probes: Vec<crate::db::fk_nav::Probe>, cancel: Arc<std::sync::atomic::AtomicBool>) -> futures_util::future::BoxFuture<'_, Vec<Response>> {
+    Box::pin(async move {
+        let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+        let result = match cfg {
+            Some(cfg) => {
+                let password = cfg.password.clone();
+                crate::db::fk_nav::count(cfg, &db, &probes, &cancel, crate::db::fk_nav::PROBE_TIMEOUT).await.map_err(|e| redact(format!("{e:#}"), &password))
+            }
+            None => Err(tr("The connection is not open").into()),
+        };
+        vec![Response::ReferenceCounts { request_id, result }]
+    })
+}
+
+/// A table's foreign keys, on the metadata session for `db` (15 s at most, like
+/// `fetch_object_info`): opening tables does not open a connection each.
+async fn fetch_foreign_keys(state: &State, conn: ConnId, db: &str, schema: &str, table: &str) -> Result<crate::db::fk_nav::TableKeys, String> {
+    let Some(driver) = state.live.lock().await.get(&conn).map(|l| l.cfg.driver) else {
+        return Err(tr("Connection lost").into());
+    };
+    let (session, target) = state.meta_session_for(conn, db).await.map_err(|e| format!("{e:#}"))?;
+    let mut s = session.lock().await;
+    let cancel = s.cancel_handle();
+    let query = async {
+        s.use_database(&target).await?;
+        crate::db::fk_nav::load(&mut s, driver, &target, schema, table).await
+    };
+    let (result, broken) = match tokio::time::timeout(std::time::Duration::from_secs(15), query).await {
+        Ok(result) => (result.map_err(|e| format!("{e:#}")), s.is_closed()),
+        Err(_) => {
+            let cancelled = match cancel {
+                Some(h) => h.cancel().await.is_ok(),
+                None => false,
+            };
+            (Err(tr("Reading the foreign keys timed out").into()), !cancelled)
+        }
+    };
+    drop(s);
+    if broken {
+        state.forget_meta(conn, &session).await;
+    }
+    result
+}
+
 /// A view's definition, on the metadata session for `db` (15 s at most, like `fetch_object_info`).
 async fn fetch_view_definition(state: &State, conn: ConnId, db: &str, schema: &str, view: &str) -> Result<crate::db::views::ViewDefinition, String> {
     let Some(driver) = state.live.lock().await.get(&conn).map(|l| l.cfg.driver) else {
@@ -747,6 +822,21 @@ fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<s
     })();
     if result.is_err() { let _ = std::fs::remove_file(&temporary); }
     result?; Ok(path)
+}
+
+type CompareFuture = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(crate::db::schema_compare::SchemaModel, crate::db::schema_compare::SchemaModel)>> + Send>>;
+
+/// The comparison's large future is built in this frame and boxed, not in `handle`'s poll
+/// frame, which holds every arm's temporaries.
+#[inline(never)]
+fn compare_schemas(
+    source: ConnectionConfig,
+    target: ConnectionConfig,
+    src: crate::db::schema_compare::read::Side,
+    tgt: crate::db::schema_compare::read::Side,
+    progress: Arc<crate::db::schema_compare::read::Progress>,
+) -> CompareFuture {
+    Box::pin(crate::db::schema_compare::read::run(source, target, src, tgt, progress))
 }
 
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
@@ -924,6 +1014,8 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             let (result, page_rows) = match result { Ok((info, rows)) => (Ok(Box::new(info)), rows), Err(error) => (Err(error), None) };
             vec![Response::InspectTable { console, generation, page_rows, result }]
         }
+        Request::ForeignKeys { conn, db, schema, table, request_id } => foreign_keys(state, conn, db, schema, table, request_id).await,
+        Request::ReferenceCounts { conn, db, request_id, probes, cancel } => reference_counts(state, conn, db, request_id, probes, cancel).await,
         Request::SchemaSearch { conn, request_id, request, cancel } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             let result = match cfg {
@@ -944,6 +1036,20 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                 None => Err(tr("The connection is not open").into()),
             };
             vec![Response::TableCopied { request_id, result }]
+        }
+        Request::SchemaCompare { source, target, request_id, sides, progress } => {
+            let cfgs = {
+                let live = state.live.lock().await;
+                live.get(&source).map(|l| l.cfg.clone()).zip(live.get(&target).map(|l| l.cfg.clone()))
+            };
+            let result = match cfgs {
+                Some((source, target)) => {
+                    let (src, tgt) = *sides;
+                    compare_schemas(source, target, src, tgt, progress).await.map(Box::new).map_err(|e| format!("{e:#}"))
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::SchemaCompared { request_id, result }]
         }
         Request::Connect(cfg) => {
             let conn = cfg.id;
@@ -1504,6 +1610,10 @@ fn report_path(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
     Ok(path)
 }
 
+fn redact(message: String, password: &str) -> String {
+    if password.is_empty() { message } else { message.replace(password, "[redacted]") }
+}
+
 fn open_table_report(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
     let path = report_path(path)?;
     #[cfg(target_os = "windows")]
@@ -1722,6 +1832,44 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for the worker");
+    }
+
+    #[test]
+    fn schema_compare_reads_both_sides_on_background_sessions() {
+        use crate::db::schema_compare::read::{Progress, Side};
+        let directory = std::env::temp_dir().join(format!("datacraft-compare-worker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let worker = Worker::start(egui::Context::default());
+        for (id, file, sql) in [(91, "a.db", "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"), (92, "b.db", "CREATE TABLE t (id INTEGER PRIMARY KEY)")] {
+            let path = directory.join(file);
+            rusqlite::Connection::open(&path).unwrap().execute_batch(sql).unwrap();
+            let mut cfg = ConnectionConfig::new(id, Driver::Sqlite);
+            cfg.file_path = path.to_string_lossy().into_owned();
+            cfg.read_only = true;
+            worker.send(Request::Connect(cfg));
+            wait_for(&worker, |r| matches!(r, Response::Connected { conn, .. } if *conn == id));
+        }
+        let side = || Side { db: "main".into(), schema: "main".into() };
+        let send = |request_id, progress: Arc<Progress>| {
+            worker.send(Request::SchemaCompare { source: 91, target: 92, request_id, sides: Box::new((side(), side())), progress });
+        };
+        let progress = Arc::new(Progress::default());
+        send(1, progress.clone());
+        let Response::SchemaCompared { result, .. } = wait_for(&worker, |r| matches!(r, Response::SchemaCompared { request_id: 1, .. })) else { unreachable!() };
+        let models = result.unwrap();
+        assert_eq!((models.0.tables[0].details.columns.len(), models.1.tables[0].details.columns.len()), (2, 1));
+        assert_eq!((progress.done.load(std::sync::atomic::Ordering::Relaxed), progress.total.load(std::sync::atomic::Ordering::Relaxed)), (2, 2));
+        let cancelled = Arc::new(Progress::default());
+        cancelled.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        send(2, cancelled);
+        let Response::SchemaCompared { result, .. } = wait_for(&worker, |r| matches!(r, Response::SchemaCompared { request_id: 2, .. })) else { unreachable!() };
+        assert_eq!(result.err().as_deref(), Some(tr("Cancelled")));
+        for id in [91, 92] {
+            worker.send(Request::Disconnect(id));
+            wait_for(&worker, |r| matches!(r, Response::Disconnected(c) if *c == id));
+        }
+        drop(worker);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
