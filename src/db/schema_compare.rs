@@ -244,7 +244,8 @@ pub fn requalify(driver: Driver, text: &str, from: &str, to: &str, names: &Names
                     last = toks[i + 1].1.end;
                 }
             }
-            TokenClass::Str if driver == Driver::Postgres && text[r.end..].to_ascii_lowercase().starts_with("::regclass") => {
+            // Only the next 10 bytes are looked at (a whole-rest copy made big views quadratic).
+            TokenClass::Str if driver == Driver::Postgres && text.get(r.end..r.end + 10).is_some_and(|t| t.eq_ignore_ascii_case("::regclass")) => {
                 let literal = &text[r.clone()];
                 if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
                     let inner = literal[1..literal.len() - 1].replace("''", "'");

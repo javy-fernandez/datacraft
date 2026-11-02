@@ -4,6 +4,7 @@
 
 use super::read::{Progress, Side, run};
 use super::*;
+use crate::db::alter::TableDetails;
 use crate::db::{ConnectionConfig, Session};
 use std::sync::Arc;
 
@@ -399,4 +400,94 @@ async fn postgres_failing_script_is_rolled_back_whole() {
     assert!(failed, "{text}");
     assert_eq!(extra[0].rows[0][0].as_deref(), Some("0"), "the table created before the failure is gone");
     assert_eq!(v[0].rows[0][0].as_deref(), Some("not a number"));
+}
+
+/// One query per kind for a whole schema gives what the per-table reads of Modify Table give.
+async fn same_as_one_by_one(cfg: &ConnectionConfig, db: &str, schema: &str) {
+    let mut s = Session::connect(cfg).await.unwrap();
+    s.use_database(db).await.unwrap();
+    let all = crate::db::alter::load_tables(&mut s, cfg.driver, schema, None).await.unwrap();
+    assert!(all.len() >= 3, "{:?}", all.keys());
+    for (name, details) in &all {
+        let one = crate::db::alter::load_details(&mut s, cfg.driver, schema, name).await.unwrap();
+        assert_eq!(TableDetails { rebuild_blocker: None, ..one }, *details, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn sqlite_schema_reads_match_the_per_table_reads() {
+    let dir = std::env::temp_dir().join(format!("datacraft-compare-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("db.sqlite");
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "create table a (id integer primary key autoincrement, code text unique, n int default 3);
+             create index a_n on a (n) where n > 0; create index a_expr on a (lower(code));
+             create table b (x int, y int, z text not null default 'z', primary key (y, x)); create unique index b_z on b (z, y);
+             create table c (id int);",
+        )
+        .unwrap();
+    same_as_one_by_one(&sqlite(1, &path), "main", "main").await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn postgres_schema_reads_match_the_per_table_reads() {
+    let Some(cfg) = pg_config() else { return };
+    let schema = format!("dc_cmp_batch_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let mut admin = Session::connect(&cfg).await.unwrap();
+    admin
+        .execute(
+            &format!(
+                "create schema {schema};
+                 create table {schema}.a (id serial primary key, code text unique, n int default 3, g int generated always as (n * 2) stored);
+                 create index a_n on {schema}.a (n) where n > 0; create index a_expr on {schema}.a (lower(code));
+                 create table {schema}.b (x int, y int, z text not null default 'z', primary key (y, x));
+                 create table {schema}.c (id int);"
+            ),
+            10,
+        )
+        .await
+        .unwrap();
+    let result = tokio::spawn({
+        let (cfg, schema) = (cfg.clone(), schema.clone());
+        async move { same_as_one_by_one(&cfg, &cfg.database, &schema).await }
+    })
+    .await;
+    admin.execute(&format!("drop schema {schema} cascade"), 10).await.unwrap();
+    result.unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+}
+
+/// Source and target load at the same time: a source still connecting doesn't hold up the
+/// target's catalog reads.
+#[tokio::test]
+async fn both_sides_are_read_at_once() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let silent = tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    let mut source = ConnectionConfig::new(1, Driver::Postgres);
+    (source.host, source.port, source.user, source.database) = ("127.0.0.1".into(), port, "nobody".into(), "db".into());
+    let dir = std::env::temp_dir().join(format!("datacraft-compare-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("target.db");
+    rusqlite::Connection::open(&path).unwrap().execute_batch("create table a (id int); create table b (id int); create view v as select * from a;").unwrap();
+    let progress = Arc::new(Progress::default());
+    let task = tokio::spawn(run(source, sqlite(2, &path), Side { db: "db".into(), schema: "public".into() }, Side { db: "main".into(), schema: "main".into() }, progress.clone()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while progress.done.load(std::sync::atomic::Ordering::Relaxed) < 3 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(progress.done.load(std::sync::atomic::Ordering::Relaxed), 3, "the target was read while the source was connecting");
+    assert!(!task.is_finished());
+    progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(5), task).await.unwrap().unwrap().is_err());
+    silent.abort();
+    std::fs::remove_dir_all(dir).unwrap();
 }

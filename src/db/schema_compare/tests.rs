@@ -716,3 +716,13 @@ fn a_failing_sqlite_rebuild_leaves_nothing_after_rollback() {
     db.execute_batch(&s.statements[n - 2..].join(";")).unwrap();
     assert_eq!(db.query_row("pragma foreign_keys", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
 }
+
+#[test]
+fn requalifying_a_big_view_with_many_literals_stays_linear() {
+    let n = names(Driver::Postgres, &["t"]);
+    let body: String = (0..20_000).map(|i| format!("select 'v{i}'::text, s.t.x from s.t union all ")).collect();
+    let started = std::time::Instant::now();
+    let moved = requalify(Driver::Postgres, &body, "s", "d", &n);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    assert_eq!(moved.matches("from d.t").count(), 20_000);
+}

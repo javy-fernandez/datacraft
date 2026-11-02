@@ -2,7 +2,8 @@
 //! `SchemaModel`, on sessions of their own that a cancel interrupts.
 
 use super::{ForeignKeyDef, SchemaModel, TableModel, ViewModel, supported};
-use crate::db::alter::{ColumnDef, IndexDef, load_details};
+use crate::db::alter::{ColumnDef, IndexDef, load_tables};
+use std::collections::HashMap;
 use crate::db::table_definition::lit;
 use crate::db::{ConnectionConfig, Driver, ResultSet, Session};
 use crate::i18n::{tr, trf};
@@ -266,37 +267,93 @@ fn parse_foreign_keys(driver: Driver, rs: &ResultSet) -> Vec<(String, ForeignKey
         .collect()
 }
 
-/// SQLite: the table's statement, its constraints and options, and its generated columns, which
-/// `pragma_table_info` leaves out (`pragma_table_xinfo` marks them hidden 2 or 3), in place.
-async fn sqlite_table(s: &mut Session, schema: &str, t: &mut TableModel) -> anyhow::Result<()> {
+/// SQLite: each table's statement, constraints and options, UNIQUE constraints (auto-named
+/// indexes `load_tables` leaves out), triggers, and generated columns, which `pragma_table_info`
+/// leaves out (`pragma_table_xinfo` marks them hidden 2 or 3), in place. One query of each kind.
+async fn sqlite_tables(s: &mut Session, schema: &str, tables: &mut [TableModel]) -> anyhow::Result<()> {
     let d = Driver::Sqlite;
-    let (sch, tab) = (lit(d, schema), lit(d, &t.name));
-    let master = format!("{}.sqlite_master", d.quote_ident(schema));
-    t.sql = query(s, &format!("select sql from {master} where type = 'table' and name = {tab}")).await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
-    let (features, generated) = super::sqlite_features(&t.sql);
-    t.features = features;
-    let rs = query(s, &format!("select name, type, \"notnull\", hidden from pragma_table_xinfo({tab}, {sch}) order by cid")).await?;
-    let mut plain = std::mem::take(&mut t.details.columns).into_iter();
-    for r in &rs.rows {
-        match text(r, 3).as_str() {
-            "2" | "3" => t.details.columns.push(ColumnDef {
-                name: text(r, 0),
-                data_type: text(r, 1),
-                nullable: text(r, 2) == "0",
-                extra: generated.get(&text(r, 0).to_lowercase()).cloned().unwrap_or_default(),
-                generated: true,
-                ..Default::default()
-            }),
-            "0" => t.details.columns.extend(plain.next()),
-            _ => {}
+    let sch = lit(d, schema);
+    let master = format!("{}.sqlite_master m", d.quote_ident(schema));
+    let mut by_name: HashMap<String, &mut TableModel> = tables.iter_mut().map(|t| (t.name.clone(), t)).collect();
+    let mut generated: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for r in &query(s, &format!("select m.name, m.sql from {master} where m.type = 'table'")).await?.rows {
+        if let Some(t) = by_name.get_mut(&text(r, 0)) {
+            t.sql = text(r, 1);
+            let (features, columns) = super::sqlite_features(&t.sql);
+            t.features = features;
+            generated.insert(t.name.clone(), columns);
         }
     }
-    t.details.columns.extend(plain);
-    t.triggers = query(s, &format!("select name from {master} where type = 'trigger' and tbl_name = {tab} order by name")).await?.rows.iter().map(|r| text(r, 0)).collect();
+    let rs = query(
+        s,
+        &format!(
+            "select m.name, il.name, ii.name from {master} join pragma_index_list(m.name, {sch}) il join pragma_index_info(il.name, {sch}) ii \
+             where m.type = 'table' and il.origin = 'u' order by m.name, il.name, ii.seqno"
+        ),
+    )
+    .await?;
+    for r in &rs.rows {
+        let Some(t) = by_name.get_mut(&text(r, 0)) else { continue };
+        let index = text(r, 1);
+        if t.details.indexes.last().is_none_or(|x| x.name != index) {
+            t.details.indexes.push(IndexDef { name: index, unique: true, constraint: true, plain: true, columns: vec![] });
+        }
+        t.details.indexes.last_mut().expect("pushed").columns.push(text(r, 2));
+    }
+    let rs = query(
+        s,
+        &format!("select m.name, p.name, p.type, p.\"notnull\", p.hidden from {master} join pragma_table_xinfo(m.name, {sch}) p where m.type = 'table' order by m.name, p.cid"),
+    )
+    .await?;
+    let mut columns: HashMap<String, Vec<&Vec<Option<String>>>> = HashMap::new();
+    for r in &rs.rows {
+        columns.entry(text(r, 0)).or_default().push(r);
+    }
+    for (name, rows) in columns {
+        let Some(t) = by_name.get_mut(&name) else { continue };
+        let exprs = generated.remove(&name).unwrap_or_default();
+        let mut plain = std::mem::take(&mut t.details.columns).into_iter();
+        for r in rows {
+            match text(r, 4).as_str() {
+                "2" | "3" => t.details.columns.push(ColumnDef {
+                    name: text(r, 1),
+                    data_type: text(r, 2),
+                    nullable: text(r, 3) == "0",
+                    extra: exprs.get(&text(r, 1).to_lowercase()).cloned().unwrap_or_default(),
+                    generated: true,
+                    ..Default::default()
+                }),
+                "0" => t.details.columns.extend(plain.next()),
+                _ => {}
+            }
+        }
+        t.details.columns.extend(plain);
+    }
+    for r in &query(s, &format!("select m.tbl_name, m.name from {master} where m.type = 'trigger' order by m.name")).await?.rows {
+        if let Some(t) = by_name.get_mut(&text(r, 0)) {
+            t.triggers.push(text(r, 1));
+        }
+    }
     Ok(())
 }
 
-/// The model of `schema` in the session's database.
+/// The definitions of the schema's views in one query (MySQL / MariaDB: none, read one by one).
+fn views_sql(driver: Driver, schema: &str) -> Option<String> {
+    let sch = lit(driver, schema);
+    Some(match driver {
+        Driver::Postgres => format!(
+            "select c.relname, pg_catalog.pg_get_viewdef(c.oid, true) from pg_catalog.pg_class c \
+             join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = {sch} and c.relkind = 'v'"
+        ),
+        Driver::MsSql => format!("select v.name, m.definition from sys.views v join sys.sql_modules m on m.object_id = v.object_id where v.schema_id = schema_id({sch})"),
+        Driver::Oracle => format!("select view_name, text from all_views where owner = {sch}"),
+        Driver::Sqlite => format!("select name, sql from {}.sqlite_master where type = 'view'", driver.quote_ident(schema)),
+        _ => return None,
+    })
+}
+
+/// The model of `schema` in the session's database: a fixed number of catalog queries,
+/// however many tables and views it has.
 pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progress: &Progress) -> anyhow::Result<SchemaModel> {
     anyhow::ensure!(supported(driver), tr("Not available for this engine"));
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
@@ -308,45 +365,36 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
         let lower = query(s, "select @@lower_case_table_names").await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
         model.names_ignore_case = lower.trim() != "0";
     }
+    let (mut tables, mut views) = (vec![], vec![]);
     for r in &objects.rows {
-        anyhow::ensure!(!cancelled(), tr("Cancelled"));
-        let name = text(r, 0);
-        let kind = text(r, 1);
-        if kind == "h" {
+        let (name, kind) = (text(r, 0), text(r, 1));
+        match kind.as_str() {
             // Part of a virtual table, which is listed.
-        } else if let Some(label) = skipped_kind(&kind) {
-            model.skipped.push(format!("{name} ({label})"));
-        } else if kind == "v" {
-            let definition = s.view_definition(driver, db, schema, &name).await?;
-            model.views.push(ViewModel { name, definition, ..Default::default() });
-        } else {
-            let mut details = load_details(s, driver, schema, &name).await.map_err(|e| anyhow::anyhow!("{name}: {e:#}"))?;
-            if driver == Driver::Sqlite {
-                // UNIQUE constraints (auto-named indexes `load_details` leaves out).
-                let rs = query(
-                    s,
-                    &format!(
-                        "select il.name, ii.name from pragma_index_list({0}, {1}) il join pragma_index_info(il.name, {1}) ii \
-                         where il.origin = 'u' order by il.name, ii.seqno",
-                        lit(driver, &name),
-                        lit(driver, schema)
-                    ),
-                )
-                .await?;
-                for r in &rs.rows {
-                    let index = text(r, 0);
-                    if details.indexes.last().is_none_or(|x| x.name != index) {
-                        details.indexes.push(IndexDef { name: index, unique: true, constraint: true, plain: true, columns: vec![] });
-                    }
-                    details.indexes.last_mut().expect("pushed").columns.push(text(r, 1));
-                }
-            }
-            let mut table = TableModel { name, details, ..Default::default() };
-            if driver == Driver::Sqlite {
-                sqlite_table(s, schema, &mut table).await?;
-            }
-            model.tables.push(table);
+            "h" => {}
+            "v" => views.push(name),
+            "t" => tables.push(name),
+            _ => model.skipped.extend(skipped_kind(&kind).map(|label| format!("{name} ({label})"))),
         }
+    }
+    anyhow::ensure!(!cancelled(), tr("Cancelled"));
+    let mut details = load_tables(s, driver, schema, None).await?;
+    model.tables = tables.into_iter().map(|name| TableModel { details: details.remove(&name).unwrap_or_default(), name, ..Default::default() }).collect();
+    if driver == Driver::Sqlite {
+        sqlite_tables(s, schema, &mut model.tables).await?;
+    }
+    progress.done.fetch_add(model.tables.len(), Ordering::Relaxed);
+    anyhow::ensure!(!cancelled(), tr("Cancelled"));
+    let mut texts: HashMap<String, String> = HashMap::new();
+    if let Some(sql) = views_sql(driver, schema) {
+        texts = query(s, &sql).await?.rows.iter().map(|r| (text(r, 0), text(r, 1))).filter(|(_, t)| !t.trim().is_empty()).collect();
+    }
+    for name in views {
+        anyhow::ensure!(!cancelled(), tr("Cancelled"));
+        let definition = match texts.remove(&name) {
+            Some(text) => crate::db::views::parse_definition(driver, &text),
+            None => s.view_definition(driver, db, schema, &name).await?,
+        };
+        model.views.push(ViewModel { name, definition, ..Default::default() });
         progress.done.fetch_add(1, Ordering::Relaxed);
     }
     anyhow::ensure!(!cancelled(), tr("Cancelled"));
@@ -419,6 +467,13 @@ async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
     Ok(s)
 }
 
+/// Opens one side's session (its cancel handle goes to `handles`) and reads its schema.
+async fn read_side(cfg: ConnectionConfig, driver: Driver, side: &Side, handles: &std::sync::Mutex<Vec<crate::db::CancelHandle>>, progress: &Progress) -> anyhow::Result<SchemaModel> {
+    let mut session = open(cfg, &side.db).await?;
+    handles.lock().unwrap_or_else(|e| e.into_inner()).extend(session.cancel_handle());
+    load(&mut session, driver, &side.db, &side.schema, progress).await
+}
+
 /// Reads both schemas. A cancel stops a connection being opened, or interrupts the running
 /// catalog query.
 pub async fn run(source: ConnectionConfig, target: ConnectionConfig, src: Side, tgt: Side, progress: Arc<Progress>) -> anyhow::Result<(SchemaModel, SchemaModel)> {
@@ -428,14 +483,8 @@ pub async fn run(source: ConnectionConfig, target: ConnectionConfig, src: Side, 
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), tr("Cancelled"));
     let (sd, td) = (source.driver, target.driver);
     let handles = std::sync::Mutex::new(Vec::new());
-    let work = async {
-        let mut a = open(source, &src.db).await?;
-        let mut b = open(target, &tgt.db).await?;
-        handles.lock().unwrap_or_else(|e| e.into_inner()).extend([a.cancel_handle(), b.cancel_handle()].into_iter().flatten());
-        let s = load(&mut a, sd, &src.db, &src.schema, &progress).await?;
-        let t = load(&mut b, td, &tgt.db, &tgt.schema, &progress).await?;
-        anyhow::Ok((s, t))
-    };
+    // Both sides at once, each on its own session: one still connecting doesn't hold up the other.
+    let work = async { tokio::try_join!(read_side(source, sd, &src, &handles, &progress), read_side(target, td, &tgt, &handles, &progress)) };
     tokio::pin!(work);
     let cancelled = async {
         while !progress.cancel.load(Ordering::Relaxed) {

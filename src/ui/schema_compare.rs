@@ -36,13 +36,15 @@ pub struct Outcome {
     pub include: Vec<bool>,
     pub script: Result<Script, String>,
     pub text: String,
+    /// Changed lines of each side's definition, by object, computed once when first shown.
+    pub lines: std::collections::HashMap<usize, (Vec<bool>, Vec<bool>)>,
 }
 
 impl Outcome {
     pub fn new(pair: (Pick, Pick), source: SchemaModel, target: SchemaModel) -> Self {
         let comparison = schema_compare::compare(&source, &target);
         let include = comparison.default_selection();
-        let mut o = Self { pair, source, target, comparison, include, script: Ok(Script::default()), text: String::new() };
+        let mut o = Self { pair, source, target, comparison, include, script: Ok(Script::default()), text: String::new(), lines: Default::default() };
         o.refresh();
         o
     }
@@ -433,6 +435,10 @@ impl CompareDialog {
             let rest = ui.available_width();
             ui.allocate_ui_with_layout(vec2(rest, height), Layout::top_down(Align::Min), |ui| {
                 ui.set_min_size(vec2(rest, height));
+                if let Some(obj) = self.selected.and_then(|i| o.comparison.objects.get(i)) {
+                    let i = self.selected.unwrap_or_default();
+                    o.lines.entry(i).or_insert_with(|| changed_lines(&obj.source_ddl, &obj.target_ddl));
+                }
                 detail(ui, o, self.selected, p, dark, height);
             });
         });
@@ -519,13 +525,14 @@ fn detail(ui: &mut Ui, o: &Outcome, selected: Option<usize>, p: &Palette, dark: 
             ui.label(RichText::new(obj.changes.join(" · ")).small().color(p.muted));
         }
         ui.add_space(4.0);
-        let (a, b) = changed_lines(&obj.source_ddl, &obj.target_ddl);
+        let none = (vec![], vec![]);
+        let (a, b) = selected.and_then(|i| o.lines.get(&i)).unwrap_or(&none);
         let pane_w = (ui.available_width() - 8.0) / 2.0;
         let pane_h = top - 50.0;
         let label = |m: &SchemaModel| if m.driver.flat_schema() { m.db.clone() } else { format!("{}.{}", m.db, m.schema) };
         ui.horizontal_top(|ui| {
-            definition(ui, "compare_source_ddl", &trf("Source · {name}", &[("name", &label(&o.source))]), &obj.source_ddl, &a, p.ok, p, dark, vec2(pane_w, pane_h));
-            definition(ui, "compare_target_ddl", &trf("Target · {name}", &[("name", &label(&o.target))]), &obj.target_ddl, &b, p.error, p, dark, vec2(pane_w, pane_h));
+            definition(ui, "compare_source_ddl", &trf("Source · {name}", &[("name", &label(&o.source))]), &obj.source_ddl, a, p.ok, p, dark, vec2(pane_w, pane_h));
+            definition(ui, "compare_target_ddl", &trf("Target · {name}", &[("name", &label(&o.target))]), &obj.target_ddl, b, p.error, p, dark, vec2(pane_w, pane_h));
         });
     } else {
         ui.add_space(top);
@@ -694,6 +701,18 @@ mod tests {
         h.query_all_by_role(egui::accesskit::Role::CheckBox).nth(3).unwrap().click();
         h.run_steps(2);
         assert!(!h.state().outcome.as_ref().unwrap().include[i]);
+    }
+
+    #[test]
+    fn changed_lines_are_computed_once_per_shown_object() {
+        let mut h = harness(dialog(true), true);
+        let selected = h.state().selected.unwrap();
+        let o = h.state().outcome.as_ref().unwrap();
+        assert_eq!(o.lines.keys().copied().collect::<Vec<_>>(), [selected]);
+        // Later frames reuse it: a marker left in the cache stays.
+        h.state_mut().outcome.as_mut().unwrap().lines.insert(selected, (vec![true], vec![]));
+        h.run_steps(3);
+        assert_eq!(h.state().outcome.as_ref().unwrap().lines[&selected], (vec![true], vec![]));
     }
 
     #[test]
