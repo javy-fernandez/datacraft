@@ -41,6 +41,14 @@ pub enum Request {
         request: crate::db::copy::CopyRequest,
         cancel: Arc<tokio::sync::Notify>,
     },
+    /// "Compare Schemas…": reads both schemas on sessions of their own.
+    SchemaCompare {
+        source: ConnId,
+        target: ConnId,
+        request_id: u64,
+        sides: Box<(crate::db::schema_compare::read::Side, crate::db::schema_compare::read::Side)>,
+        progress: Arc<crate::db::schema_compare::read::Progress>,
+    },
     /// Opens (or reopens) the connection, lists its databases and loads the default database's schema.
     Connect(ConnectionConfig),
     /// Only tests the connection and closes it.
@@ -136,6 +144,8 @@ pub enum Response {
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
     /// Result of `CopyTable`: rows copied to each target table.
     TableCopied { request_id: u64, result: Result<Vec<(String, u64)>, String> },
+    /// Result of `SchemaCompare`: the source and target models.
+    SchemaCompared { request_id: u64, result: Result<Box<(crate::db::schema_compare::SchemaModel, crate::db::schema_compare::SchemaModel)>, String> },
     /// `databases` in order; the default one has `current = true` and its schema loaded.
     Connected { conn: ConnId, databases: Vec<DatabaseInfo> },
     ConnectFailed { conn: ConnId, error: String },
@@ -231,8 +241,12 @@ impl Worker {
         std::thread::Builder::new()
             .name("datacraft-worker".into())
             .spawn(move || {
+                // `handle` dispatches every request from one async fn: unoptimised builds keep all
+                // its arms' temporaries in one poll frame, under the composed driver futures. 8 MB
+                // instead of Tokio's 2 MB keeps adding a request kind from overflowing the stack.
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
+                    .thread_stack_size(8 * 1024 * 1024)
                     .build()
                     .expect("tokio runtime");
                 rt.block_on(async move {
@@ -749,6 +763,21 @@ fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<s
     result?; Ok(path)
 }
 
+type CompareFuture = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(crate::db::schema_compare::SchemaModel, crate::db::schema_compare::SchemaModel)>> + Send>>;
+
+/// The comparison's large future is built in this frame and boxed, not in `handle`'s poll
+/// frame, which holds every arm's temporaries.
+#[inline(never)]
+fn compare_schemas(
+    source: ConnectionConfig,
+    target: ConnectionConfig,
+    src: crate::db::schema_compare::read::Side,
+    tgt: crate::db::schema_compare::read::Side,
+    progress: Arc<crate::db::schema_compare::read::Progress>,
+) -> CompareFuture {
+    Box::pin(crate::db::schema_compare::read::run(source, target, src, tgt, progress))
+}
+
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
         Request::TableShortcut { path, target } => {
@@ -944,6 +973,20 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                 None => Err(tr("The connection is not open").into()),
             };
             vec![Response::TableCopied { request_id, result }]
+        }
+        Request::SchemaCompare { source, target, request_id, sides, progress } => {
+            let cfgs = {
+                let live = state.live.lock().await;
+                live.get(&source).map(|l| l.cfg.clone()).zip(live.get(&target).map(|l| l.cfg.clone()))
+            };
+            let result = match cfgs {
+                Some((source, target)) => {
+                    let (src, tgt) = *sides;
+                    compare_schemas(source, target, src, tgt, progress).await.map(Box::new).map_err(|e| format!("{e:#}"))
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::SchemaCompared { request_id, result }]
         }
         Request::Connect(cfg) => {
             let conn = cfg.id;
@@ -1722,6 +1765,44 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for the worker");
+    }
+
+    #[test]
+    fn schema_compare_reads_both_sides_on_background_sessions() {
+        use crate::db::schema_compare::read::{Progress, Side};
+        let directory = std::env::temp_dir().join(format!("datacraft-compare-worker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let worker = Worker::start(egui::Context::default());
+        for (id, file, sql) in [(91, "a.db", "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"), (92, "b.db", "CREATE TABLE t (id INTEGER PRIMARY KEY)")] {
+            let path = directory.join(file);
+            rusqlite::Connection::open(&path).unwrap().execute_batch(sql).unwrap();
+            let mut cfg = ConnectionConfig::new(id, Driver::Sqlite);
+            cfg.file_path = path.to_string_lossy().into_owned();
+            cfg.read_only = true;
+            worker.send(Request::Connect(cfg));
+            wait_for(&worker, |r| matches!(r, Response::Connected { conn, .. } if *conn == id));
+        }
+        let side = || Side { db: "main".into(), schema: "main".into() };
+        let send = |request_id, progress: Arc<Progress>| {
+            worker.send(Request::SchemaCompare { source: 91, target: 92, request_id, sides: Box::new((side(), side())), progress });
+        };
+        let progress = Arc::new(Progress::default());
+        send(1, progress.clone());
+        let Response::SchemaCompared { result, .. } = wait_for(&worker, |r| matches!(r, Response::SchemaCompared { request_id: 1, .. })) else { unreachable!() };
+        let models = result.unwrap();
+        assert_eq!((models.0.tables[0].details.columns.len(), models.1.tables[0].details.columns.len()), (2, 1));
+        assert_eq!((progress.done.load(std::sync::atomic::Ordering::Relaxed), progress.total.load(std::sync::atomic::Ordering::Relaxed)), (2, 2));
+        let cancelled = Arc::new(Progress::default());
+        cancelled.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        send(2, cancelled);
+        let Response::SchemaCompared { result, .. } = wait_for(&worker, |r| matches!(r, Response::SchemaCompared { request_id: 2, .. })) else { unreachable!() };
+        assert_eq!(result.err().as_deref(), Some(tr("Cancelled")));
+        for id in [91, 92] {
+            worker.send(Request::Disconnect(id));
+            wait_for(&worker, |r| matches!(r, Response::Disconnected(c) if *c == id));
+        }
+        drop(worker);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
