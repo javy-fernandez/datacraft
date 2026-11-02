@@ -36,6 +36,7 @@ pub mod views;
 pub mod users;
 pub mod sessions;
 pub mod table_privileges;
+pub mod transaction;
 
 use serde::{Deserialize, Serialize};
 use crate::i18n::trf;
@@ -82,6 +83,17 @@ impl Driver {
     /// not offered.
     pub fn is_nosql(self) -> bool {
         matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+    }
+
+    /// Engines whose consoles offer Manual transactions (Commit / Roll Back).
+    pub fn has_transactions(self) -> bool {
+        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MsSql | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake)
+    }
+
+    /// Engines whose running statement can be cancelled without closing the session (see
+    /// `Engine::cancel_handle`); elsewhere a cancel abandons the query and closes the session.
+    pub fn has_native_cancel(self) -> bool {
+        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake)
     }
 
     /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys,
@@ -774,6 +786,66 @@ impl Engine {
             return Err(e);
         }
         Ok(total)
+    }
+
+    /// Opens a console's Manual transaction. Oracle has no BEGIN: its statements just don't
+    /// commit themselves on the Manual session (see `manual_session`).
+    pub async fn begin(&mut self) -> anyhow::Result<()> {
+        let sql = match self {
+            Engine::Oracle(s) => {
+                s.set_autocommit(false);
+                return Ok(());
+            }
+            Engine::MsSql(_) => "BEGIN TRANSACTION",
+            Engine::MySql(_) => "START TRANSACTION",
+            Engine::Postgres(_) | Engine::Sqlite(_) | Engine::Snowflake(_) => "BEGIN",
+            _ => anyhow::bail!(crate::i18n::tr("Manual transactions are not available for this engine")),
+        };
+        self.execute(sql, 0).await.map(|_| ())
+    }
+
+    /// Prepares a console's own session for Manual transactions: nothing on it commits by itself
+    /// (MySQL / MariaDB `autocommit = 0`, Snowflake `AUTOCOMMIT = FALSE` without silent re-logins,
+    /// Oracle without its per-statement commit). Run again after the user changes autocommit.
+    pub async fn manual_session(&mut self) -> anyhow::Result<()> {
+        match self {
+            Engine::Oracle(s) => {
+                s.set_autocommit(false);
+                Ok(())
+            }
+            Engine::MySql(_) => self.execute("SET autocommit = 0", 0).await.map(|_| ()),
+            Engine::Snowflake(s) => {
+                s.keep_session();
+                self.execute("ALTER SESSION SET AUTOCOMMIT = FALSE", 0).await.map(|_| ())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Commits or rolls back a console's Manual transaction.
+    pub async fn end_transaction(&mut self, commit: bool) -> anyhow::Result<()> {
+        let sql = match (&*self, commit) {
+            (Engine::MsSql(_), true) => "WHILE @@TRANCOUNT > 0 COMMIT TRANSACTION",
+            (Engine::MsSql(_), false) => "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION",
+            (_, true) => "COMMIT",
+            (_, false) => "ROLLBACK",
+        };
+        self.execute(sql, 0).await.map(|_| ())
+    }
+
+    /// (open, doomed) where the engine can tell: SQLite and SQL Server (`XACT_STATE() = -1`:
+    /// only a rollback is possible). None elsewhere: the worker follows the statements instead.
+    pub async fn transaction_state(&mut self) -> Option<(bool, bool)> {
+        match self {
+            Engine::Sqlite(s) => s.in_transaction().await.ok().map(|open| (open, false)),
+            Engine::MsSql(_) => {
+                let rs = self.execute("SELECT @@TRANCOUNT, XACT_STATE()", 1).await.ok()?;
+                let row = rs.into_iter().next()?.rows.into_iter().next()?;
+                let number = |i: usize| row.get(i)?.as_deref()?.trim().parse::<i64>().ok();
+                Some((number(0)? > 0, number(1)? == -1))
+            }
+            _ => None,
+        }
     }
 
     /// true if the connection has been lost (socket closed, protocol error...).

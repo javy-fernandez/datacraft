@@ -301,6 +301,7 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Session monitor](docs/session-monitor.md) | Server sessions and queries, blocking chains, cancel and terminate per engine |
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Task scheduler](docs/sql-scheduler.md) | Recurring SQL and backup tasks, the background process, time limits and history |
+| [Manual transactions](docs/transactions.md) | Commit / Roll Back in the SQL console, failed transactions and the safeguards |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
 | [Low-power rendering](docs/low-power-rendering.md) | Software adapters, Remote Desktop and frame statistics |
