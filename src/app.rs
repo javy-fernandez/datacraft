@@ -63,6 +63,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 mod routines;
+mod schema_compare;
 mod table_model;
 mod table_duplicate;
 mod views;
@@ -336,6 +337,8 @@ pub struct DataCraftApp {
     import: Option<ImportDialog>,
     /// "Copy Table To…".
     copy: Option<CopyDialog>,
+    /// "Compare Schemas…".
+    compare: Option<crate::ui::schema_compare::CompareDialog>,
     /// "Export with Masking…".
     mask_export: Option<MaskExportDialog>,
     /// "Modify Table…".
@@ -440,6 +443,7 @@ impl DataCraftApp {
             table_duplicate: Default::default(),
             import: None,
             copy: None,
+            compare: None,
             mask_export: None,
             modify: None,
             user_dialog: None,
@@ -934,6 +938,7 @@ impl DataCraftApp {
                 Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
                 Response::TableDetails { request_id, result } => self.modify_loaded(request_id, result.map(|d| *d)),
                 Response::TableCopied { request_id, result } => self.copy_done(request_id, result),
+                Response::SchemaCompared { request_id, result } => self.compare_received(request_id, result),
                 Response::Users { conn, result } => self.users_response(conn, result),
                 Response::DatabaseChoices { conn, result } => {
                     if let Some(d) = self.create.as_mut().filter(|d| d.conn == conn && matches!(d.target, CreateTarget::Database)) {
@@ -1687,6 +1692,7 @@ impl DataCraftApp {
                 ExplorerAction::GenerateInsert(t) => self.generate(ctx, &t, Generate::Insert),
                 ExplorerAction::GenerateDdl(t) => self.generate(ctx, &t, Generate::Ddl),
                 ExplorerAction::TableModel(tables) => self.open_table_model(tables),
+                ExplorerAction::CompareSchemas { conn, db, schema } => self.open_compare(conn, db, schema),
                 ExplorerAction::LoadUsers(id) => self.load_users(id),
                 ExplorerAction::NewUser(id) => self.open_user_dialog(id, None, false),
                 ExplorerAction::EditUser(id, account) => self.open_user_dialog(id, Some(account), false),
@@ -2548,6 +2554,7 @@ impl DataCraftApp {
             || self.drop.is_some()
             || self.import.is_some()
             || self.copy.is_some()
+            || self.compare.is_some()
             || self.mask_export.is_some()
             || self.user_dialog.is_some()
             || self.show_shortcuts
@@ -3421,6 +3428,7 @@ impl DataCraftApp {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         self.show_table_model(ctx);
+        self.show_compare(ctx);
         self.table_duplicate_dialog(ctx);
         self.show_table_export(ctx);
         self.table_grants_dialog(ctx);
@@ -4423,7 +4431,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(), table_model: None,
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), table_export: Default::default(), routines: Default::default(), table_duplicate: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), table_export: Default::default(), routines: Default::default(), table_duplicate: Default::default(), import: None, copy: None, compare: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
