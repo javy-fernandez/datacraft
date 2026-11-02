@@ -218,16 +218,15 @@ impl BackupRequest {
 }
 
 pub fn utility_path(driver: Driver) -> String {
-    let name = match driver {
+    find_utility(&[match driver {
         Driver::Postgres => "pg_dump",
         Driver::MariaDb => "mariadb-dump",
         _ => "mysqldump",
-    };
-    let executable = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.into()
-    };
+    }])
+}
+
+/// The first of `names` found on `PATH` or in common installation directories, else `names[0]`.
+pub(super) fn find_utility(names: &[&str]) -> String {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
@@ -256,11 +255,19 @@ pub fn utility_path(driver: Driver) -> String {
             PathBuf::from("/usr/local/bin"),
         ]);
     }
-    dirs.into_iter()
-        .map(|d| d.join(&executable))
+    names
+        .iter()
+        .flat_map(|name| {
+            let executable = if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                (*name).into()
+            };
+            dirs.iter().map(move |d| d.join(&executable))
+        })
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| name.into())
+        .unwrap_or_else(|| names[0].into())
 }
 
 struct LocalOutput {
@@ -318,11 +325,11 @@ impl Drop for LocalOutput {
     }
 }
 
-struct Credentials {
+pub(super) struct Credentials {
     directory: PathBuf,
 }
 impl Credentials {
-    fn new() -> anyhow::Result<Self> {
+    pub(super) fn new() -> anyhow::Result<Self> {
         let directory =
             std::env::temp_dir().join(format!("datacraft-backup-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory)?;
@@ -366,7 +373,7 @@ impl Credentials {
         }
         Ok(credentials)
     }
-    fn write(&self, text: &str) -> anyhow::Result<PathBuf> {
+    pub(super) fn write(&self, text: &str) -> anyhow::Result<PathBuf> {
         let path = self.directory.join("credentials");
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -388,7 +395,7 @@ impl Drop for Credentials {
     }
 }
 
-fn hide(command: &mut Command) {
+pub(super) fn hide(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -398,7 +405,7 @@ fn hide(command: &mut Command) {
     let _ = command;
 }
 
-fn quoted_option(value: &str) -> String {
+pub(super) fn quoted_option(value: &str) -> String {
     format!(
         "\"{}\"",
         value
@@ -408,7 +415,7 @@ fn quoted_option(value: &str) -> String {
             .replace('\r', "\\r")
     )
 }
-fn pg_value(value: &str) -> String {
+pub(super) fn pg_value(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
@@ -525,7 +532,7 @@ fn dump_command(
     Ok(command)
 }
 
-struct DumpChild(std::process::Child);
+pub(super) struct DumpChild(pub(super) std::process::Child);
 impl Drop for DumpChild {
     fn drop(&mut self) {
         let _ = self.0.kill();

@@ -388,3 +388,70 @@ fn render_readme_screenshots() {
         .save(dir.join("database-backup.png"))
         .unwrap();
 }
+
+/// The explorer with a PostgreSQL and a SQL Server connection, for the restore captures.
+fn restore_harness(dark: bool) -> Harness<'static, DataCraftApp> {
+    let mut h = harness(dark);
+    let app = h.state_mut();
+    app.explorer.expanded.clear();
+    for (id, driver, name, databases) in [(9, Driver::Postgres, "Production", ["postgres", "shop", "shop_staging"]), (8, Driver::MsSql, "Reporting", ["master", "shop", "warehouse"])] {
+        let mut cfg = ConnectionConfig::new(id, driver);
+        cfg.name = name.into();
+        let mut conn = ConnState::new(cfg);
+        conn.status = ConnStatus::Connected;
+        conn.databases = databases.map(|name| DatabaseInfo { name: name.into(), current: name == databases[0], schemas: None }).to_vec();
+        app.conns.push(conn);
+        app.explorer.expanded.insert(format!("c:{id}"));
+    }
+    app.explorer.restores.push(crate::db::restore::RestoreRecord { conn: 9, db: "shop_staging".into(), source: r"C:\Backups\shop_20261025.dump".into(), created: "2026-10-25 18:12:40".into() });
+    h.run_steps(3);
+    h
+}
+
+#[test]
+#[ignore = "Requires a GPU; renders the restore workflow for docs/screenshots/restore without a database"]
+fn render_restore_screenshots() {
+    use crate::ui::restore_dialog::RestoreDialog;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/restore-snapshots");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = restore_harness(true);
+    // The PostgreSQL connection's "shop" database (the status bar also names the MariaDB one).
+    h.get_all_by_label("shop").find(|n| n.rect().left() < 300.0 && n.rect().top() < 300.0).unwrap().click_secondary();
+    h.run_steps(3);
+    assert!(h.query_by_label("Restore database…").is_some());
+    h.render().unwrap().save(dir.join("restore-menu.png")).unwrap();
+
+    let mut h = restore_harness(true);
+    let mut dialog = RestoreDialog::sample_postgres();
+    dialog.conn = 9;
+    h.state_mut().restore = Some(dialog);
+    h.run_steps(3);
+    h.get_by_label("Contents (7 entries)").click();
+    h.run_steps(3);
+    h.render().unwrap().save(dir.join("restore-postgres.png")).unwrap();
+    h.get_by_label("Start restore").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Overwrite existing database?").is_some());
+    h.render().unwrap().save(dir.join("restore-confirm.png")).unwrap();
+
+    let mut h = restore_harness(false);
+    let mut dialog = RestoreDialog::sample_postgres();
+    dialog.conn = 9;
+    dialog.request.create = true;
+    dialog.request.db = "shop_copy".into();
+    dialog.running = true;
+    dialog.progress.set(42, 100);
+    h.state_mut().restore = Some(dialog);
+    h.run_steps(3);
+    h.render().unwrap().save(dir.join("restore-progress.png")).unwrap();
+
+    let mut h = restore_harness(false);
+    let mut dialog = RestoreDialog::sample_sql_server();
+    dialog.conn = 8;
+    dialog.request.db = "shop_test".into();
+    h.state_mut().restore = Some(dialog);
+    h.run_steps(3);
+    h.get_by_label("SQL preview").click();
+    h.run_steps(3);
+    h.render().unwrap().save(dir.join("restore-sqlserver.png")).unwrap();
+}

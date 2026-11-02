@@ -26,6 +26,9 @@ pub enum Request {
     /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
     RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
+    /// Reads a backup's format and contents (SQL Server: on a private session) without restoring.
+    InspectRestore { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest> },
+    Restore { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, progress: Arc<crate::db::restore::RestoreProgress> },
     InspectTable { conn: ConnId, db: String, schema: String, table: String, console: ConsoleId, generation: u64, count_rows: bool, page_filter: Option<String> },
     SchemaSearch {
         conn: ConnId,
@@ -118,6 +121,8 @@ pub enum Response {
     TableExported { conn: ConnId, request_id: u64, result: Result<(std::path::PathBuf, u64), String> },
     TableReportOpened { request_id: u64, result: Result<std::path::PathBuf, String> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, result: Result<Option<u64>, String> },
+    RestoreInspected { id: uuid::Uuid, result: Result<crate::db::restore::RestorePreview, String> },
+    Restored { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::restore::RestoreRequest>, result: Result<(), String> },
     InspectTable { console: ConsoleId, generation: u64, page_rows: Option<u64>, result: Result<Box<crate::db::object_info::ObjectInfo>, String> },
     SchemaSearch { request_id: u64, result: Result<crate::db::schema_search::SearchReport, String> },
     /// Result of `CopyTable`: rows copied to each target table.
@@ -537,6 +542,10 @@ fn save_model_file(path: std::path::PathBuf, contents: &str) -> anyhow::Result<s
     result?; Ok(path)
 }
 
+fn redact(message: String, password: &str) -> String {
+    if password.is_empty() { message } else { message.replace(password, "[redacted]") }
+}
+
 async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
     match req {
         Request::TableShortcut { path, target } => {
@@ -655,6 +664,28 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                 None => Err(tr("The connection is not open").into()),
             };
             vec![Response::Backup { conn, id, request, result }]
+        }
+        Request::InspectRestore { conn, id, request } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let result = match cfg {
+                Some(cfg) => {
+                    let password = cfg.password.clone();
+                    crate::db::restore::inspect(cfg, *request).await.map_err(|error| redact(format!("{error:#}"), &password))
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::RestoreInspected { id, result }]
+        }
+        Request::Restore { conn, id, request, progress } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            let result = match cfg {
+                Some(cfg) => {
+                    let password = cfg.password.clone();
+                    crate::db::restore::run(cfg, *request.clone(), progress).await.map_err(|error| redact(format!("{error:#}"), &password))
+                }
+                None => Err(tr("The connection is not open").into()),
+            };
+            vec![Response::Restored { conn, id, request, result }]
         }
         Request::InspectTable { conn, db, schema, table, console, generation, count_rows, page_filter } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());

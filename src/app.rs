@@ -250,6 +250,7 @@ struct PersistedConsole {
 struct Persisted {
     object_organizations: Vec<crate::ui::object_organization::Organization>,
     backups: Vec<crate::db::backup::BackupRecord>,
+    restores: Vec<crate::db::restore::RestoreRecord>,
     object_layout: crate::ui::object_browser::ObjectLayout,
     save_on_row_change: bool,
     /// Islands Dark theme (Islands Light by default). Replaces the old `dark` (Darcula).
@@ -280,6 +281,7 @@ impl Default for Persisted {
         Self {
             object_organizations: Vec::new(),
             backups: Vec::new(),
+            restores: Vec::new(),
             object_layout: crate::ui::object_browser::ObjectLayout::default(),
             save_on_row_change: false,
             islands_dark: false,
@@ -312,6 +314,7 @@ pub struct DataCraftApp {
     result_salt: u64,
     explorer: ExplorerState,
     backup: Option<crate::ui::backup_dialog::BackupDialog>,
+    restore: Option<crate::ui::restore_dialog::RestoreDialog>,
     scheduler: Option<crate::scheduler::dialog::Dialog>,
     object_browser: crate::ui::object_browser::ObjectBrowser,
     table_model: Option<table_model::Dialog>,
@@ -416,8 +419,9 @@ impl DataCraftApp {
             next_console_id: 1,
             console_counter: persisted.console_counter,
             result_salt: 0,
-            explorer: { let mut explorer = ExplorerState::default(); explorer.backups = persisted.backups; explorer },
+            explorer: { let mut explorer = ExplorerState::default(); explorer.backups = persisted.backups; explorer.restores = persisted.restores; explorer },
             backup: None,
+            restore: None,
             scheduler: None,
             object_browser: {
                 let mut browser = crate::ui::object_browser::ObjectBrowser::default();
@@ -917,6 +921,17 @@ impl DataCraftApp {
                         if self.explorer.backups.len() > 500 { self.explorer.backups.remove(0); }
                     }
                     if let Some(dialog) = self.backup.as_mut().filter(|d| d.id == id) { dialog.completed(&result); }
+                }
+                Response::RestoreInspected { id, result } => {
+                    if let Some(dialog) = self.restore.as_mut().filter(|d| d.id == id) { dialog.inspected(result); }
+                }
+                Response::Restored { conn, id, request, result } => {
+                    if result.is_ok() {
+                        self.explorer.restores.push(crate::db::restore::RestoreRecord { conn, db: request.db.clone(), source: request.source.clone(), created: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string() });
+                        if self.explorer.restores.len() > 500 { self.explorer.restores.remove(0); }
+                        self.worker.send(Request::Refresh(conn));
+                    }
+                    if let Some(dialog) = self.restore.as_mut().filter(|d| d.id == id) { dialog.completed(&result); }
                 }
                 Response::ChangesApplied { console, result } => self.changes_applied(console, result),
                 Response::DdlDone { conn, result } => self.ddl_done(conn, result),
@@ -1542,7 +1557,7 @@ impl DataCraftApp {
             let sql_only = match &a {
                 ExplorerAction::NewDatabase(id) | ExplorerAction::DropDatabase(id, _) => Some(*id),
                 ExplorerAction::NewTable { conn, .. } | ExplorerAction::NewView { conn, .. } => Some(*conn),
-                ExplorerAction::Backup(id, _) => Some(*id),
+                ExplorerAction::Backup(id, _) | ExplorerAction::Restore { conn: id, .. } => Some(*id),
                 ExplorerAction::DropObject(t, _)
                 | ExplorerAction::TruncateTable(t)
                 | ExplorerAction::DuplicateTable(t, _)
@@ -1575,6 +1590,21 @@ impl DataCraftApp {
                         let mut dialog = crate::ui::backup_dialog::BackupDialog::new(conn, c.cfg.driver, db, c.cfg.read_only);
                         dialog.request.trust_cert = c.cfg.trust_cert;
                         self.backup = Some(dialog);
+                    }
+                }
+                ExplorerAction::Restore { conn, db, source } => {
+                    if let Some(c) = self.conn(conn).filter(|c| c.status == ConnStatus::Connected && crate::db::restore::supported(c.cfg.driver)) {
+                        let databases: Vec<String> = c.databases.iter().map(|d| d.name.clone()).collect();
+                        // PostgreSQL runs CREATE DATABASE from a database that already exists.
+                        let maintenance = db.clone().or_else(|| c.databases.iter().find(|d| d.current).map(|d| d.name.clone())).unwrap_or_else(|| c.cfg.database.clone());
+                        let mut dialog = crate::ui::restore_dialog::RestoreDialog::new(conn, c.cfg.driver, db, databases, c.cfg.read_only);
+                        dialog.request.maintenance = if maintenance.is_empty() { "postgres".into() } else { maintenance };
+                        dialog.request.trust_cert = c.cfg.trust_cert;
+                        if let Some(source) = source {
+                            dialog.request.source = source;
+                            dialog.auto_inspect = true;
+                        }
+                        self.restore = Some(dialog);
                     }
                 }
                 ExplorerAction::RunScript(conn, db) => self.run_script(conn, db),
@@ -2535,7 +2565,7 @@ impl DataCraftApp {
 
     /// A modal dialog is open: shortcuts and run commands are ignored.
     fn modal_open(&self) -> bool {
-        self.backup.is_some() || self.scheduler.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
+        self.backup.is_some() || self.restore.is_some() || self.scheduler.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_analyze.is_some()
             || self.create.is_some()
@@ -3442,6 +3472,14 @@ impl DataCraftApp {
             match dialog.show(ctx, &self.explorer.backups) {
                 Some(crate::ui::backup_dialog::BackupAction::Start(request)) => self.worker.send(Request::Backup { conn: dialog.conn, id: dialog.id, request: Box::new(request), cancel: dialog.cancel.clone() }),
                 Some(crate::ui::backup_dialog::BackupAction::Close) => self.backup = None,
+                None => {}
+            }
+        }
+        if let Some(dialog) = self.restore.as_mut() {
+            match dialog.show(ctx, &self.explorer.restores) {
+                Some(crate::ui::restore_dialog::RestoreAction::Inspect(request)) => self.worker.send(Request::InspectRestore { conn: dialog.conn, id: dialog.id, request: Box::new(request) }),
+                Some(crate::ui::restore_dialog::RestoreAction::Start(request)) => self.worker.send(Request::Restore { conn: dialog.conn, id: dialog.id, request: Box::new(request), progress: dialog.progress.clone() }),
+                Some(crate::ui::restore_dialog::RestoreAction::Close) => self.restore = None,
                 None => {}
             }
         }
@@ -4372,6 +4410,7 @@ impl eframe::App for DataCraftApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let state = Persisted {
             backups: self.explorer.backups.clone(),
+            restores: self.explorer.restores.clone(),
             object_organizations: self.object_browser.organizations.iter().filter(|o| !o.is_empty()).cloned().collect(),
             object_layout: self.object_browser.layout,
             save_on_row_change: self.save_on_row_change,
@@ -4421,7 +4460,7 @@ mod tests {
             worker: Worker::start(egui::Context::default()), conns: Vec::new(),
             consoles: (1..=4).map(|id| Console::new(id, format!("Query {id}"), String::new(), None)).collect(),
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
-            explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(), table_model: None,
+            explorer: ExplorerState::default(), backup: None, restore: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(), table_model: None,
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), table_export: Default::default(), routines: Default::default(), table_duplicate: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,

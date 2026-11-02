@@ -15,6 +15,8 @@ use std::collections::HashSet;
 #[derive(Default)]
 pub struct ExplorerState {
     pub backups: Vec<crate::db::backup::BackupRecord>,
+    /// Finished restores, for the restore dialog's history.
+    pub restores: Vec<crate::db::restore::RestoreRecord>,
     pub filter: String,
     pub show_filter: bool,
     pub expanded: HashSet<String>,
@@ -39,6 +41,8 @@ pub struct TableRef {
 
 pub enum ExplorerAction {
     Backup(ConnId, String),
+    /// "Restore database…": into `db` (None: a new database), optionally from a known backup file.
+    Restore { conn: ConnId, db: Option<String>, source: Option<String> },
     /// "Run SQL Script…" on the connection, or on one of its databases.
     RunScript(ConnId, Option<String>),
     NewConnection,
@@ -510,6 +514,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             actions.push(ExplorerAction::NewDatabase(id));
             ui.close();
         }
+        if crate::db::restore::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Restore database…"))).clicked() {
+            actions.push(ExplorerAction::Restore { conn: id, db: None, source: None });
+            ui.close();
+        }
         if ui.button(tr("New Console")).clicked() {
             actions.push(ExplorerAction::NewConsole(id, None));
             ui.close();
@@ -724,6 +732,9 @@ fn database_rows(
         if !c.cfg.driver.is_nosql() && ui.add_enabled(c.status == ConnStatus::Connected, egui::Button::new(tr("Back up database…"))).clicked() {
             actions.push(ExplorerAction::Backup(id, db_name.clone())); ui.close();
         }
+        if crate::db::restore::supported(c.cfg.driver) && ui.add_enabled(c.status == ConnStatus::Connected && !c.cfg.read_only, egui::Button::new(tr("Restore database…"))).clicked() {
+            actions.push(ExplorerAction::Restore { conn: id, db: Some(db_name.clone()), source: None }); ui.close();
+        }
         if ui.button(tr("New Console")).clicked() {
             actions.push(ExplorerAction::NewConsole(id, Some(db_name.clone())));
             ui.close();
@@ -790,13 +801,13 @@ fn database_rows(
         if let Some(s) = schemas.first() {
             object_groups(ui, state, actions, id, &d.name, s, routines, filter, 2, crate::ui::table_menu::TableContext { driver: c.cfg.driver, connected: c.status == ConnStatus::Connected, read_only: c.cfg.read_only });
         }
-        if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2); }
+        if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2, crate::db::restore::supported(c.cfg.driver) && c.status == ConnStatus::Connected && !c.cfg.read_only); }
         return;
     }
     for s in schemas {
         schema_rows(ui, state, actions, id, &d.name, schemas, s, routines, filter, name_match, crate::ui::table_menu::TableContext { driver: c.cfg.driver, connected: c.status == ConnStatus::Connected, read_only: c.cfg.read_only });
     }
-    if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2); }
+    if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2, crate::db::restore::supported(c.cfg.driver) && c.status == ConnStatus::Connected && !c.cfg.read_only); }
 
 }
 
@@ -872,14 +883,17 @@ fn schema_rows(
     }
 }
 
-fn backup_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, conn: ConnId, db: &str, depth: usize) {
+fn backup_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, conn: ConnId, db: &str, depth: usize, restore: bool) {
     let records: Vec<_> = state.backups.iter().filter(|r| r.conn == conn && r.db == db).cloned().collect();
     let key = format!("backups:{conn}:{db}");
     let open = state.expanded.contains(&key);
     let count = records.len().to_string();
     let row = tree_row(ui, state, RowSpec { key: &key, depth, expandable: true, expanded: open, icon: Ico::History, label: tr("Backups"), badge: None, detail: Some((&count, pal(ui).muted)), status: None, label_color: None });
     if row.toggled { toggle(state, &key, open); }
-    row.resp.context_menu(|ui| { if ui.button(tr("Back up database…")).clicked() { actions.push(ExplorerAction::Backup(conn, db.into())); ui.close(); } });
+    row.resp.context_menu(|ui| {
+        if ui.button(tr("Back up database…")).clicked() { actions.push(ExplorerAction::Backup(conn, db.into())); ui.close(); }
+        if ui.add_enabled(restore, egui::Button::new(tr("Restore database…"))).clicked() { actions.push(ExplorerAction::Restore { conn, db: Some(db.into()), source: None }); ui.close(); }
+    });
     if open {
         if records.is_empty() { ui.indent(&key, |ui| { ui.label(tr("No backups yet")); }); }
         for (index, record) in records.iter().enumerate().rev() {
@@ -887,7 +901,10 @@ fn backup_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
             let row = tree_row(ui, state, RowSpec { key: &format!("{key}:{index}"), depth: depth + 1, expandable: false, expanded: false, icon: Ico::History, label: &label, badge: None, detail: None, status: None, label_color: None });
             let response = row.resp.on_hover_text(&record.destination);
             if response.double_clicked() { actions.push(ExplorerAction::Backup(conn, db.into())); }
-            response.context_menu(|ui| { if ui.button(tr("Copy path")).clicked() { ui.ctx().copy_text(record.destination.clone()); ui.close(); } });
+            response.context_menu(|ui| {
+                if ui.add_enabled(restore, egui::Button::new(tr("Restore from this backup…"))).clicked() { actions.push(ExplorerAction::Restore { conn, db: Some(db.into()), source: Some(record.destination.clone()) }); ui.close(); }
+                if ui.button(tr("Copy path")).clicked() { ui.ctx().copy_text(record.destination.clone()); ui.close(); }
+            });
         }
     }
 }
@@ -1266,6 +1283,31 @@ mod tests {
         h.get_by_label("shop").click_secondary(); h.run_steps(2);
         h.get_by_label("Back up database…").click(); h.run_steps(2);
         assert_eq!(h.state().1.as_deref(), Some("shop"));
+    }
+
+    #[test]
+    fn restore_targets_the_context_database_and_is_disabled_on_read_only_sources() {
+        type Requested = Vec<(Option<String>, Option<String>)>;
+        for read_only in [false, true] {
+            let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
+            cfg.read_only = read_only;
+            let mut connection = ConnState::new(cfg);
+            connection.status = ConnStatus::Connected;
+            connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: None });
+            let mut explorer = ExplorerState::default(); explorer.expanded.insert("c:1".into());
+            let mut first = true;
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut (ExplorerState, Requested)| {
+                if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+                for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
+                    if let ExplorerAction::Restore { conn: 1, db, source } = action { state.1.push((db, source)); }
+                }
+            }, (explorer, Vec::new()));
+            h.run_steps(3);
+            h.get_by_label("shop").click_secondary(); h.run_steps(2);
+            h.get_by_label("Restore database…").click(); h.run_steps(2);
+            let expected = if read_only { Vec::new() } else { vec![(Some("shop".to_string()), None)] };
+            assert_eq!(h.state().1, expected);
+        }
     }
 
     #[test]
