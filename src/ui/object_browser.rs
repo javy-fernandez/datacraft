@@ -147,7 +147,7 @@ impl ObjectBrowser {
     ) {
         if self.catalog_request_id != id
             || !self.catalog_loading
-            || !self.scope.as_ref().is_some_and(|s| s.conn == conn)
+            || self.scope.as_ref().is_none_or(|s| s.conn != conn)
         {
             return;
         }
