@@ -1,0 +1,39 @@
+name: Contributors chart
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: contributors
+  cancel-in-progress: true
+
+jobs:
+  update:
+    # Only after a merge; forks get the chart by syncing with the main repository.
+    if: github.repository == 'javy-fernandez/datacraft' && github.event.pull_request.merged == true
+    runs-on: ubuntu-24.04
+    steps:
+      # Always main, never the pull request's head: this job has write access.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - run: python3 scripts/contributors.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit changes
+        run: |
+          if git diff --quiet -- README.md docs/contributors; then
+            echo "Contributor chart is up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/contributors
+          git commit -m "Update contributor chart"
+          git push
