@@ -11,12 +11,8 @@ of a manual GUI test.
 | Preview | Theme |
 | --- | --- |
 | [Production data source: badge on the toolbar, tab and explorer](production-console-dark.png) | Dark |
-| [Production data source: badge on the toolbar, tab and explorer](production-console-light.png) | Light |
 | [Statements that change Production data](production-confirm-dark.png) | Dark |
-| [Statements that change Production data](production-confirm-light.png) | Light |
 | [Dangerous statements on a Staging data source](dangerous-confirm-dark.png) | Dark |
-| [Dangerous statements on a Staging data source](dangerous-confirm-light.png) | Light |
-| [A dangerous statement on a Production data source](production-dangerous-confirm-dark.png) | Dark |
 | [Saving grid changes to a Production data source](production-grid-save-dark.png) | Dark |
 | [Environment, badge colour and the guard in the data source's Options tab](data-source-options-dark.png) | Dark |
 
@@ -26,5 +22,9 @@ Regenerate on Windows with a working GPU using the render fixture:
 cargo test --locked app::safety::tests::render_safety_screenshots -- --ignored --exact
 ```
 
-Review the generated PNGs in `target/safety-snapshots`, then copy the selected
-images here without changing their contents.
+Review the generated PNGs in `target/safety-snapshots`, then copy them here
+reduced to a 256-colour palette to keep the repository small (Pillow):
+
+```powershell
+python -c "import glob, os; from PIL import Image; [Image.open(f).convert('RGB').quantize(256, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE).save('docs/screenshots/safety/' + os.path.basename(f), optimize=True) for f in glob.glob('target/safety-snapshots/*.png')]"
+```

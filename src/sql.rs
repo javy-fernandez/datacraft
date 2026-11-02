@@ -269,6 +269,11 @@ fn find_delimiter(script: &str, tok: Token, d: &str) -> Option<usize> {
     })
 }
 
+/// The words of `text`, lowercased, without strings, quoted names and comments.
+pub fn words(text: &str, driver: Driver) -> Vec<String> {
+    Lexer::new(text, Dialect::for_driver(driver)).filter(|t| t.kind == Kind::Word).map(|t| text[t.start..t.end].to_ascii_lowercase()).collect()
+}
+
 /// Statement containing the `cursor` position (in bytes). If the cursor is in the space between
 /// statements, returns the closest previous one (like DataGrip); if there is none, the next one.
 pub fn statement_at(script: &str, cursor: usize, driver: Driver) -> Option<Statement> {

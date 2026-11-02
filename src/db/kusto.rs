@@ -542,7 +542,7 @@ fn schema_tables(schema: &Value) -> Vec<TableInfo> {
 // ---------------------------------------------------------------------------
 
 /// The text after leading blanks and `//` comment lines.
-fn skip_comments(s: &str) -> &str {
+pub(crate) fn skip_comments(s: &str) -> &str {
     let mut s = s.trim_start();
     while s.starts_with("//") {
         s = s.split_once('\n').map_or("", |(_, rest)| rest).trim_start();

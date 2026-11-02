@@ -2,8 +2,8 @@
 //! `DELETE` without `WHERE`, `TRUNCATE`, `DROP`) and, on a Production data source, before
 //! anything changes data: the app side of `sql::dangerous_statements`.
 
-use super::{DataCraftApp, is_read_statement};
-use crate::db::{ConnectionConfig, Environment};
+use super::{DataCraftApp, is_query, is_read_statement};
+use crate::db::{ConnectionConfig, Driver, Environment};
 use crate::i18n::{tr, trf};
 use crate::sql::{self, Danger, Dangerous};
 use crate::ui::theme;
@@ -26,6 +26,8 @@ pub(super) struct Confirm {
     pub dangerous: Vec<Dangerous>,
     /// The data source's name and badge colour, when it is a Production one.
     pub production: Option<(String, Color32)>,
+    /// Explain Analyze, which runs the statement to measure it.
+    pub analyze: bool,
 }
 
 #[derive(Default)]
@@ -41,6 +43,36 @@ fn production(cfg: &ConnectionConfig) -> Option<(String, Color32)> {
 /// Shown at most; the rest are counted.
 const LISTED: usize = 8;
 
+/// The statement as the prompt names it (`DELETE`, `DROP TABLE`, `FLUSHALL`).
+fn keyword(d: &Dangerous) -> String {
+    match d.danger {
+        Danger::Update => "UPDATE".into(),
+        Danger::Delete => "DELETE".into(),
+        Danger::Truncate => "TRUNCATE".into(),
+        Danger::Drop => format!("DROP {}", d.object),
+        Danger::DropColumn => "DROP COLUMN".into(),
+        Danger::DropPartition => "DROP PARTITION".into(),
+        Danger::MergeDelete => "MERGE … DELETE".into(),
+        Danger::Replace => format!("CREATE OR REPLACE {}", d.object),
+        Danger::Flush => d.object.clone(),
+    }
+}
+
+/// What the statement does, after its target.
+fn effect(danger: Danger) -> &'static str {
+    match danger {
+        Danger::Update => tr("changes every row"),
+        Danger::Delete => tr("deletes every row"),
+        Danger::Truncate => tr("removes every row"),
+        Danger::Drop => tr("removes the object and its data"),
+        Danger::DropColumn => tr("removes the column and its values"),
+        Danger::DropPartition => tr("removes the partition and its rows"),
+        Danger::MergeDelete => tr("deletes every matched row"),
+        Danger::Replace => tr("replaces it, dropping the current data"),
+        Danger::Flush => tr("removes every key"),
+    }
+}
+
 impl DataCraftApp {
     /// The confirmation `statements` of `console` need before they run on `conn`, if any.
     pub(super) fn run_confirmation(&self, conn: ConnId, console: u64, statements: &[String]) -> Option<Confirm> {
@@ -52,13 +84,28 @@ impl DataCraftApp {
         };
         let writes = || statements.iter().flat_map(|s| sql::split_statements(s, cfg.driver)).any(|s| !is_read_statement(cfg.driver, &s.text));
         let production = production(cfg).filter(|_| writes());
-        (!dangerous.is_empty() || production.is_some()).then(|| Confirm { console, what: Guarded::Run(statements.to_vec()), dangerous, production })
+        (!dangerous.is_empty() || production.is_some()).then(|| Confirm { console, what: Guarded::Run(statements.to_vec()), dangerous, production, analyze: false })
     }
 
     /// The confirmation saving grid changes on `conn` needs (Production data sources).
     pub(super) fn changes_confirmation(&self, conn: ConnId, console: u64) -> Option<Confirm> {
         let production = production(&self.conn(conn)?.cfg)?;
-        Some(Confirm { console, what: Guarded::Changes, dangerous: Vec::new(), production: Some(production) })
+        Some(Confirm { console, what: Guarded::Changes, dangerous: Vec::new(), production: Some(production), analyze: false })
+    }
+
+    /// Explain Analyze of console `idx`: it runs `statement`, so one that writes asks once,
+    /// with the dangerous statement / Production prompt when it needs one, else its own.
+    pub(super) fn explain_analyze(&mut self, idx: usize, statement: &str, explain: String) {
+        let Some(c) = self.consoles.get(idx) else { return };
+        let driver = c.conn.and_then(|id| self.conn(id)).map_or(Driver::Postgres, |c| c.cfg.driver);
+        let confirm = c.conn.and_then(|conn| self.run_confirmation(conn, c.id, std::slice::from_ref(&explain)));
+        if is_query(driver, statement) {
+            self.run_statements(idx, vec![explain]);
+        } else if let Some(confirm) = confirm {
+            self.safety.confirm = Some(Confirm { analyze: true, ..confirm });
+        } else {
+            self.confirm_analyze = Some((idx, explain));
+        }
     }
 
     pub(super) fn confirm_dialog(&mut self, ctx: &egui::Context, frame: egui::Frame) {
@@ -83,6 +130,10 @@ impl DataCraftApp {
                 });
                 ui.add_space(6.0);
             }
+            if c.analyze {
+                ui.label(tr("Explain Analyze runs the statement to measure it."));
+                ui.add_space(6.0);
+            }
             if !c.dangerous.is_empty() {
                 ui.label(tr("These statements act on whole tables:"));
                 ui.add_space(4.0);
@@ -90,20 +141,9 @@ impl DataCraftApp {
                     ui.set_width(ui.available_width());
                     for d in c.dangerous.iter().take(LISTED) {
                         ui.horizontal_wrapped(|ui| {
-                            let keyword = match d.danger {
-                                Danger::Update => "UPDATE".to_string(),
-                                Danger::Delete => "DELETE".to_string(),
-                                Danger::Truncate => "TRUNCATE".to_string(),
-                                Danger::Drop => format!("DROP {}", d.object),
-                            };
-                            ui.label(RichText::new(keyword).monospace().strong().color(p.error));
+                            ui.label(RichText::new(keyword(d)).monospace().strong().color(p.error));
                             ui.label(RichText::new(&d.target).monospace().color(p.text));
-                            ui.label(RichText::new(match d.danger {
-                                Danger::Update => tr("no WHERE: changes every row"),
-                                Danger::Delete => tr("no WHERE: deletes every row"),
-                                Danger::Truncate => tr("removes every row"),
-                                Danger::Drop => tr("removes the object and its data"),
-                            }).color(p.muted));
+                            ui.label(RichText::new(effect(d.danger)).color(p.muted));
                         });
                     }
                     if c.dangerous.len() > LISTED {
@@ -156,7 +196,6 @@ impl DataCraftApp {
 mod tests {
     use super::super::tests::tabs_app;
     use super::*;
-    use crate::db::Driver;
     use crate::ui::console::Console;
 
     fn app(driver: Driver, environment: Environment, confirm_dangerous: bool) -> DataCraftApp {
@@ -222,6 +261,88 @@ mod tests {
         assert!(a.safety.confirm.is_some());
     }
 
+    /// Words in strings, comments and a data editor filter are not statements (review of #60).
+    #[test]
+    fn production_reads_mentioning_writes_run_at_once() {
+        for sql in [
+            "SELECT * FROM audit WHERE action = 'DELETE'",
+            "SELECT 1 /* update later */",
+            "SELECT note FROM orders -- insert into?",
+            "EXPLAIN ANALYZE SELECT * FROM orders",
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT 1",
+        ] {
+            let mut a = app(Driver::Postgres, Environment::Production, true);
+            a.run_statements(0, vec![sql.into()]);
+            assert!(a.safety.confirm.is_none() && sent(&a), "{sql}");
+        }
+        // The data editor's reloads and pages with a filter that names a write.
+        let mut a = app(Driver::Postgres, Environment::Production, true);
+        let mut table = Console::new_table(2, 7, None, "public".into(), "audit".into());
+        if let Some(t) = table.table.as_mut() {
+            t.where_clause = "action IN ('DELETE', 'UPDATE') AND note <> 'drop table'".into();
+        }
+        a.consoles.push(table);
+        a.reload_table(1);
+        assert!(a.safety.confirm.is_none() && a.consoles[1].running);
+    }
+
+    #[test]
+    fn explain_analyze_asks_once() {
+        let explain = |sql: &str| format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}");
+        // A dangerous statement: only the new prompt, which says Explain Analyze runs it.
+        let mut a = app(Driver::Postgres, Environment::None, true);
+        a.explain_analyze(0, "DELETE FROM orders", explain("DELETE FROM orders"));
+        assert!(a.safety.confirm.as_ref().is_some_and(|c| c.analyze && c.dangerous.len() == 1) && a.confirm_analyze.is_none());
+        let Some(Confirm { what: Guarded::Run(statements), .. }) = a.safety.confirm.take() else { panic!() };
+        a.send_statements(0, statements, true);
+        assert!(sent(&a));
+        // On Production, any write.
+        let mut a = app(Driver::Postgres, Environment::Production, true);
+        a.explain_analyze(0, "UPDATE orders SET a = 1 WHERE id = 1", explain("UPDATE orders SET a = 1 WHERE id = 1"));
+        assert!(a.safety.confirm.as_ref().is_some_and(|c| c.analyze && c.production.is_some()) && a.confirm_analyze.is_none());
+        // Otherwise its own prompt, and Run there doesn't ask again.
+        let mut a = app(Driver::Postgres, Environment::Staging, true);
+        a.explain_analyze(0, "UPDATE orders SET a = 1 WHERE id = 1", explain("UPDATE orders SET a = 1 WHERE id = 1"));
+        assert!(a.safety.confirm.is_none() && a.confirm_analyze.is_some());
+        let (idx, statement) = a.confirm_analyze.take().unwrap();
+        a.run_statements(idx, vec![statement]);
+        assert!(a.safety.confirm.is_none() && sent(&a));
+        // A read runs at once, on Production too.
+        let mut a = app(Driver::MySql, Environment::Production, true);
+        a.explain_analyze(0, "SELECT * FROM orders", "EXPLAIN ANALYZE SELECT * FROM orders".into());
+        assert!(a.safety.confirm.is_none() && a.confirm_analyze.is_none() && sent(&a));
+    }
+
+    /// A Manual transaction console asks like an Auto one before its statements join the
+    /// transaction; Commit and Roll Back only end what was already confirmed.
+    #[test]
+    fn manual_transaction_consoles_ask_too() {
+        let mut a = app(Driver::Postgres, Environment::Production, true);
+        a.consoles[0].manual_tx = true;
+        a.run_statements(0, vec!["UPDATE orders SET a = 1 WHERE id = 1".into()]);
+        assert!(a.safety.confirm.as_ref().is_some_and(|c| c.production.is_some()) && !sent(&a));
+        // Esc / Cancel: nothing ran, the transaction (none yet) is untouched.
+        a.safety.confirm = None;
+        a.run_statements(0, vec!["DELETE FROM orders".into()]);
+        let Some(Confirm { what: Guarded::Run(statements), dangerous, .. }) = a.safety.confirm.take() else { panic!() };
+        assert_eq!(dangerous.len(), 1);
+        a.send_statements(0, statements, true);
+        assert!(sent(&a) && a.consoles[0].manual_tx);
+        // The worker opened the transaction; Commit and Roll Back don't ask.
+        a.consoles[0].running = false;
+        a.consoles[0].tx = Some(crate::worker::TxInfo { began: std::time::Instant::now(), statements: 1, aborted: false });
+        assert!(a.end_transaction(0, true));
+        assert!(a.safety.confirm.is_none());
+        a.consoles[0].ending_tx = false;
+        assert!(a.end_transaction(0, false));
+        assert!(a.safety.confirm.is_none());
+        // A statement Manual mode refuses is refused before any prompt.
+        let mut a = app(Driver::Postgres, Environment::Production, true);
+        a.consoles[0].manual_tx = true;
+        a.run_statements(0, vec!["VACUUM orders".into()]);
+        assert!(a.safety.confirm.is_none() && !sent(&a) && a.consoles[0].log.last().is_some_and(|e| e.is_error));
+    }
+
     #[test]
     fn grid_saves_on_production_ask_first() {
         let mut a = app(Driver::Postgres, Environment::Production, true);
@@ -265,23 +386,18 @@ mod tests {
                 current: true,
                 schemas: Some(vec![SchemaInfo {
                     name: "public".into(),
-                    tables: ["audit_log", "customers", "order_events", "orders", "tmp_import"].map(table).to_vec(),
+                    tables: ["audit_log", "customers", "log", "orders", "tmp_import"].map(table).to_vec(),
                 }]),
             }];
             app.conns.push(conn);
         }
         app.explorer.expanded.extend(["c:7".into(), "d:7:shop".into(), "s:7:shop:public".into(), "g:7:shop:public:t".into()]);
-        let prod = "-- Close the orders paid before the migration
-UPDATE orders
-   SET status = 'closed'
- WHERE status = 'paid'
-   AND paid_at < '2026-10-01';";
+        let prod = "-- Close the orders paid before the migration\n\
+                    UPDATE orders\n   SET status = 'closed'\n WHERE status = 'paid'\n   AND paid_at < '2026-10-01';";
         app.consoles.push(Console::new(1, "Close paid orders".into(), prod.into(), Some(7)));
-        let cleanup = "-- Reset the staging copy before the next import
-DELETE FROM order_events;
-TRUNCATE TABLE audit_log;
-DROP TABLE IF EXISTS tmp_import;
-UPDATE orders SET status = 'new' WHERE id > 1000;";
+        let cleanup = "-- Reset the staging copy before the next import\n\
+                       DELETE FROM log;\nTRUNCATE TABLE audit_log;\nDROP TABLE IF EXISTS tmp_import;\n\
+                       ALTER TABLE orders DROP COLUMN legacy_note;\nUPDATE orders SET status = 'new' WHERE id > 1000;";
         app.consoles.push(Console::new(2, "Staging cleanup".into(), cleanup.into(), Some(8)));
         app.consoles.push(Console::new(3, "Local".into(), "SELECT count(*) FROM orders;".into(), Some(9)));
         app.active = 0;
@@ -313,7 +429,8 @@ UPDATE orders SET status = 'new' WHERE id > 1000;";
     }
 
     /// The documentation captures: environment badges, the dangerous statement prompt, the
-    /// Production prompt for statements and grid saves, and the data source's Options tab.
+    /// Production prompt for statements and grid saves, and the data source's Options tab
+    /// (dark theme only, to keep the repository small).
     #[test]
     #[ignore = "Requires a GPU; renders the dangerous statement guard and connection environments without a database"]
     fn render_safety_screenshots() {
@@ -324,31 +441,25 @@ UPDATE orders SET status = 'new' WHERE id > 1000;";
             h.run_steps(3);
             h.render().unwrap().save(dir.join(name)).unwrap();
         };
-        for (dark, suffix) in [(true, "dark"), (false, "light")] {
-            let mut h = app_harness(screenshot_app(dark));
-            assert!(h.query_by_label("Production").is_some());
-            shot(&mut h, &format!("production-console-{suffix}.png"));
-
-            h.state_mut().run_console(0, true);
-            assert!(h.state().safety.confirm.as_ref().is_some_and(|c| c.production.is_some() && c.dangerous.is_empty()));
-            shot(&mut h, &format!("production-confirm-{suffix}.png"));
-            h.key_press(egui::Key::Escape);
-            h.run_steps(2);
-            assert!(h.state().safety.confirm.is_none() && !h.state().consoles[0].running);
-
-            h.state_mut().active = 1;
-            h.run_steps(2);
-            h.state_mut().run_console(1, true);
-            assert_eq!(h.state().safety.confirm.as_ref().map(|c| c.dangerous.len()), Some(3));
-            shot(&mut h, &format!("dangerous-confirm-{suffix}.png"));
-        }
-
         let mut h = app_harness(screenshot_app(true));
-        h.state_mut().consoles[0].text = "DELETE FROM order_events;".into();
+        assert!(h.query_by_label("Production").is_some());
+        shot(&mut h, "production-console-dark.png");
+
         h.state_mut().run_console(0, true);
-        shot(&mut h, "production-dangerous-confirm-dark.png");
+        assert!(h.state().safety.confirm.as_ref().is_some_and(|c| c.production.is_some() && c.dangerous.is_empty()));
+        shot(&mut h, "production-confirm-dark.png");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().safety.confirm.is_none() && !h.state().consoles[0].running);
+
+        h.state_mut().active = 1;
+        h.run_steps(2);
+        h.state_mut().run_console(1, true);
+        assert_eq!(h.state().safety.confirm.as_ref().map(|c| c.dangerous.len()), Some(4));
+        shot(&mut h, "dangerous-confirm-dark.png");
         // A closed modal forgets its size before the next one opens.
         h.state_mut().safety.confirm = None;
+        h.state_mut().active = 0;
         h.state_mut().consoles[0].text = "SELECT * FROM orders WHERE status = 'paid';".into();
         h.run_steps(3);
         h.state_mut().safety.confirm = h.state().changes_confirmation(7, 1);

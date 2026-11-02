@@ -512,7 +512,7 @@ impl ConnectionDialog {
             .on_hover_text(tr("Only queries can run; the data editor and the create, drop and rename actions are disabled"));
         ui.add_space(6.0);
         ui.checkbox(&mut cfg.confirm_dangerous, tr("Confirm dangerous statements"))
-            .on_hover_text(tr("The console asks before UPDATE or DELETE without WHERE, TRUNCATE and DROP"));
+            .on_hover_text(tr("The console asks before UPDATE or DELETE without WHERE, TRUNCATE, DROP and similar statements"));
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.label(tr("Environment:"));
