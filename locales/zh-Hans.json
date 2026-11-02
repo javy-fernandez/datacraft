@@ -1514,6 +1514,9 @@
     "The query cannot be cancelled ({status})": "无法取消该查询（{status}）",
     "The list is from an earlier connection; refresh and try again": "该列表来自之前的连接；请刷新后重试",
     "This session's details are hidden, so it can't be identified safely": "此会话的详细信息被隐藏，无法安全地识别它",
-    "insufficient privilege": "权限不足"
+    "insufficient privilege": "权限不足",
+    "The listed query has finished; the session is now running another statement": "列出的查询已结束；该会话正在运行另一条语句",
+    "In the background, auto-refresh runs at most every 30 s, and it pauses while DataCraft is minimized": "在后台时自动刷新最多每 30 秒一次，DataCraft 最小化时暂停",
+    "every 30 s in the background": "后台时每 30 秒"
   }
 }

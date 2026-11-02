@@ -249,6 +249,9 @@ struct Live {
     /// Session Monitor session: refreshes don't queue behind a console or the object browser,
     /// and a cancel or terminate never runs on (or takes down) a console's session.
     monitor: Option<SharedSession>,
+    /// Times the monitor was closed: a session that finishes connecting after a close is used
+    /// for its one request and not kept.
+    monitor_closes: u64,
 }
 
 /// A console's `Execute` in progress. Registered before waiting for the session, so a
@@ -358,23 +361,27 @@ impl State {
 
     /// The Session Monitor session (opened on first use and kept).
     async fn monitor_session(&self, conn: ConnId) -> anyhow::Result<SharedSession> {
-        let (cfg, existing) = {
+        let (cfg, existing, closes) = {
             let live = self.live.lock().await;
             let l = live.get(&conn).ok_or_else(|| anyhow::anyhow!(tr("The connection is not open")))?;
-            (l.cfg.clone(), l.monitor.clone())
+            (l.cfg.clone(), l.monitor.clone(), l.monitor_closes)
         };
         if let Some(s) = existing {
             return Ok(s);
         }
         let epoch = self.current_epoch(conn);
         let session = Arc::new(Mutex::new(Session::connect(&cfg).await?));
+        Ok(self.keep_monitor(conn, epoch, closes, session).await)
+    }
+
+    /// Keeps a new monitor session unless the connection was reopened or the monitor closed while
+    /// it connected (then it closes after this request).
+    async fn keep_monitor(&self, conn: ConnId, epoch: u64, closes: u64, session: SharedSession) -> SharedSession {
         let mut live = self.live.lock().await;
-        if self.current_epoch(conn) == epoch
-            && let Some(l) = live.get_mut(&conn)
-        {
-            return Ok(l.monitor.get_or_insert(session).clone());
+        match live.get_mut(&conn) {
+            Some(l) if self.current_epoch(conn) == epoch && l.monitor_closes == closes => l.monitor.get_or_insert(session).clone(),
+            _ => session,
         }
-        Ok(session)
     }
 
     /// Drops the Session Monitor session if it is still `session` (timed out or broken).
@@ -728,6 +735,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
         Request::CloseSessionMonitor(conn) => {
             if let Some(l) = state.live.lock().await.get_mut(&conn) {
                 l.monitor = None;
+                l.monitor_closes += 1;
             }
             Vec::new()
         }
@@ -821,7 +829,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                     }
                     let mut sessions = HashMap::new();
                     sessions.insert(String::new(), Arc::new(Mutex::new(session)));
-                    live.insert(conn, Live { cfg, default_db, sessions, meta: HashMap::new(), monitor: None });
+                    live.insert(conn, Live { cfg, default_db, sessions, meta: HashMap::new(), monitor: None, monitor_closes: 0 });
                     vec![Response::Connected { conn, databases }]
                 }
                 Err(e) if state.current_epoch(conn) == epoch => {
@@ -1282,15 +1290,24 @@ mod tests {
         let mut cfg = ConnectionConfig::new(8, Driver::Sqlite);
         cfg.file_path = path.display().to_string();
         let monitor = Arc::new(Mutex::new(Session::connect(&cfg).await.unwrap()));
-        state.live.lock().await.insert(8, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: Some(monitor) });
+        let late = Arc::new(Mutex::new(Session::connect(&cfg).await.unwrap()));
+        state.live.lock().await.insert(8, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: Some(monitor), monitor_closes: 0 });
         state.bump_if_lifecycle(&Request::Disconnect(8));
-        let action = Action { kind: ActionKind::Terminate, id: "1".into(), serial: None, started: None, user: String::new(), client: String::new() };
+        let action = Action::new(ActionKind::Terminate, &crate::db::sessions::SessionRow { id: "1".into(), ..Default::default() });
         let stale = Request::SessionAction { conn: 8, request_id: 1, epoch: 0, action };
         let responses = Box::pin(handle(stale, 0, &state)).await;
         let [Response::SessionAction { result: Err(error), .. }] = responses.as_slice() else { panic!("expected a refusal") };
         assert_eq!(error, tr("The list is from an earlier connection; refresh and try again"));
+        let (epoch, closes) = (state.current_epoch(8), 0);
         assert!(Box::pin(handle(Request::CloseSessionMonitor(8), 0, &state)).await.is_empty());
         assert!(state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_none()));
+        // A session that finished connecting after the window closed serves its request only.
+        let used = state.keep_monitor(8, epoch, closes, late.clone()).await;
+        assert!(Arc::ptr_eq(&used, &late));
+        assert!(state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_none()), "not kept after a close");
+        let kept = state.keep_monitor(8, epoch, 1, late.clone()).await;
+        assert!(Arc::ptr_eq(&kept, &late) && state.live.lock().await.get(&8).is_some_and(|l| l.monitor.is_some()));
+        drop((used, kept, late));
         state.live.lock().await.clear();
         let _ = std::fs::remove_file(&path);
     }
@@ -1301,7 +1318,7 @@ mod tests {
         let state = State::default();
         let mut cfg = ConnectionConfig::new(7, Driver::Sqlite);
         cfg.read_only = true;
-        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None });
+        state.live.lock().await.insert(7, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None, monitor_closes: 0 });
         let request = |id| Request::TableGrants {
             conn: 7,
             db: "main".into(),
@@ -1406,7 +1423,7 @@ mod tests {
         let mut cfg = ConnectionConfig::new(71, Driver::Sqlite);
         cfg.password = secret.into();
         cfg.file_path = std::env::temp_dir().join(format!("datacraft-missing-{secret}-{}.db", uuid::Uuid::new_v4())).to_string_lossy().into_owned();
-        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None });
+        state.live.lock().await.insert(71, Live { cfg, default_db: "main".into(), sessions: HashMap::new(), meta: HashMap::new(), monitor: None, monitor_closes: 0 });
         let request = Request::TableDuplicate {
             conn: 71,
             db: "main".into(),

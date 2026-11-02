@@ -1514,6 +1514,9 @@
     "The query cannot be cancelled ({status})": "Nie można anulować zapytania ({status})",
     "The list is from an earlier connection; refresh and try again": "Lista pochodzi z wcześniejszego połączenia; odśwież i spróbuj ponownie",
     "This session's details are hidden, so it can't be identified safely": "Szczegóły tej sesji są ukryte, więc nie można jej bezpiecznie zidentyfikować",
-    "insufficient privilege": "niewystarczające uprawnienia"
+    "insufficient privilege": "niewystarczające uprawnienia",
+    "The listed query has finished; the session is now running another statement": "Wymienione zapytanie już się zakończyło; sesja wykonuje teraz inną instrukcję",
+    "In the background, auto-refresh runs at most every 30 s, and it pauses while DataCraft is minimized": "W tle automatyczne odświeżanie odbywa się najwyżej co 30 s i jest wstrzymane, gdy DataCraft jest zminimalizowany",
+    "every 30 s in the background": "co 30 s w tle"
   }
 }

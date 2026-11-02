@@ -1514,6 +1514,9 @@
     "The query cannot be cancelled ({status})": "クエリをキャンセルできません ({status})",
     "The list is from an earlier connection; refresh and try again": "この一覧は以前の接続のものです。更新してからもう一度お試しください",
     "This session's details are hidden, so it can't be identified safely": "このセッションの詳細は非表示のため、安全に特定できません",
-    "insufficient privilege": "権限不足"
+    "insufficient privilege": "権限不足",
+    "The listed query has finished; the session is now running another statement": "一覧のクエリは終了し、セッションは別のステートメントを実行しています",
+    "In the background, auto-refresh runs at most every 30 s, and it pauses while DataCraft is minimized": "バックグラウンドでは自動更新は最短 30 秒ごとになり、DataCraft が最小化されている間は一時停止します",
+    "every 30 s in the background": "バックグラウンドでは 30 秒ごと"
   }
 }

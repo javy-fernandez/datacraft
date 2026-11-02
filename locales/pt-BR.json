@@ -1514,6 +1514,9 @@
     "The query cannot be cancelled ({status})": "A consulta não pode ser cancelada ({status})",
     "The list is from an earlier connection; refresh and try again": "A lista é de uma conexão anterior; atualize e tente novamente",
     "This session's details are hidden, so it can't be identified safely": "Os detalhes desta sessão estão ocultos, então ela não pode ser identificada com segurança",
-    "insufficient privilege": "privilégio insuficiente"
+    "insufficient privilege": "privilégio insuficiente",
+    "The listed query has finished; the session is now running another statement": "A consulta listada terminou; a sessão agora executa outra instrução",
+    "In the background, auto-refresh runs at most every 30 s, and it pauses while DataCraft is minimized": "Em segundo plano, a atualização automática ocorre no máximo a cada 30 s e é pausada enquanto o DataCraft está minimizado",
+    "every 30 s in the background": "a cada 30 s em segundo plano"
   }
 }
