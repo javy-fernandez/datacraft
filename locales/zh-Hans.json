@@ -1476,7 +1476,6 @@
     "Foreign key {key} dropped": "已删除外键 {key}",
     "View definition differs": "视图定义不同",
     "Makes {target} match {source}": "使 {target} 与 {source} 一致",
-    "{table}.{name} is a generated column: its expression is not copied": "{table}.{name} 是生成列：不会复制其表达式",
     "Index “{name}” is an expression or partial index and is not recreated": "索引“{name}”是表达式索引或部分索引，不会重新创建",
     "{table}.{name}: the identity of a column can't be changed in place": "{table}.{name}：无法就地更改列的标识",
     "Source and target use different engines: the differences are shown, but no script is generated.": "源和目标使用不同的引擎：会显示差异，但不会生成脚本。",
@@ -1502,6 +1501,22 @@
     "Save Script": "保存脚本",
     "Script saved to {path}": "脚本已保存到 {path}",
     "Could not save the script: {error}": "无法保存脚本：{error}",
-    "Review the migration script before running it.": "运行迁移脚本前请先检查。"
+    "Review the migration script before running it.": "运行迁移脚本前请先检查。",
+    "{table}.{name} is a computed column whose expression isn't available: it is left out": "{table}.{name} 是无法获取表达式的计算列：已将其省略",
+    "{table}.{name}: the expression of a generated column can't be changed in place": "{table}.{name}：无法就地更改生成列的表达式",
+    "Drops table “{name}” and all its data": "删除表“{name}”及其所有数据",
+    "View “{name}” uses a dropped table: it is dropped and not created again": "视图“{name}”使用了被删除的表：它会被删除且不会重新创建",
+    "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "被删除并重新创建的视图会丢失其权限、所有者、注释和选项（security_barrier、security_invoker、check option）：{views}",
+    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "请完整运行该脚本：它会关闭外键检查，并在结束时恢复会话设置。",
+    "partitioned table": "分区表",
+    "partition": "分区",
+    "materialized view": "物化视图",
+    "foreign table": "外部表",
+    "extension object": "扩展对象",
+    "virtual table": "虚拟表",
+    "The source or target changed: compare again to update the result.": "源或目标已更改：请重新比较以更新结果。",
+    "Not compared in the source: {objects}": "源中未比较：{objects}",
+    "Not compared in the target: {objects}": "目标中未比较：{objects}",
+    "No differences in the compared objects": "已比较的对象中没有差异"
   }
 }

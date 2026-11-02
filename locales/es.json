@@ -1476,7 +1476,6 @@
     "Foreign key {key} dropped": "Clave foránea {key} eliminada",
     "View definition differs": "La definición de la vista es distinta",
     "Makes {target} match {source}": "Hace que {target} coincida con {source}",
-    "{table}.{name} is a generated column: its expression is not copied": "{table}.{name} es una columna generada: su expresión no se copia",
     "Index “{name}” is an expression or partial index and is not recreated": "El índice «{name}» es de expresión o parcial y no se vuelve a crear",
     "{table}.{name}: the identity of a column can't be changed in place": "{table}.{name}: la identidad de una columna no se puede cambiar en el sitio",
     "Source and target use different engines: the differences are shown, but no script is generated.": "El origen y el destino usan motores distintos: se muestran las diferencias, pero no se genera ningún script.",
@@ -1502,6 +1501,22 @@
     "Save Script": "Guardar script",
     "Script saved to {path}": "Script guardado en {path}",
     "Could not save the script: {error}": "No se pudo guardar el script: {error}",
-    "Review the migration script before running it.": "Revise el script de migración antes de ejecutarlo."
+    "Review the migration script before running it.": "Revise el script de migración antes de ejecutarlo.",
+    "{table}.{name} is a computed column whose expression isn't available: it is left out": "{table}.{name} es una columna calculada cuya expresión no está disponible: se omite",
+    "{table}.{name}: the expression of a generated column can't be changed in place": "{table}.{name}: la expresión de una columna generada no se puede cambiar en el sitio",
+    "Drops table “{name}” and all its data": "Elimina la tabla «{name}» y todos sus datos",
+    "View “{name}” uses a dropped table: it is dropped and not created again": "La vista «{name}» usa una tabla eliminada: se elimina y no se vuelve a crear",
+    "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "Las vistas que se eliminan y se vuelven a crear pierden sus permisos, propietario, comentarios y opciones (security_barrier, security_invoker, check option): {views}",
+    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "Ejecute el script completo: desactiva la comprobación de claves foráneas y restaura la configuración de la sesión al final.",
+    "partitioned table": "tabla particionada",
+    "partition": "partición",
+    "materialized view": "vista materializada",
+    "foreign table": "tabla foránea",
+    "extension object": "objeto de extensión",
+    "virtual table": "tabla virtual",
+    "The source or target changed: compare again to update the result.": "El origen o el destino han cambiado: vuelva a comparar para actualizar el resultado.",
+    "Not compared in the source: {objects}": "No comparado en el origen: {objects}",
+    "Not compared in the target: {objects}": "No comparado en el destino: {objects}",
+    "No differences in the compared objects": "Sin diferencias en los objetos comparados"
   }
 }

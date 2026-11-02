@@ -39,22 +39,20 @@ impl DataCraftApp {
                 self.worker.send(Request::SchemaCompare { source, target, request_id, sides, progress });
             }
             CompareAction::Load(conn, db) => self.ensure_db_loaded(conn, Some(&db)),
-            CompareAction::Save(text) => {
-                let name = self.compare.as_ref().map(|d| format!("migrate_{}.sql", d.target.schema)).unwrap_or_default();
-                if let Some(path) = rfd::FileDialog::new().set_title(tr("Save Script")).add_filter("SQL", &["sql"]).set_file_name(name).save_file() {
+            CompareAction::Save { schema, text } => {
+                if let Some(path) = rfd::FileDialog::new().set_title(tr("Save Script")).add_filter("SQL", &["sql"]).set_file_name(format!("migrate_{schema}.sql")).save_file() {
                     match std::fs::write(&path, text) {
                         Ok(()) => self.info(trf("Script saved to {path}", &[("path", &path.display())])),
                         Err(e) => self.error(trf("Could not save the script: {error}", &[("error", &e)])),
                     }
                 }
             }
-            // A new console on the target with the script, never run from here.
-            CompareAction::OpenConsole(text) => {
-                let Some(d) = self.compare.take() else { return };
-                let (conn, db) = (d.target.conn, d.target.db.clone());
-                let read_only = self.conn(conn).is_some_and(|c| c.cfg.read_only);
-                let i = self.new_console(Some(conn), Some(format!("migrate_{}.sql", d.target.schema)), text);
-                self.consoles[i].db = Some(db);
+            // A new console on the compared target with the script, never run from here.
+            CompareAction::OpenConsole { target, text } => {
+                self.compare = None;
+                let read_only = self.conn(target.conn).is_some_and(|c| c.cfg.read_only);
+                let i = self.new_console(Some(target.conn), Some(format!("migrate_{}.sql", target.schema)), text);
+                self.consoles[i].db = Some(target.db);
                 if read_only {
                     self.error(tr("The target connection is read-only: the script can be reviewed, not run."));
                 } else {
@@ -77,7 +75,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
-    fn stale_replies_are_ignored_and_the_script_opens_on_the_target() {
+    fn stale_replies_are_ignored_and_the_script_opens_on_the_compared_target() {
         let (mut app, table) = super::super::tests::table_menu_app(Driver::Postgres, true);
         app.conns[0].cfg.read_only = true;
         app.open_compare(table.conn, Some(table.db.clone()), Some(table.schema.clone()));
@@ -95,12 +93,28 @@ mod tests {
         let CompareAction::Start { progress, .. } = d.start() else { unreachable!() };
         d.finished(old, Ok(Box::new((src.clone(), tgt.clone()))));
         assert!(d.outcome.is_none() && d.running(), "an older reply is ignored");
+        let current = d.request_id;
+        // A reply for the first dialog's request never reaches a dialog opened after it.
+        app.open_compare(table.conn, None, None);
+        let d = app.compare.as_mut().unwrap();
+        let CompareAction::Start { .. } = d.start() else { unreachable!() };
+        assert!(d.request_id > current, "request ids are unique in the app");
+        app.compare_received(current, Ok(Box::new((src.clone(), tgt.clone()))));
+        let d = app.compare.as_mut().unwrap();
+        assert!(d.outcome.is_none() && d.running(), "a closed dialog's reply is ignored");
         d.finished(d.request_id, Ok(Box::new((src, tgt))));
-        assert!(!d.running() && !progress.cancel.load(Ordering::Relaxed));
+        assert!(!d.running());
+        assert!(progress.cancel.load(Ordering::Relaxed), "the replaced dialog's comparison was cancelled");
         let text = d.outcome.as_ref().unwrap().text.clone();
         assert!(text.contains("alter table shop_staging.orders"), "{text}");
+        // Changing a picker makes the result stale: nothing leaves the dialog until compared again.
+        let compared = d.target.clone();
+        d.target.schema = "elsewhere".into();
+        assert!(d.stale());
+        d.target.schema.clone_from(&compared.schema);
+        assert!(!d.stale());
         let consoles = app.consoles.len();
-        app.compare_action(CompareAction::OpenConsole(text.clone()));
+        app.compare_action(CompareAction::OpenConsole { target: compared, text: text.clone() });
         assert_eq!(app.consoles.len(), consoles + 1);
         let console = app.consoles.last().unwrap();
         assert_eq!((console.conn, console.db.as_deref(), console.text.as_str()), (Some(table.conn), Some("main"), text.as_str()));

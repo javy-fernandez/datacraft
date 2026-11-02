@@ -1476,7 +1476,6 @@
     "Foreign key {key} dropped": "Usunięto klucz obcy {key}",
     "View definition differs": "Definicja widoku jest inna",
     "Makes {target} match {source}": "Dopasowuje {target} do {source}",
-    "{table}.{name} is a generated column: its expression is not copied": "{table}.{name} to kolumna generowana: jej wyrażenie nie jest kopiowane",
     "Index “{name}” is an expression or partial index and is not recreated": "Indeks „{name}” jest indeksem wyrażenia lub częściowym i nie zostanie odtworzony",
     "{table}.{name}: the identity of a column can't be changed in place": "{table}.{name}: tożsamości kolumny nie można zmienić w miejscu",
     "Source and target use different engines: the differences are shown, but no script is generated.": "Źródło i cel używają różnych silników: różnice są widoczne, ale skrypt nie jest generowany.",
@@ -1502,6 +1501,22 @@
     "Save Script": "Zapisz skrypt",
     "Script saved to {path}": "Zapisano skrypt w {path}",
     "Could not save the script: {error}": "Nie można zapisać skryptu: {error}",
-    "Review the migration script before running it.": "Przejrzyj skrypt migracji przed jego uruchomieniem."
+    "Review the migration script before running it.": "Przejrzyj skrypt migracji przed jego uruchomieniem.",
+    "{table}.{name} is a computed column whose expression isn't available: it is left out": "{table}.{name} to kolumna obliczana, której wyrażenie jest niedostępne: zostaje pominięta",
+    "{table}.{name}: the expression of a generated column can't be changed in place": "{table}.{name}: wyrażenia kolumny generowanej nie można zmienić w miejscu",
+    "Drops table “{name}” and all its data": "Usuwa tabelę „{name}” i wszystkie jej dane",
+    "View “{name}” uses a dropped table: it is dropped and not created again": "Widok „{name}” używa usuwanej tabeli: zostaje usunięty i nie jest odtwarzany",
+    "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "Widoki usuwane i tworzone ponownie tracą uprawnienia, właściciela, komentarze i opcje (security_barrier, security_invoker, check option): {views}",
+    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "Uruchom cały skrypt naraz: wyłącza sprawdzanie kluczy obcych i na końcu przywraca ustawienia sesji.",
+    "partitioned table": "tabela partycjonowana",
+    "partition": "partycja",
+    "materialized view": "widok zmaterializowany",
+    "foreign table": "tabela obca",
+    "extension object": "obiekt rozszerzenia",
+    "virtual table": "tabela wirtualna",
+    "The source or target changed: compare again to update the result.": "Źródło lub cel się zmieniły: porównaj ponownie, aby zaktualizować wynik.",
+    "Not compared in the source: {objects}": "Nieporównane w źródle: {objects}",
+    "Not compared in the target: {objects}": "Nieporównane w celu: {objects}",
+    "No differences in the compared objects": "Brak różnic w porównanych obiektach"
   }
 }

@@ -16,8 +16,8 @@ there is one.
 1. Pick the source and the target: connection, database and schema (MySQL, MariaDB and
    SQLite have one schema per database, chosen with it).
 2. Click **Compare**. Both schemas are read in the background on sessions of their own;
-   the dialog shows how many objects have been read, and **Cancel** stops the catalog
-   query under way.
+   the dialog shows how many objects have been read, and **Cancel** stops the comparison,
+   also while a connection is still being opened.
 3. The objects are grouped by status:
 
 | Status | Meaning | In the script |
@@ -31,6 +31,11 @@ Select an object to see what changed and both definitions side by side; the chan
 are tinted (green on the source, red on the target). Uncheck an object to leave it out of
 the script; the script is regenerated at once.
 
+The result, its script and **Open in Console** always belong to the pair that was compared,
+which the dialog's subtitle names. Changing a picker afterwards marks the result as out of
+date: **Copy**, **Save .sql…** and **Open in Console** stay disabled until you compare
+again.
+
 What is compared:
 
 - **Tables**: columns (added, dropped, type, nullability, default, identity /
@@ -39,26 +44,42 @@ What is compared:
 - **Views**: the definition text.
 
 Trivial differences are ignored so that equal schemas show **No differences**: each side's
-own schema name in qualifiers, sequence names and view text, letter case and blanks
-outside quoted text, names where the engine ignores case (SQLite, MySQL, MariaDB, SQL
-Server), and equivalent type spellings (`int4` and `integer`, MySQL `int(11)` and `int`).
-Column order is not compared.
+own schema name where it qualifies one of the compared tables, views, sequences or types,
+letter case and blanks outside quoted text, names where the engine ignores case (SQLite,
+MySQL, MariaDB, SQL Server), and equivalent type spellings (`int4` and `integer`, MySQL
+`int(11)` and `int`). Column order is not compared.
+
+Only those references move to the target schema in the script. String literals,
+`alias.column` references (even when a table is named like its schema), and functions,
+extension objects (`citext`, `uuid_generate_v4()`…) or tables of any other schema keep
+their qualifier: they are shared, so `public.f()` stays `public.f()` when `public` is
+compared with another schema.
+
+Objects that can't be compared are listed above the result, and never count as "no
+differences" (the dialog then says **No differences in the compared objects**): PostgreSQL
+partitioned tables and their partitions, materialized views, foreign tables and extension
+objects, Oracle materialized views, and SQLite virtual tables.
 
 ## The script
 
 The script is never run by the dialog. **Copy** puts it on the clipboard, **Save .sql…**
-writes it to a file and **Open in Console** opens it in a new console on the target
+writes it to a file and **Open in Console** opens it in a new console on the compared target
 database, where you review it and run it yourself. On a read-only target the console still
-opens, with a warning that it can't be run there.
+opens, with a warning that it can't be run there. Run the script as a whole: on SQL Server
+each statement is a batch of its own, ended by `GO`.
 
 Statements are ordered so that they can run top to bottom:
 
 1. Foreign keys that are in the way: those on tables or columns that are dropped, on
    columns whose type changes, or on a primary key that changes. Those that should stay
    are added back at step 6.
-2. Views to drop: dropped views, changed views on PostgreSQL and SQLite, and on
-   PostgreSQL the views on dropped or retyped columns (and the views on those), which
-   are created again at step 7.
+2. Views to drop: dropped views; changed views SQLite can't replace; on PostgreSQL the
+   changed views `CREATE OR REPLACE` can't handle (it only adds columns at the end), the
+   views that use a column the script drops or retypes, and the views on those. They are
+   created again at step 7, and the script lists them: grants, owner, comments and view
+   options (`security_barrier`, `security_invoker`, check option) are lost. A view on a
+   table the script drops is dropped with it and not created again, with a warning. Other
+   changes (a new primary key, an index) leave the views alone.
 3. Dropped tables.
 4. New tables, with their primary key and indexes (PostgreSQL `serial` columns stay
    `serial`; other sequences are created first).
@@ -66,12 +87,14 @@ Statements are ordered so that they can run top to bottom:
    of a table in place: new nullable columns and index changes are made with `ALTER
    TABLE`, anything else rebuilds the table (a new table with the source definition, the
    rows copied, the old one dropped and the new one renamed). The script then starts with
-   `pragma foreign_keys = off`.
+   `pragma foreign_keys = off` and ends by restoring the session's settings, so it must
+   run as a whole.
 6. Foreign keys.
-7. New and changed views, each after the views it uses.
+7. New and changed views, each after the views it uses (`CREATE OR REPLACE`, SQL Server
+   `CREATE OR ALTER`, where the view isn't dropped first).
 
-Changes that can lose data (dropped columns, new types) are listed as comments at the top,
-as are the things the script can't do.
+Changes that can lose data (dropped tables and columns, new types) are listed as comments
+at the top, on every engine, as are the things the script can't do.
 
 Comparing two different engines shows the differences but writes no script: types, keys
 and SQL differ too much for one script. MySQL and MariaDB count as the same engine.
@@ -79,11 +102,13 @@ and SQL differ too much for one script. MySQL and MariaDB count as the same engi
 ## Limitations
 
 - Not compared: CHECK constraints, triggers, sequences on their own, user types (enums,
-  domains), comments, collations, partitions, grants, materialized views, procedures and
-  functions.
+  domains), comments, collations, grants, procedures and functions, and the objects listed
+  as not compared above.
 - Expression and partial indexes are compared by name only and are not created by the
-  script; generated (computed) columns are compared by type, and created as ordinary
-  columns, with a warning.
+  script.
+- Generated columns are written with their expression on PostgreSQL, MySQL, MariaDB and
+  Oracle (`generated always as (…)`); only MySQL and MariaDB can change that expression in
+  place. SQL Server computed columns are left out of the script, with a warning.
 - A SQLite rebuild keeps the columns, keys, foreign keys, UNIQUE constraints and indexes of
   the source table, but not its CHECK constraints, collations or triggers.
 - SQL Server can't add or remove a column's identity in place: the script says so.

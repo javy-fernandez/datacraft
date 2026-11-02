@@ -948,7 +948,7 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
 
 /// MySQL column definition for CHANGE / MODIFY: the type, NOT NULL, default and the attributes
 /// it would otherwise lose (auto_increment, on update, comment, collation).
-fn column_def_mysql(c: &NewColumn, old: &ColumnDef, same_type: bool) -> String {
+pub(crate) fn column_def_mysql(c: &NewColumn, old: &ColumnDef, same_type: bool) -> String {
     let mut s = c.data_type.trim().to_string();
     if same_type && let Some(coll) = &old.collation {
         s.push_str(&format!(" collate {coll}"));

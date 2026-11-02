@@ -35,14 +35,18 @@ fn text(row: &[Option<String>], i: usize) -> String {
     row.get(i).cloned().flatten().unwrap_or_default()
 }
 
-/// Tables (`t`) and views (`v`) of the schema: name, kind.
+/// Tables (`t`) and views (`v`) of the schema, and the objects that are not compared:
+/// partitioned tables (`p`), partitions (`c`), materialized views (`m`), foreign tables (`f`),
+/// extension objects (`x`), SQLite virtual tables (`w`) and their shadow tables (`h`). Name, kind.
 fn objects_sql(driver: Driver, schema: &str) -> String {
     let sch = lit(driver, schema);
     match driver {
         Driver::Postgres => format!(
-            "select c.relname, case c.relkind when 'v' then 'v' else 't' end from pg_catalog.pg_class c \
-             join pg_catalog.pg_namespace n on n.oid = c.relnamespace \
-             where n.nspname = {sch} and c.relkind in ('r', 'v') and not c.relispartition order by 1"
+            "select c.relname, case \
+             when exists (select 1 from pg_catalog.pg_depend d where d.classid = 'pg_catalog.pg_class'::regclass and d.objid = c.oid and d.deptype = 'e') then 'x' \
+             when c.relkind in ('v', 'p', 'm', 'f') then c.relkind::text when c.relispartition then 'c' else 't' end \
+             from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace \
+             where n.nspname = {sch} and c.relkind in ('r', 'v', 'p', 'm', 'f') order by 1"
         ),
         Driver::MySql | Driver::MariaDb => format!(
             "select table_name, case when table_type = 'VIEW' then 'v' else 't' end from information_schema.tables \
@@ -55,12 +59,13 @@ fn objects_sql(driver: Driver, schema: &str) -> String {
         Driver::Oracle => format!(
             "select table_name, 't' from all_tables where owner = {sch} and nested = 'NO' and secondary = 'N' and dropped = 'NO' \
              and table_name not in (select mview_name from all_mviews where owner = {sch}) \
-             union all select view_name, 'v' from all_views where owner = {sch} order by 1"
+             union all select view_name, 'v' from all_views where owner = {sch} \
+             union all select mview_name, 'm' from all_mviews where owner = {sch} order by 1"
         ),
+        // `pragma_table_list` tells virtual tables, and their shadow tables (`h`, left out).
         Driver::Sqlite => format!(
-            "select name, case type when 'view' then 'v' else 't' end from {}.sqlite_master \
-             where type in ('table', 'view') and name not like 'sqlite\\_%' escape '\\' order by name",
-            driver.quote_ident(schema)
+            "select name, case type when 'view' then 'v' when 'virtual' then 'w' when 'shadow' then 'h' else 't' end \
+             from pragma_table_list where schema = {sch} and name not like 'sqlite\\_%' escape '\\' order by name"
         ),
         _ => String::new(),
     }
@@ -116,6 +121,83 @@ fn foreign_keys_sql(driver: Driver, schema: &str) -> String {
         ),
         _ => String::new(),
     }
+}
+
+/// What `kind` of `objects_sql` stands for, for the list of objects not compared.
+fn skipped_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "p" => tr("partitioned table"),
+        "c" => tr("partition"),
+        "m" => tr("materialized view"),
+        "f" => tr("foreign table"),
+        "x" => tr("extension object"),
+        "w" => tr("virtual table"),
+        _ => return None,
+    })
+}
+
+/// Generated columns with their expression: table, column, the clause that recreates them
+/// (SQL Server's computed columns can't be written that way, and are left out of scripts).
+fn generated_sql(driver: Driver, schema: &str) -> Option<String> {
+    let sch = lit(driver, schema);
+    Some(match driver {
+        Driver::Postgres => format!(
+            "select c.relname, a.attname, 'generated always as (' || pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) || ') stored' \
+             from pg_catalog.pg_attribute a join pg_catalog.pg_class c on c.oid = a.attrelid \
+             join pg_catalog.pg_namespace n on n.oid = c.relnamespace \
+             join pg_catalog.pg_attrdef ad on ad.adrelid = a.attrelid and ad.adnum = a.attnum \
+             where n.nspname = {sch} and a.attgenerated = 's'"
+        ),
+        Driver::MySql | Driver::MariaDb => format!(
+            "select table_name, column_name, concat('generated always as (', generation_expression, ') ', \
+             case when upper(extra) like '%STORED%' or upper(extra) like '%PERSISTENT%' then 'stored' else 'virtual' end) \
+             from information_schema.columns where table_schema = {sch} and generation_expression is not null and generation_expression <> ''"
+        ),
+        Driver::Oracle => format!("select table_name, column_name, data_default from all_tab_cols where owner = {sch} and virtual_column = 'YES' and hidden_column = 'NO'"),
+        _ => return None,
+    })
+}
+
+/// Sequences and user types (not those of extensions): names `schema.name` may point at.
+fn sequences_sql(driver: Driver, schema: &str) -> Option<String> {
+    let sch = lit(driver, schema);
+    Some(match driver {
+        Driver::Postgres => format!(
+            "select c.relname, 's' from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace \
+             where n.nspname = {sch} and c.relkind = 'S' \
+             union all select t.typname, 't' from pg_catalog.pg_type t join pg_catalog.pg_namespace n on n.oid = t.typnamespace \
+             where n.nspname = {sch} and (t.typtype in ('e', 'd', 'r', 'm') \
+             or (t.typtype = 'c' and (select relkind from pg_catalog.pg_class where oid = t.typrelid) = 'c')) \
+             and not exists (select 1 from pg_catalog.pg_depend d where d.classid = 'pg_catalog.pg_type'::regclass and d.objid = t.oid and d.deptype = 'e')"
+        ),
+        Driver::MsSql => format!("select name, 's' from sys.sequences where schema_id = schema_id({sch})"),
+        Driver::Oracle => format!("select sequence_name, 's' from all_sequences where sequence_owner = {sch}"),
+        _ => return None,
+    })
+}
+
+/// PostgreSQL views: their columns (view, column, type).
+fn view_columns_sql(schema: &str) -> String {
+    format!(
+        "select c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) from pg_catalog.pg_attribute a \
+         join pg_catalog.pg_class c on c.oid = a.attrelid join pg_catalog.pg_namespace n on n.oid = c.relnamespace \
+         where n.nspname = {} and c.relkind = 'v' and a.attnum > 0 and not a.attisdropped order by c.relname, a.attnum",
+        lit(Driver::Postgres, schema)
+    )
+}
+
+/// PostgreSQL views: the columns of this schema's tables and views each one uses.
+fn view_uses_sql(schema: &str) -> String {
+    let sch = lit(Driver::Postgres, schema);
+    format!(
+        "select distinct v.relname, t.relname, a.attname from pg_catalog.pg_depend d \
+         join pg_catalog.pg_rewrite r on r.oid = d.objid join pg_catalog.pg_class v on v.oid = r.ev_class \
+         join pg_catalog.pg_namespace vn on vn.oid = v.relnamespace \
+         join pg_catalog.pg_class t on t.oid = d.refobjid join pg_catalog.pg_namespace tn on tn.oid = t.relnamespace \
+         join pg_catalog.pg_attribute a on a.attrelid = t.oid and a.attnum = d.refobjsubid \
+         where d.classid = 'pg_catalog.pg_rewrite'::regclass and d.refclassid = 'pg_catalog.pg_class'::regclass \
+         and v.relkind = 'v' and v.oid <> t.oid and vn.nspname = {sch} and tn.nspname = {sch} order by 1, 2, 3"
+    )
 }
 
 /// Identity columns: table, column, the clause that recreates them.
@@ -190,13 +272,18 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let objects = query(s, &objects_sql(driver, schema)).await?;
     progress.total.fetch_add(objects.rows.len(), Ordering::Relaxed);
-    let mut model = SchemaModel { driver, db: db.into(), schema: schema.into(), tables: vec![], views: vec![] };
+    let mut model = SchemaModel::new(driver, db, schema);
     for r in &objects.rows {
         anyhow::ensure!(!cancelled(), tr("Cancelled"));
         let name = text(r, 0);
-        if text(r, 1) == "v" {
+        let kind = text(r, 1);
+        if kind == "h" {
+            // Part of a virtual table, which is listed.
+        } else if let Some(label) = skipped_kind(&kind) {
+            model.skipped.push(format!("{name} ({label})"));
+        } else if kind == "v" {
             let definition = s.view_definition(driver, db, schema, &name).await?;
-            model.views.push(ViewModel { name, definition });
+            model.views.push(ViewModel { name, definition, ..Default::default() });
         } else {
             let mut details = load_details(s, driver, schema, &name).await.map_err(|e| anyhow::anyhow!("{name}: {e:#}"))?;
             details.rebuild_blocker = None;
@@ -230,14 +317,41 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
             t.foreign_keys.push(fk);
         }
     }
-    if let Some(sql) = identity_sql(driver, schema) {
+    // Identity and generation clauses replace the column's EXTRA (and the default Oracle shows
+    // for them: the identity's sequence, or the expression of a virtual column).
+    for sql in [identity_sql(driver, schema), generated_sql(driver, schema)].into_iter().flatten() {
         for r in &query(s, &sql).await?.rows {
             let column = model.tables.iter_mut().find(|t| t.name == text(r, 0)).and_then(|t| t.details.columns.iter_mut().find(|c| c.name == text(r, 1)));
             if let Some(c) = column {
-                c.extra = text(r, 2);
-                // Oracle shows the identity's sequence as the default.
+                c.extra = match driver {
+                    Driver::Oracle if c.generated => format!("generated always as ({}) virtual", text(r, 2).trim()),
+                    _ => text(r, 2),
+                };
                 c.default = None;
             }
+        }
+    }
+    if let Some(sql) = sequences_sql(driver, schema) {
+        for r in &query(s, &sql).await?.rows {
+            if text(r, 1) == "s" { model.sequences.push(text(r, 0)) } else { model.types.push(text(r, 0)) }
+        }
+    }
+    if driver == Driver::Postgres {
+        for r in &query(s, &view_columns_sql(schema)).await?.rows {
+            if let Some(v) = model.views.iter_mut().find(|v| v.name == text(r, 0)) {
+                v.columns.push((text(r, 1), text(r, 2)));
+            }
+        }
+        for r in &query(s, &view_uses_sql(schema)).await?.rows {
+            if let Some(v) = model.views.iter_mut().find(|v| v.name == text(r, 0)) {
+                v.uses.push((text(r, 1), text(r, 2)));
+            }
+        }
+    }
+    if driver == Driver::Sqlite {
+        for name in ["foreign_keys", "legacy_alter_table"] {
+            let value = query(s, &format!("pragma {name}")).await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
+            model.pragmas.push((name.into(), if value == "1" { "on".into() } else { "off".into() }));
         }
     }
     // SQLite keys that point at the primary key: its columns.
@@ -267,17 +381,19 @@ async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
     Ok(s)
 }
 
-/// Reads both schemas; a cancel interrupts the running catalog query.
+/// Reads both schemas. A cancel stops a connection being opened, or interrupts the running
+/// catalog query.
 pub async fn run(source: ConnectionConfig, target: ConnectionConfig, src: Side, tgt: Side, progress: Arc<Progress>) -> anyhow::Result<(SchemaModel, SchemaModel)> {
     for cfg in [&source, &target] {
         anyhow::ensure!(supported(cfg.driver), trf("Schemas can't be compared on {engine}", &[("engine", &cfg.driver.label())]));
     }
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), tr("Cancelled"));
     let (sd, td) = (source.driver, target.driver);
-    let mut a = open(source, &src.db).await?;
-    let mut b = open(target, &tgt.db).await?;
-    let handles = [a.cancel_handle(), b.cancel_handle()];
+    let handles = std::sync::Mutex::new(Vec::new());
     let work = async {
+        let mut a = open(source, &src.db).await?;
+        let mut b = open(target, &tgt.db).await?;
+        handles.lock().unwrap_or_else(|e| e.into_inner()).extend([a.cancel_handle(), b.cancel_handle()].into_iter().flatten());
         let s = load(&mut a, sd, &src.db, &src.schema, &progress).await?;
         let t = load(&mut b, td, &tgt.db, &tgt.schema, &progress).await?;
         anyhow::Ok((s, t))
@@ -291,7 +407,8 @@ pub async fn run(source: ConnectionConfig, target: ConnectionConfig, src: Side, 
     tokio::select! {
         result = &mut work => result,
         _ = cancelled => {
-            for h in handles.into_iter().flatten() {
+            let handles = std::mem::take(&mut *handles.lock().unwrap_or_else(|e| e.into_inner()));
+            for h in handles {
                 let _ = tokio::time::timeout(Duration::from_secs(3), h.cancel()).await;
             }
             let _ = tokio::time::timeout(Duration::from_secs(3), &mut work).await;

@@ -1476,7 +1476,6 @@
     "Foreign key {key} dropped": "Chave estrangeira {key} excluída",
     "View definition differs": "A definição da visão é diferente",
     "Makes {target} match {source}": "Faz {target} corresponder a {source}",
-    "{table}.{name} is a generated column: its expression is not copied": "{table}.{name} é uma coluna gerada: sua expressão não é copiada",
     "Index “{name}” is an expression or partial index and is not recreated": "O índice “{name}” é de expressão ou parcial e não é recriado",
     "{table}.{name}: the identity of a column can't be changed in place": "{table}.{name}: a identidade de uma coluna não pode ser alterada no local",
     "Source and target use different engines: the differences are shown, but no script is generated.": "A origem e o destino usam mecanismos diferentes: as diferenças são mostradas, mas nenhum script é gerado.",
@@ -1502,6 +1501,22 @@
     "Save Script": "Salvar script",
     "Script saved to {path}": "Script salvo em {path}",
     "Could not save the script: {error}": "Não foi possível salvar o script: {error}",
-    "Review the migration script before running it.": "Revise o script de migração antes de executá-lo."
+    "Review the migration script before running it.": "Revise o script de migração antes de executá-lo.",
+    "{table}.{name} is a computed column whose expression isn't available: it is left out": "{table}.{name} é uma coluna calculada cuja expressão não está disponível: ela é omitida",
+    "{table}.{name}: the expression of a generated column can't be changed in place": "{table}.{name}: a expressão de uma coluna gerada não pode ser alterada no local",
+    "Drops table “{name}” and all its data": "Exclui a tabela “{name}” e todos os seus dados",
+    "View “{name}” uses a dropped table: it is dropped and not created again": "A visão “{name}” usa uma tabela excluída: ela é excluída e não é recriada",
+    "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "As visões excluídas e recriadas perdem permissões, proprietário, comentários e opções (security_barrier, security_invoker, check option): {views}",
+    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "Execute o script inteiro: ele desativa a verificação de chaves estrangeiras e restaura as configurações da sessão no final.",
+    "partitioned table": "tabela particionada",
+    "partition": "partição",
+    "materialized view": "visão materializada",
+    "foreign table": "tabela estrangeira",
+    "extension object": "objeto de extensão",
+    "virtual table": "tabela virtual",
+    "The source or target changed: compare again to update the result.": "A origem ou o destino mudou: compare novamente para atualizar o resultado.",
+    "Not compared in the source: {objects}": "Não comparados na origem: {objects}",
+    "Not compared in the target: {objects}": "Não comparados no destino: {objects}",
+    "No differences in the compared objects": "Nenhuma diferença nos objetos comparados"
   }
 }

@@ -1476,7 +1476,6 @@
     "Foreign key {key} dropped": "Clé étrangère {key} supprimée",
     "View definition differs": "La définition de la vue diffère",
     "Makes {target} match {source}": "Aligne {target} sur {source}",
-    "{table}.{name} is a generated column: its expression is not copied": "{table}.{name} est une colonne générée : son expression n'est pas copiée",
     "Index “{name}” is an expression or partial index and is not recreated": "L'index « {name} » est un index d'expression ou partiel et n'est pas recréé",
     "{table}.{name}: the identity of a column can't be changed in place": "{table}.{name} : l'identité d'une colonne ne peut pas être modifiée sur place",
     "Source and target use different engines: the differences are shown, but no script is generated.": "La source et la cible utilisent des moteurs différents : les différences sont affichées, mais aucun script n'est généré.",
@@ -1502,6 +1501,22 @@
     "Save Script": "Enregistrer le script",
     "Script saved to {path}": "Script enregistré dans {path}",
     "Could not save the script: {error}": "Impossible d'enregistrer le script : {error}",
-    "Review the migration script before running it.": "Vérifiez le script de migration avant de l'exécuter."
+    "Review the migration script before running it.": "Vérifiez le script de migration avant de l'exécuter.",
+    "{table}.{name} is a computed column whose expression isn't available: it is left out": "{table}.{name} est une colonne calculée dont l'expression n'est pas disponible : elle est omise",
+    "{table}.{name}: the expression of a generated column can't be changed in place": "{table}.{name} : l'expression d'une colonne générée ne peut pas être modifiée sur place",
+    "Drops table “{name}” and all its data": "Supprime la table « {name} » et toutes ses données",
+    "View “{name}” uses a dropped table: it is dropped and not created again": "La vue « {name} » utilise une table supprimée : elle est supprimée et n'est pas recréée",
+    "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "Les vues supprimées puis recréées perdent leurs droits, leur propriétaire, leurs commentaires et leurs options (security_barrier, security_invoker, check option) : {views}",
+    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "Exécutez le script en entier : il désactive la vérification des clés étrangères et rétablit les réglages de la session à la fin.",
+    "partitioned table": "table partitionnée",
+    "partition": "partition",
+    "materialized view": "vue matérialisée",
+    "foreign table": "table étrangère",
+    "extension object": "objet d'extension",
+    "virtual table": "table virtuelle",
+    "The source or target changed: compare again to update the result.": "La source ou la cible a changé : comparez à nouveau pour mettre le résultat à jour.",
+    "Not compared in the source: {objects}": "Non comparés dans la source : {objects}",
+    "Not compared in the target: {objects}": "Non comparés dans la cible : {objects}",
+    "No differences in the compared objects": "Aucune différence dans les objets comparés"
   }
 }

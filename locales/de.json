@@ -1476,7 +1476,6 @@
     "Foreign key {key} dropped": "Fremdschlüssel {key} gelöscht",
     "View definition differs": "Sichtdefinition unterscheidet sich",
     "Makes {target} match {source}": "Gleicht {target} an {source} an",
-    "{table}.{name} is a generated column: its expression is not copied": "{table}.{name} ist eine berechnete Spalte: ihr Ausdruck wird nicht übernommen",
     "Index “{name}” is an expression or partial index and is not recreated": "Index „{name}“ ist ein Ausdrucks- oder Teilindex und wird nicht neu erstellt",
     "{table}.{name}: the identity of a column can't be changed in place": "{table}.{name}: die Identität einer Spalte lässt sich nicht direkt ändern",
     "Source and target use different engines: the differences are shown, but no script is generated.": "Quelle und Ziel verwenden unterschiedliche Engines: Die Unterschiede werden angezeigt, aber es wird kein Skript erzeugt.",
@@ -1502,6 +1501,22 @@
     "Save Script": "Skript speichern",
     "Script saved to {path}": "Skript gespeichert unter {path}",
     "Could not save the script: {error}": "Das Skript konnte nicht gespeichert werden: {error}",
-    "Review the migration script before running it.": "Prüfen Sie das Migrationsskript, bevor Sie es ausführen."
+    "Review the migration script before running it.": "Prüfen Sie das Migrationsskript, bevor Sie es ausführen.",
+    "{table}.{name} is a computed column whose expression isn't available: it is left out": "{table}.{name} ist eine berechnete Spalte, deren Ausdruck nicht verfügbar ist: Sie wird ausgelassen",
+    "{table}.{name}: the expression of a generated column can't be changed in place": "{table}.{name}: Der Ausdruck einer berechneten Spalte lässt sich nicht direkt ändern",
+    "Drops table “{name}” and all its data": "Löscht die Tabelle „{name}“ mit allen Daten",
+    "View “{name}” uses a dropped table: it is dropped and not created again": "Die Sicht „{name}“ verwendet eine gelöschte Tabelle: Sie wird gelöscht und nicht neu erstellt",
+    "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}": "Gelöschte und neu erstellte Sichten verlieren ihre Berechtigungen, ihren Besitzer, ihre Kommentare und Optionen (security_barrier, security_invoker, check option): {views}",
+    "Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.": "Führen Sie das Skript als Ganzes aus: Es schaltet die Fremdschlüsselprüfung aus und stellt die Sitzungseinstellungen am Ende wieder her.",
+    "partitioned table": "partitionierte Tabelle",
+    "partition": "Partition",
+    "materialized view": "materialisierte Sicht",
+    "foreign table": "Fremdtabelle",
+    "extension object": "Erweiterungsobjekt",
+    "virtual table": "virtuelle Tabelle",
+    "The source or target changed: compare again to update the result.": "Quelle oder Ziel wurden geändert: Vergleichen Sie erneut, um das Ergebnis zu aktualisieren.",
+    "Not compared in the source: {objects}": "In der Quelle nicht verglichen: {objects}",
+    "Not compared in the target: {objects}": "Im Ziel nicht verglichen: {objects}",
+    "No differences in the compared objects": "Keine Unterschiede in den verglichenen Objekten"
   }
 }

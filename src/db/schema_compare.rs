@@ -50,6 +50,10 @@ pub struct TableModel {
 pub struct ViewModel {
     pub name: String,
     pub definition: ViewDefinition,
+    /// PostgreSQL: the view's columns (name, type), which `CREATE OR REPLACE` must keep.
+    pub columns: Vec<(String, String)>,
+    /// PostgreSQL: the (table or view, column) of this schema the view uses.
+    pub uses: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +63,20 @@ pub struct SchemaModel {
     pub schema: String,
     pub tables: Vec<TableModel>,
     pub views: Vec<ViewModel>,
+    /// Sequences and user types (PostgreSQL enums, domains…): with the tables and views, what a
+    /// `schema.name` reference may point at when it is moved to the other schema.
+    pub sequences: Vec<String>,
+    pub types: Vec<String>,
+    /// Objects that are not compared (partitioned tables, materialized views…), with their kind.
+    pub skipped: Vec<String>,
+    /// SQLite: the session's `foreign_keys` and `legacy_alter_table`, restored by the script.
+    pub pragmas: Vec<(String, String)>,
+}
+
+impl SchemaModel {
+    pub fn new(driver: Driver, db: &str, schema: &str) -> Self {
+        Self { driver, db: db.into(), schema: schema.into(), tables: vec![], views: vec![], sequences: vec![], types: vec![], skipped: vec![], pragmas: vec![] }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -107,9 +125,17 @@ pub struct ObjectDiff {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Comparison {
     pub objects: Vec<ObjectDiff>,
+    /// Objects of each side that were not compared: "no differences" never covers them.
+    pub skipped_source: Vec<String>,
+    pub skipped_target: Vec<String>,
 }
 
 impl Comparison {
+    /// Every object of both schemas was compared.
+    pub fn complete(&self) -> bool {
+        self.skipped_source.is_empty() && self.skipped_target.is_empty()
+    }
+
     pub fn count(&self, status: Status) -> usize {
         self.objects.iter().filter(|o| o.status == status).count()
     }
@@ -136,40 +162,88 @@ fn ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 
-/// `text` with the qualifier `from.` (bare or quoted) replaced by `to.` ("" removes it). String
-/// literals are included: PostgreSQL defaults name their sequence as `'schema.seq'::regclass`.
-pub fn requalify(driver: Driver, text: &str, from: &str, to: &str) -> String {
+/// The tables, views, sequences and types of a schema: the only objects a `schema.name`
+/// reference in its SQL text is moved for. Functions, extension objects and other schemas'
+/// objects keep their qualifier (they are shared, not part of the comparison).
+pub struct Names {
+    driver: Driver,
+    set: HashSet<String>,
+}
+
+impl Names {
+    pub fn of(model: &SchemaModel) -> Self {
+        let all = model.tables.iter().map(|t| &t.name).chain(model.views.iter().map(|v| &v.name)).chain(&model.sequences).chain(&model.types);
+        let set = all.map(|n| Self::key(model.driver, n)).collect();
+        Self { driver: model.driver, set }
+    }
+
+    fn key(driver: Driver, name: &str) -> String {
+        if case_insensitive(driver) { name.to_lowercase() } else { name.to_string() }
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.set.contains(&Self::key(self.driver, name))
+    }
+}
+
+/// The name an identifier token stands for: quoted ones unescaped, bare ones folded as the
+/// engine folds them.
+fn ident_name(driver: Driver, class: crate::sql::TokenClass, text: &str) -> String {
+    if class == crate::sql::TokenClass::QuotedIdent && text.len() >= 2 {
+        let close = &text[text.len() - 1..];
+        return text[1..text.len() - 1].replace(&close.repeat(2), close);
+    }
+    match driver {
+        Driver::Postgres => text.to_lowercase(),
+        Driver::Oracle | Driver::Snowflake => text.to_uppercase(),
+        _ => text.to_string(),
+    }
+}
+
+/// `text` with each reference `from.name` to one of `names` qualified by `to` instead ("" drops
+/// the qualifier). Token-aware: string literals, comments, `alias.column` and references to
+/// other objects are left alone; a PostgreSQL `'from.seq'::regclass` literal is moved too.
+pub fn requalify(driver: Driver, text: &str, from: &str, to: &str, names: &Names) -> String {
+    use crate::sql::TokenClass;
     if from.is_empty() || from == to {
         return text.to_string();
     }
-    let quoted = driver.quote_ident(from);
+    let toks = crate::sql::tokens(text, driver);
+    let same = |a: &str, b: &str| if case_insensitive(driver) { a.eq_ignore_ascii_case(b) } else { a == b };
+    let ident = |j: usize| {
+        toks.get(j).filter(|(c, _)| matches!(c, TokenClass::Word | TokenClass::QuotedIdent)).map(|(c, r)| ident_name(driver, *c, &text[r.clone()]))
+    };
+    let dot = |j: usize| toks.get(j).is_some_and(|(c, r)| *c == TokenClass::Other && &text[r.clone()] == ".");
     let prefix = if to.is_empty() { String::new() } else { format!("{}.", quote_ident_if_needed(driver, to)) };
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while let Some(c) = text[i..].chars().next() {
-        let boundary = text[..i].chars().next_back().is_none_or(|p| !(ident_char(p) || matches!(p, '.' | '"' | '`' | ']')));
-        let rest = &text[i..];
-        let bare = rest.get(..from.len()).is_some_and(|w| w.eq_ignore_ascii_case(from)) && rest[from.len()..].starts_with('.');
-        let hit = if !boundary {
-            None
-        } else if rest.starts_with(&quoted) && rest[quoted.len()..].starts_with('.') {
-            Some(quoted.len())
-        } else if bare {
-            Some(from.len())
-        } else {
-            None
-        };
-        match hit {
-            Some(n) => {
-                out.push_str(&prefix);
-                i += n + 1;
+    let mut last = 0;
+    for (i, (class, r)) in toks.iter().enumerate() {
+        match class {
+            TokenClass::Word | TokenClass::QuotedIdent => {
+                // `from . object`, not itself after a dot (`db.from.object` keeps its database).
+                let qualifier = ident(i).is_some_and(|n| same(&n, from)) && dot(i + 1) && ident(i + 2).is_some_and(|n| names.contains(&n)) && !(i > 0 && dot(i - 1));
+                if qualifier && r.start >= last {
+                    out.push_str(&text[last..r.start]);
+                    out.push_str(&prefix);
+                    last = toks[i + 1].1.end;
+                }
             }
-            None => {
-                out.push(c);
-                i += c.len_utf8();
+            TokenClass::Str if driver == Driver::Postgres && text[r.end..].to_ascii_lowercase().starts_with("::regclass") => {
+                let literal = &text[r.clone()];
+                if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
+                    let inner = literal[1..literal.len() - 1].replace("''", "'");
+                    let moved = requalify(driver, &inner, from, to, names);
+                    if moved != inner {
+                        out.push_str(&text[last..r.start]);
+                        out.push_str(&format!("'{}'", moved.replace('\'', "''")));
+                        last = r.end;
+                    }
+                }
             }
+            _ => {}
         }
     }
+    out.push_str(&text[last..]);
     out
 }
 
@@ -243,8 +317,8 @@ fn strip_parens(mut s: &str) -> &str {
 }
 
 /// Type spelling that compares equal across the ways an engine writes it.
-fn norm_type(driver: Driver, schema: &str, ty: &str) -> String {
-    let t = squash(&requalify(driver, ty, schema, ""));
+fn norm_type(driver: Driver, schema: &str, names: &Names, ty: &str) -> String {
+    let t = squash(&requalify(driver, ty, schema, "", names));
     let (base, rest) = match t.find('(') {
         Some(i) => (t[..i].trim().to_string(), t[i..].to_string()),
         None => (t.clone(), String::new()),
@@ -286,13 +360,13 @@ fn norm_type(driver: Driver, schema: &str, ty: &str) -> String {
     }
 }
 
-fn norm_default(driver: Driver, schema: &str, default: Option<&str>) -> Option<String> {
-    let d = squash(strip_parens(&requalify(driver, default?, schema, "")));
+fn norm_default(driver: Driver, schema: &str, names: &Names, default: Option<&str>) -> Option<String> {
+    let d = squash(strip_parens(&requalify(driver, default?, schema, "", names)));
     (!d.is_empty() && d != "null" && !d.starts_with("null::")).then_some(d)
 }
 
-fn norm_extra(extra: &str) -> String {
-    squash(extra)
+fn norm_extra(driver: Driver, schema: &str, names: &Names, extra: &str) -> String {
+    squash(&requalify(driver, extra, schema, "", names))
 }
 
 /// Delete / update rule: SQL spelling, `NO ACTION` when not given (MySQL treats RESTRICT the same).
@@ -306,8 +380,8 @@ fn norm_rule(driver: Driver, rule: &str) -> String {
 }
 
 /// The view's SELECT as it compares: own-schema qualifiers dropped, case and blanks normalised.
-fn norm_view(driver: Driver, schema: &str, v: &ViewDefinition) -> String {
-    format!("{}|{}", squash(&v.columns), squash(&requalify(driver, &v.body, schema, "")))
+fn norm_view(driver: Driver, schema: &str, names: &Names, v: &ViewDefinition) -> String {
+    format!("{}|{}", squash(&v.columns), squash(&requalify(driver, &v.body, schema, "", names)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -317,6 +391,8 @@ fn norm_view(driver: Driver, schema: &str, v: &ViewDefinition) -> String {
 struct Ctx<'a> {
     src: &'a SchemaModel,
     tgt: &'a SchemaModel,
+    src_names: Names,
+    tgt_names: Names,
     /// Names match ignoring case (case-insensitive engine, or two different engines).
     fold: bool,
 }
@@ -324,7 +400,7 @@ struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     fn new(src: &'a SchemaModel, tgt: &'a SchemaModel) -> Self {
         let fold = src.driver != tgt.driver || case_insensitive(tgt.driver);
-        Self { src, tgt, fold }
+        Self { src, tgt, src_names: Names::of(src), tgt_names: Names::of(tgt), fold }
     }
 
     fn key(&self, name: &str) -> String {
@@ -336,19 +412,19 @@ impl<'a> Ctx<'a> {
     }
 
     fn src_type(&self, c: &ColumnDef) -> String {
-        norm_type(self.src.driver, &self.src.schema, &c.data_type)
+        norm_type(self.src.driver, &self.src.schema, &self.src_names, &c.data_type)
     }
 
     fn tgt_type(&self, c: &ColumnDef) -> String {
-        norm_type(self.tgt.driver, &self.tgt.schema, &c.data_type)
+        norm_type(self.tgt.driver, &self.tgt.schema, &self.tgt_names, &c.data_type)
     }
 
     fn src_default(&self, c: &ColumnDef) -> Option<String> {
-        norm_default(self.src.driver, &self.src.schema, c.default.as_deref())
+        norm_default(self.src.driver, &self.src.schema, &self.src_names, c.default.as_deref())
     }
 
     fn tgt_default(&self, c: &ColumnDef) -> Option<String> {
-        norm_default(self.tgt.driver, &self.tgt.schema, c.default.as_deref())
+        norm_default(self.tgt.driver, &self.tgt.schema, &self.tgt_names, c.default.as_deref())
     }
 
     /// Comparable form of a foreign key (names are not compared: SQLite has none).
@@ -428,7 +504,7 @@ fn table_delta<'a>(cx: &Ctx, s: &'a TableModel, t: &'a TableModel) -> TableDelta
             ty: cx.src_type(sc) != cx.tgt_type(tc),
             null: sc.nullable != tc.nullable,
             default: cx.src_default(sc) != cx.tgt_default(tc),
-            extra: norm_extra(&sc.extra) != norm_extra(&tc.extra),
+            extra: norm_extra(cx.src.driver, &cx.src.schema, &cx.src_names, &sc.extra) != norm_extra(cx.tgt.driver, &cx.tgt.schema, &cx.tgt_names, &tc.extra),
         };
         if c.ty || c.null || c.default || c.extra {
             delta.changed.push(c);
@@ -539,8 +615,8 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             source: Some(i),
             target: j,
             changes,
-            source_ddl: table_text(src, s),
-            target_ddl: j.map(|j| table_text(tgt, &tgt.tables[j])).unwrap_or_default(),
+            source_ddl: table_text(src, &cx.src_names, s),
+            target_ddl: j.map(|j| table_text(tgt, &cx.tgt_names, &tgt.tables[j])).unwrap_or_default(),
         });
     }
     for (j, t) in tgt.tables.iter().enumerate().filter(|(j, _)| !seen.contains(j)) {
@@ -552,7 +628,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             target: Some(j),
             changes: vec![],
             source_ddl: String::new(),
-            target_ddl: table_text(tgt, t),
+            target_ddl: table_text(tgt, &cx.tgt_names, t),
         });
     }
     let tgt_views: HashMap<String, usize> = tgt.views.iter().enumerate().map(|(i, v)| (cx.key(&v.name), i)).collect();
@@ -562,7 +638,7 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
         let status = match j {
             Some(j) => {
                 seen.insert(j);
-                let same = norm_view(src.driver, &src.schema, &s.definition) == norm_view(tgt.driver, &tgt.schema, &tgt.views[j].definition);
+                let same = norm_view(src.driver, &src.schema, &cx.src_names, &s.definition) == norm_view(tgt.driver, &tgt.schema, &cx.tgt_names, &tgt.views[j].definition);
                 if same { Status::Identical } else { Status::Different }
             }
             None => Status::OnlyInSource,
@@ -574,8 +650,8 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             source: Some(i),
             target: j,
             changes: if status == Status::Different { vec![tr("View definition differs").into()] } else { vec![] },
-            source_ddl: view_text(src, s),
-            target_ddl: j.map(|j| view_text(tgt, &tgt.views[j])).unwrap_or_default(),
+            source_ddl: view_text(src, &cx.src_names, s),
+            target_ddl: j.map(|j| view_text(tgt, &cx.tgt_names, &tgt.views[j])).unwrap_or_default(),
         });
     }
     for (j, t) in tgt.views.iter().enumerate().filter(|(j, _)| !seen.contains(j)) {
@@ -587,24 +663,24 @@ pub fn compare(src: &SchemaModel, tgt: &SchemaModel) -> Comparison {
             target: Some(j),
             changes: vec![],
             source_ddl: String::new(),
-            target_ddl: view_text(tgt, t),
+            target_ddl: view_text(tgt, &cx.tgt_names, t),
         });
     }
     objects.sort_by_key(|o| (o.status, o.kind, o.name.to_lowercase()));
-    Comparison { objects }
+    Comparison { objects, skipped_source: src.skipped.clone(), skipped_target: tgt.skipped.clone() }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Definitions shown side by side
 
-fn column_text(driver: Driver, schema: &str, c: &ColumnDef) -> String {
+fn column_text(driver: Driver, schema: &str, names: &Names, c: &ColumnDef) -> String {
     let q = |s: &str| quote_ident_if_needed(driver, s);
-    let mut l = format!("    {} {}", q(&c.name), requalify(driver, c.data_type.trim(), schema, ""));
+    let mut l = format!("    {} {}", q(&c.name), requalify(driver, c.data_type.trim(), schema, "", names));
     if !c.extra.trim().is_empty() {
-        l.push_str(&format!(" {}", c.extra.trim().to_lowercase()));
+        l.push_str(&format!(" {}", requalify(driver, c.extra.trim(), schema, "", names)));
     }
     if let Some(d) = c.default.as_deref().filter(|d| !d.trim().is_empty()) {
-        l.push_str(&format!(" default {}", requalify(driver, d.trim(), schema, "")));
+        l.push_str(&format!(" default {}", requalify(driver, d.trim(), schema, "", names)));
     }
     if !c.nullable {
         l.push_str(" not null");
@@ -633,11 +709,11 @@ fn fk_text(driver: Driver, schema: &str, fk: &ForeignKeyDef) -> String {
 }
 
 /// A table as `create table` (without schema), its indexes and foreign keys, in a fixed order.
-pub fn table_text(model: &SchemaModel, t: &TableModel) -> String {
+pub fn table_text(model: &SchemaModel, names: &Names, t: &TableModel) -> String {
     let d = model.driver;
     let q = |s: &str| quote_ident_if_needed(d, s);
     let cols = |v: &[String]| v.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ");
-    let mut lines: Vec<String> = t.details.columns.iter().map(|c| column_text(d, &model.schema, c)).collect();
+    let mut lines: Vec<String> = t.details.columns.iter().map(|c| column_text(d, &model.schema, names, c)).collect();
     if !t.details.primary_key.is_empty() {
         let auto = if t.details.autoincrement { " autoincrement" } else { "" };
         lines.push(format!("    primary key ({}){auto}", cols(&t.details.primary_key)));
@@ -659,9 +735,9 @@ pub fn table_text(model: &SchemaModel, t: &TableModel) -> String {
     out
 }
 
-pub fn view_text(model: &SchemaModel, v: &ViewModel) -> String {
+pub fn view_text(model: &SchemaModel, names: &Names, v: &ViewModel) -> String {
     let columns = if v.definition.columns.trim().is_empty() { String::new() } else { format!(" ({})", v.definition.columns.trim()) };
-    let body = requalify(model.driver, super::views::clean_body(&v.definition.body), &model.schema, "");
+    let body = requalify(model.driver, super::views::clean_body(&v.definition.body), &model.schema, "", names);
     format!("create view {}{columns} as\n{}", quote_ident_if_needed(model.driver, &v.name), body)
 }
 
@@ -708,17 +784,32 @@ pub struct Script {
 }
 
 impl Script {
-    /// The script as text: warnings as comments, then each statement ending in `;`.
+    /// The script as text: warnings as comments, then each statement ending in `;` (SQL Server:
+    /// in a batch of its own, ended by `GO`, as CREATE VIEW must start one).
     pub fn text(&self, src: &SchemaModel, tgt: &SchemaModel) -> String {
         let mut out = format!("-- {}\n", trf("Makes {target} match {source}", &[("target", &side_label(tgt)), ("source", &side_label(src))]));
+        // Warnings as comments of at most ~100 columns, continued with an indent.
         for w in &self.warnings {
-            out.push_str(&format!("-- {}\n", w.replace('\n', " ")));
+            let mut line = String::from("--");
+            for word in w.split_whitespace() {
+                if line.len() > 3 && line.len() + word.len() > 100 {
+                    out.push_str(&format!("{line}\n"));
+                    line = String::from("--  ");
+                }
+                line.push(' ');
+                line.push_str(word);
+            }
+            out.push_str(&format!("{line}\n"));
         }
         if self.statements.is_empty() {
             out.push_str(&format!("-- {}\n", tr("No changes")));
         }
         for s in &self.statements {
-            out.push_str(&format!("\n{s};\n"));
+            if tgt.driver == Driver::MsSql {
+                out.push_str(&format!("\n{s}\nGO\n"));
+            } else {
+                out.push_str(&format!("\n{s};\n"));
+            }
         }
         out
     }
@@ -739,6 +830,7 @@ struct Phases {
     alter_tables: Vec<String>,
     add_fks: Vec<String>,
     create_views: Vec<String>,
+    post: Vec<String>,
 }
 
 struct Gen<'a> {
@@ -752,6 +844,11 @@ fn nextval_sequence(default: &str) -> Option<&str> {
     let rest = default.trim().strip_prefix("nextval('")?;
     let end = rest.find("'::regclass)")?;
     Some(&rest[..end])
+}
+
+/// `generated always as (expr) …`: a generated column's clause with its expression.
+fn generated_clause(extra: &str) -> bool {
+    extra.trim().to_ascii_lowercase().starts_with("generated always as (")
 }
 
 /// Literal default SQLite accepts in ADD COLUMN (no expressions, CURRENT_TIME…).
@@ -812,7 +909,7 @@ impl<'a> Gen<'a> {
 
     /// Source SQL text (type, default, view body) moved to the target schema.
     fn moved(&self, text: &str) -> String {
-        requalify(self.d, text, &self.cx.src.schema, self.schema())
+        requalify(self.d, text, &self.cx.src.schema, self.schema(), &self.cx.src_names)
     }
 
     fn rule_clauses(&self, fk: &ForeignKeyDef) -> String {
@@ -850,12 +947,12 @@ impl<'a> Gen<'a> {
         if self.d != Driver::Postgres {
             return None;
         }
-        let default = requalify(self.d, c.default.as_deref()?, &self.cx.src.schema, "");
+        let default = requalify(self.d, c.default.as_deref()?, &self.cx.src.schema, "", &self.cx.src_names);
         let seq = nextval_sequence(&default)?;
         if seq != format!("{table}_{}_seq", c.name) {
             return None;
         }
-        match norm_type(self.d, "", &c.data_type).as_str() {
+        match norm_type(self.d, "", &self.cx.src_names, &c.data_type).as_str() {
             "integer" => Some("serial"),
             "bigint" => Some("bigserial"),
             "smallint" => Some("smallserial"),
@@ -863,12 +960,15 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// PostgreSQL: the sequence a source default takes values from, created first.
+    /// PostgreSQL: the source schema's sequence a default takes values from, created first in
+    /// the target (a sequence of another schema is shared, and left alone).
     fn sequence_for(&self, pre: &mut Vec<String>, c: &ColumnDef) {
         if self.d != Driver::Postgres {
             return;
         }
-        if let Some(seq) = c.default.as_deref().map(|d| self.moved(d)).as_deref().and_then(nextval_sequence) {
+        let Some(default) = c.default.as_deref() else { return };
+        let moved = self.moved(default);
+        if let Some(seq) = nextval_sequence(&moved).filter(|_| moved != default) {
             let stmt = format!("create sequence if not exists {seq}");
             if !pre.contains(&stmt) {
                 pre.push(stmt);
@@ -880,7 +980,7 @@ impl<'a> Gen<'a> {
     fn column_sql(&self, c: &ColumnDef, serial: Option<&str>) -> String {
         let mut l = format!("{} {}", self.q(&c.name), serial.map_or_else(|| self.moved(c.data_type.trim()), str::to_string));
         if !c.extra.trim().is_empty() {
-            l.push_str(&format!(" {}", c.extra.trim()));
+            l.push_str(&format!(" {}", self.moved(c.extra.trim())));
         }
         if serial.is_none()
             && let Some(d) = c.default.as_deref().filter(|d| !d.trim().is_empty())
@@ -893,10 +993,14 @@ impl<'a> Gen<'a> {
         l
     }
 
-    fn generated_warning(&mut self, table: &str, c: &ColumnDef) {
-        if c.generated {
-            self.warnings.push(trf("{table}.{name} is a generated column: its expression is not copied", &[("table", &table), ("name", &c.name)]));
+    /// A generated column can be written only with its expression (`generated always as (…)`,
+    /// read where the engine shows it); without one it is left out, with a warning.
+    fn creatable(&mut self, table: &str, c: &ColumnDef) -> bool {
+        if c.generated && !generated_clause(&c.extra) {
+            self.warnings.push(trf("{table}.{name} is a computed column whose expression isn't available: it is left out", &[("table", &table), ("name", &c.name)]));
+            return false;
         }
+        true
     }
 
     fn create_index(&mut self, table: &str, x: &IndexDef) -> Option<String> {
@@ -915,8 +1019,7 @@ impl<'a> Gen<'a> {
         let pk = &s.details.primary_key;
         let inline_pk = sqlite && s.details.autoincrement && pk.len() == 1;
         let mut lines = vec![];
-        for c in &s.details.columns {
-            self.generated_warning(&s.name, c);
+        for c in s.details.columns.iter().filter(|c| self.creatable(&s.name, c)).collect::<Vec<_>>() {
             let serial = self.serial(&s.name, c);
             if serial.is_none() {
                 self.sequence_for(pre, c);
@@ -952,7 +1055,14 @@ impl<'a> Gen<'a> {
         let mut out = self.create_table(pre, s, &tmp);
         let indexes = out.split_off(1);
         let tcols: HashMap<String, &ColumnDef> = t.details.columns.iter().map(|c| (self.cx.key(&c.name), c)).collect();
-        let common: Vec<(&str, &str)> = s.details.columns.iter().filter_map(|c| tcols.get(&self.cx.key(&c.name)).map(|o| (c.name.as_str(), o.name.as_str()))).collect();
+        // Generated columns compute their values: never copied.
+        let common: Vec<(&str, &str)> = s
+            .details
+            .columns
+            .iter()
+            .filter(|c| !c.generated)
+            .filter_map(|c| tcols.get(&self.cx.key(&c.name)).filter(|o| !o.generated).map(|o| (c.name.as_str(), o.name.as_str())))
+            .collect();
         if !common.is_empty() {
             let to = common.iter().map(|(n, _)| self.q(n)).collect::<Vec<_>>().join(", ");
             let from = common.iter().map(|(_, o)| self.q(o)).collect::<Vec<_>>().join(", ");
@@ -993,7 +1103,12 @@ impl<'a> Gen<'a> {
         let tcols: HashMap<String, usize> = t.details.columns.iter().enumerate().map(|(i, c)| (cx.key(&c.name), i)).collect();
         let pk: HashSet<String> = cx.keys(&s.details.primary_key).into_iter().collect();
         let mut columns = vec![];
+        let mut left_out = vec![];
         for sc in &s.details.columns {
+            if !tcols.contains_key(&cx.key(&sc.name)) && sc.generated && !generated_clause(&sc.extra) {
+                left_out.push(sc);
+                continue;
+            }
             let primary_key = pk.contains(&cx.key(&sc.name));
             let source_default = sc.default.as_deref().map(|d| self.moved(d)).unwrap_or_default();
             let column = match tcols.get(&cx.key(&sc.name)) {
@@ -1046,14 +1161,33 @@ impl<'a> Gen<'a> {
         for name in skipped {
             self.warnings.push(trf("Index “{name}” is an expression or partial index and is not recreated", &[("name", &name)]));
         }
+        for c in left_out {
+            self.creatable(&t.name, c);
+        }
         (columns, indexes)
     }
 
-    /// Statements for a column whose identity / auto-increment clause differs.
+    /// PostgreSQL `CREATE OR REPLACE VIEW` works when the new view keeps the old one's columns
+    /// (names and types, in order) and only adds columns after them.
+    fn replaceable(&self, s: &ViewModel, t: &ViewModel) -> bool {
+        !t.columns.is_empty()
+            && t.columns.len() <= s.columns.len()
+            && t.columns.iter().zip(&s.columns).all(|((tn, tt), (sn, st))| {
+                tn == sn && norm_type(self.d, &self.cx.tgt.schema, &self.cx.tgt_names, tt) == norm_type(self.d, &self.cx.src.schema, &self.cx.src_names, st)
+            })
+    }
+
+    /// Statements for a column whose identity, auto-increment or generation clause differs.
     fn extra_sql(&mut self, table: &str, c: &ColumnChange) -> Vec<String> {
         let t = self.object(table);
         let col = self.q(&c.tgt.name);
-        let (from, to) = (norm_extra(&c.tgt.extra), norm_extra(&c.src.extra));
+        let from = norm_extra(self.d, &self.cx.tgt.schema, &self.cx.tgt_names, &c.tgt.extra);
+        let to = norm_extra(self.d, &self.cx.src.schema, &self.cx.src_names, &c.src.extra);
+        let mysql = matches!(self.d, Driver::MySql | Driver::MariaDb);
+        if (c.src.generated || c.tgt.generated) && !(mysql && generated_clause(&c.src.extra) && c.tgt.generated) {
+            self.warnings.push(trf("{table}.{name}: the expression of a generated column can't be changed in place", &[("table", &table), ("name", &c.src.name)]));
+            return vec![];
+        }
         match self.d {
             Driver::Postgres => {
                 let kind = |e: &str| if e.contains("always") { "always" } else { "by default" };
@@ -1068,15 +1202,24 @@ impl<'a> Gen<'a> {
             } else {
                 format!("alter table {t} modify ({col} {})", c.src.extra.trim())
             }],
-            Driver::MySql | Driver::MariaDb => {
-                let mut def = format!("{} {}", self.moved(&c.src.data_type), if c.src.nullable { "null" } else { "not null" });
-                if let Some(d) = c.src.default.as_deref().filter(|d| !d.trim().is_empty()) {
-                    def.push_str(&format!(" default {}", d.trim()));
-                }
-                if !to.is_empty() {
-                    def.push_str(&format!(" {}", c.src.extra.trim()));
+            // MODIFY repeats the whole column: its comment and collation are kept.
+            Driver::MySql | Driver::MariaDb if c.src.generated => {
+                let mut def = format!("{} {}{}", self.moved(&c.src.data_type), self.moved(c.src.extra.trim()), if c.src.nullable { "" } else { " not null" });
+                if !c.tgt.comment.is_empty() {
+                    def.push_str(&format!(" comment '{}'", c.tgt.comment.replace('\\', "\\\\").replace('\'', "''")));
                 }
                 vec![format!("alter table {t} modify column {col} {def}")]
+            }
+            Driver::MySql | Driver::MariaDb => {
+                let new = NewColumn {
+                    name: c.tgt.name.clone(),
+                    data_type: self.moved(&c.src.data_type),
+                    not_null: !c.src.nullable,
+                    primary_key: false,
+                    default: c.src.default.as_deref().map(|d| self.moved(d)).unwrap_or_default(),
+                };
+                let old = ColumnDef { extra: if to.is_empty() { String::new() } else { c.src.extra.clone() }, ..c.tgt.clone() };
+                vec![format!("alter table {t} modify column {col} {}", alter::column_def_mysql(&new, &old, true))]
             }
             _ => {
                 self.warnings.push(trf("{table}.{name}: the identity of a column can't be changed in place", &[("table", &table), ("name", &c.src.name)]));
@@ -1104,6 +1247,11 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     // Changed tables first: what they drop or retype decides which foreign keys must go.
     let dropped_names: HashSet<String> = dropped.iter().map(|o| g.cx.key(&o.name)).collect();
     let mut touched: HashMap<String, HashSet<String>> = HashMap::new();
+    // Columns dropped or retyped, by table (lowercase): what blocks a PostgreSQL view.
+    let mut retyped: HashMap<String, HashSet<String>> = HashMap::new();
+    for o in &dropped {
+        g.warnings.push(trf("Drops table “{name}” and all its data", &[("name", &o.name)]));
+    }
     let mut rebuilt = false;
     let mut alter_out = vec![];
     for o in &altered {
@@ -1118,7 +1266,18 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
             cols.extend(g.cx.keys(&x.columns));
         }
         touched.insert(g.cx.key(&t.name), cols);
+        retyped.insert(
+            g.cx.key(&t.name),
+            delta.dropped.iter().map(|c| c.name.to_lowercase()).chain(delta.changed.iter().filter(|c| c.ty).map(|c| c.tgt.name.to_lowercase())).collect(),
+        );
         if sqlite {
+            // The same warnings `alter::plan` gives the other engines.
+            for c in &delta.dropped {
+                g.warnings.push(trf("Drops column “{name}” and all its data", &[("name", &c.name)]));
+            }
+            for c in delta.changed.iter().filter(|c| c.ty) {
+                g.warnings.push(trf("Changing the type of “{name}” can truncate or lose data, or fail on existing rows", &[("name", &c.tgt.name)]));
+            }
             if g.sqlite_in_place(&delta, s) {
                 for x in &delta.indexes_dropped {
                     alter_out.push(format!("drop index {}", g.q(&x.name)));
@@ -1138,7 +1297,6 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
             continue;
         }
         for c in &delta.added {
-            g.generated_warning(&t.name, c);
             g.sequence_for(&mut p.pre, c);
             let default = c.default.as_deref().unwrap_or("").trim();
             if !c.nullable && default.is_empty() && c.extra.trim().is_empty() {
@@ -1222,47 +1380,77 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
         }
     }
 
-    // Views: dropped ones, and changed ones SQLite and PostgreSQL drop and create again
-    // (PostgreSQL's OR REPLACE can't change the columns). PostgreSQL also drops the views on
-    // dropped or retyped columns, which block the ALTER, and the views on those views; the ones
-    // not chosen come back with their current definition.
+    // Views. Dropped ones go first; changed ones are replaced in place (SQL Server OR ALTER,
+    // OR REPLACE elsewhere) unless SQLite (no OR REPLACE) or PostgreSQL (OR REPLACE can only add
+    // columns at the end) must drop them and create them again. PostgreSQL also drops the views
+    // that use a column the script drops or retypes (they block the ALTER) and the views on
+    // those, and creates them again; those on a dropped table are only dropped, with a warning.
     let views = |status: Status| chosen.iter().filter(move |o| o.kind == Kind::View && o.status == status).copied().collect::<Vec<_>>();
+    let pg = d == Driver::Postgres;
     let mut drop_views: Vec<&ViewModel> = views(Status::OnlyInTarget).iter().map(|o| &tgt.views[o.target.unwrap_or_default()]).collect();
     // (view to create, from the source?)
     let mut create_views: Vec<(&ViewModel, bool)> = views(Status::OnlyInSource).iter().map(|o| (&src.views[o.source.unwrap_or_default()], true)).collect();
-    let mut queue: Vec<&ViewModel> = vec![];
+    // (view to drop, can it be created again?)
+    let mut queue: Vec<(&ViewModel, bool)> = vec![];
     for o in views(Status::Different) {
         let (s, t) = (&src.views[o.source.unwrap_or_default()], &tgt.views[o.target.unwrap_or_default()]);
-        if sqlite || d == Driver::Postgres {
-            queue.push(t);
+        let replaceable = !sqlite && (!pg || g.replaceable(s, t));
+        if !replaceable {
+            queue.push((t, true));
         }
         create_views.push((s, true));
     }
-    if d == Driver::Postgres {
-        let blocked: HashSet<String> =
-            touched.iter().filter(|(_, c)| !c.is_empty()).map(|(t, _)| t.to_lowercase()).chain(dropped_names.iter().map(|t| t.to_lowercase())).collect();
-        queue.extend(tgt.views.iter().filter(|v| idents(&v.definition.body).iter().any(|w| blocked.contains(w))));
+    if pg {
+        let lower = |n: &str| n.to_lowercase();
+        let dropped_lower: HashSet<String> = dropped_names.iter().map(|n| lower(n)).collect();
+        for v in &tgt.views {
+            if v.uses.iter().any(|(t, _)| dropped_lower.contains(&lower(t))) {
+                queue.push((v, false));
+            } else if v.uses.iter().any(|(t, c)| retyped.get(&lower(t)).is_some_and(|cols| cols.contains(&lower(c)))) {
+                queue.push((v, true));
+            }
+        }
     }
-    while let Some(v) = queue.pop() {
+    let mut lost = vec![];
+    let mut recreated = vec![];
+    while let Some((v, again)) = queue.pop() {
         if drop_views.iter().any(|x| std::ptr::eq(*x, v)) {
             continue;
         }
         drop_views.push(v);
-        if d == Driver::Postgres {
-            let name = v.name.to_lowercase();
-            queue.extend(tgt.views.iter().filter(|w| idents(&w.definition.body).contains(&name)));
+        if pg {
+            queue.extend(tgt.views.iter().filter(|w| w.uses.iter().any(|(t, _)| t.eq_ignore_ascii_case(&v.name))).map(|w| (w, again)));
         }
-        if !create_views.iter().any(|(c, _)| g.cx.key(&c.name) == g.cx.key(&v.name)) {
+        if create_views.iter().any(|(c, _)| g.cx.key(&c.name) == g.cx.key(&v.name)) {
+            recreated.push(v.name.clone());
+        } else if again {
             create_views.push((v, false));
+            recreated.push(v.name.clone());
+        } else if !views(Status::OnlyInTarget).iter().any(|o| std::ptr::eq(&tgt.views[o.target.unwrap_or_default()], v)) {
+            lost.push(v.name.clone());
         }
+    }
+    if pg && !recreated.is_empty() {
+        recreated.sort();
+        g.warnings.push(trf(
+            "Views dropped and created again lose their grants, owner, comments and options (security_barrier, security_invoker, check option): {views}",
+            &[("views", &recreated.join(", "))],
+        ));
+    }
+    lost.sort();
+    for name in lost {
+        g.warnings.push(trf("View “{name}” uses a dropped table: it is dropped and not created again", &[("name", &name)]));
     }
     // Dependents first when dropping, after their bases when creating.
     let order = |list: &[&ViewModel]| -> Vec<usize> {
         let names: Vec<String> = list.iter().map(|v| v.name.to_lowercase()).collect();
-        let deps: Vec<HashSet<usize>> = list.iter().map(|v| {
-            let words = idents(&v.definition.body);
-            names.iter().enumerate().filter(|(_, n)| words.contains(*n)).map(|(i, _)| i).collect()
-        }).collect();
+        let deps: Vec<HashSet<usize>> = list
+            .iter()
+            .map(|v| {
+                let words = idents(&v.definition.body);
+                names.iter().enumerate().filter(|(_, n)| words.contains(*n)).map(|(i, _)| i).collect()
+            })
+            .collect();
         let mut done: Vec<usize> = vec![];
         while done.len() < list.len() {
             let next = (0..list.len()).find(|i| !done.contains(i) && deps[*i].iter().all(|j| *j == *i || done.contains(j)));
@@ -1302,16 +1490,27 @@ pub fn script(src: &SchemaModel, tgt: &SchemaModel, cmp: &Comparison, selected: 
     }
     p.alter_tables = alter_out;
     p.add_fks = add_fks.into_iter().map(|(t, clause)| format!("alter table {} add {clause}", g.object(&t))).collect();
+    // SQLite: the session settings the script changes come back at its end (as the target's
+    // session had them), so the script must run as a whole.
+    let pragma = |name: &str| tgt.pragmas.iter().find(|(n, _)| n == name).map_or("0", |(_, v)| v.as_str()).to_string();
+    let mut pragmas = vec![];
     if sqlite && (rebuilt || !p.drop_tables.is_empty()) {
-        p.pre.insert(0, "pragma foreign_keys = off".into());
+        pragmas.push(("foreign_keys", "off"));
     }
     if sqlite && rebuilt {
         // Renaming the rebuilt table must not re-check the views on the old one (see alter.rs).
-        p.pre.insert(1, "pragma legacy_alter_table = on".into());
+        pragmas.push(("legacy_alter_table", "on"));
         g.warnings.push(tr("SQLite rebuilds changed tables: their CHECK constraints, collations and triggers are not carried over.").into());
     }
-    let Phases { pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views } = p;
-    let statements = [pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views].concat();
+    for (i, (name, value)) in pragmas.iter().enumerate() {
+        p.pre.insert(i, format!("pragma {name} = {value}"));
+        p.post.push(format!("pragma {name} = {}", pragma(name)));
+    }
+    if !pragmas.is_empty() {
+        g.warnings.push(tr("Run the script as a whole: it turns foreign key checks off and restores the session's settings at its end.").into());
+    }
+    let Phases { pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views, post } = p;
+    let statements = [pre, drop_fks, drop_views, drop_tables, create_tables, alter_tables, add_fks, create_views, post].concat();
     let mut warnings = vec![];
     for w in g.warnings {
         if !warnings.contains(&w) {
@@ -1346,7 +1545,15 @@ pub(crate) fn demo_models() -> (SchemaModel, SchemaModel) {
         details: TableDetails { columns, primary_key: pk.iter().map(|c| c.to_string()).collect(), pk_name: Some(format!("{name}_pkey")), indexes, ..Default::default() },
         foreign_keys,
     };
-    let view = |name: &str, body: &str| ViewModel { name: name.into(), definition: ViewDefinition { body: body.into(), ..Default::default() } };
+    // PostgreSQL views with their columns and the table columns they use.
+    let view = |name: &str, body: &str, columns: &[(&str, &str)], uses: &[(&str, &str)]| ViewModel {
+        name: name.into(),
+        definition: ViewDefinition { body: body.into(), ..Default::default() },
+        columns: columns.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        uses: uses.iter().map(|(t, c)| (t.to_string(), c.to_string())).collect(),
+    };
+    let totals_columns = [("id", "integer"), ("status", "character varying"), ("total", "numeric")];
+    let totals_uses = [("orders", "id"), ("orders", "status"), ("order_items", "order_id"), ("order_items", "quantity"), ("order_items", "unit_price")];
     let build = |schema: &str, prod: bool| {
         let serial = |table: &str| format!("nextval('{schema}.{table}_id_seq'::regclass)");
         let id = |table: &str| col("id", "integer", false, Some(&serial(table)));
@@ -1404,7 +1611,9 @@ pub(crate) fn demo_models() -> (SchemaModel, SchemaModel) {
                 vec![],
             ),
         ];
-        let mut views = vec![view("active_products", &format!(" SELECT p.id,\n    p.sku,\n    p.name\n   FROM {schema}.products p\n  WHERE p.active;"))];
+        let products_columns = [("id", "integer"), ("sku", "character varying(40)"), ("name", "character varying(200)")];
+        let products_uses = [("products", "id"), ("products", "sku"), ("products", "name"), ("products", "active")];
+        let mut views = vec![view("active_products", &format!(" SELECT p.id,\n    p.sku,\n    p.name\n   FROM {schema}.products p\n  WHERE p.active;"), &products_columns, &products_uses)];
         if prod {
             tables.push(table(
                 "payments",
@@ -1416,15 +1625,20 @@ pub(crate) fn demo_models() -> (SchemaModel, SchemaModel) {
             views.push(view(
                 "order_totals",
                 &format!(" SELECT o.id,\n    o.status,\n    sum(i.quantity::numeric * i.unit_price) AS total\n   FROM {schema}.orders o\n     JOIN {schema}.order_items i ON i.order_id = o.id\n  WHERE o.status::text <> 'cancelled'::text\n  GROUP BY o.id, o.status;"),
+                &totals_columns,
+                &totals_uses,
             ));
         } else {
             tables.push(table("coupons", vec![id("coupons"), col("code", "character varying(30)", false, None), col("percent", "integer", false, None)], &["id"], vec![], vec![]));
             views.push(view(
                 "order_totals",
                 &format!(" SELECT o.id,\n    o.status,\n    sum(i.quantity::numeric * i.unit_price) AS total\n   FROM {schema}.orders o\n     JOIN {schema}.order_items i ON i.order_id = o.id\n  GROUP BY o.id, o.status;"),
+                &totals_columns,
+                &totals_uses,
             ));
         }
-        SchemaModel { driver: Driver::Postgres, db: "shop".into(), schema: schema.into(), tables, views }
+        let sequences = tables.iter().filter(|t| t.name != "order_items").map(|t| format!("{}_id_seq", t.name)).collect();
+        SchemaModel { tables, views, sequences, ..SchemaModel::new(Driver::Postgres, "shop", schema) }
     };
     (build("shop", true), build("shop_staging", false))
 }

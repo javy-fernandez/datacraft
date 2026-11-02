@@ -12,7 +12,10 @@ use crate::ui::theme::{self, Palette, palette};
 use crate::worker::ConnId;
 use egui::{Align, Color32, FontId, Layout, Margin, RichText, Sense, Stroke, Ui, vec2};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Request ids, unique in the whole app: a late reply to a closed dialog never matches a new one.
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 /// One side as picked in the dialog.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -24,6 +27,9 @@ pub struct Pick {
 
 /// A finished comparison and the objects chosen for the script.
 pub struct Outcome {
+    /// The pair that was compared: the script, its console and its warnings belong to it, not
+    /// to what the pickers show now.
+    pub pair: (Pick, Pick),
     pub source: SchemaModel,
     pub target: SchemaModel,
     pub comparison: Comparison,
@@ -33,10 +39,10 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    pub fn new(source: SchemaModel, target: SchemaModel) -> Self {
+    pub fn new(pair: (Pick, Pick), source: SchemaModel, target: SchemaModel) -> Self {
         let comparison = schema_compare::compare(&source, &target);
         let include = comparison.default_selection();
-        let mut o = Self { source, target, comparison, include, script: Ok(Script::default()), text: String::new() };
+        let mut o = Self { pair, source, target, comparison, include, script: Ok(Script::default()), text: String::new() };
         o.refresh();
         o
     }
@@ -60,6 +66,8 @@ pub struct CompareDialog {
     pub target: Pick,
     pub request_id: u64,
     progress: Option<Arc<Progress>>,
+    /// The pair being compared.
+    pending: Option<(Pick, Pick)>,
     pub outcome: Option<Outcome>,
     pub error: Option<String>,
     /// Object shown on the right (index in the comparison).
@@ -72,8 +80,9 @@ pub enum CompareAction {
     Start { source: ConnId, target: ConnId, sides: Box<(Side, Side)>, progress: Arc<Progress> },
     /// A database's schema is needed for the pickers.
     Load(ConnId, String),
-    Save(String),
-    OpenConsole(String),
+    /// The script, with the target it was made for.
+    Save { schema: String, text: String },
+    OpenConsole { target: Pick, text: String },
     Close,
 }
 
@@ -108,6 +117,7 @@ impl CompareDialog {
             target: Pick { conn: target, ..Default::default() },
             request_id: 0,
             progress: None,
+            pending: None,
             outcome: None,
             error: None,
             selected: None,
@@ -153,10 +163,16 @@ impl CompareDialog {
         None
     }
 
+    /// The pickers no longer show the pair the result is for.
+    pub fn stale(&self) -> bool {
+        self.outcome.as_ref().is_some_and(|o| o.pair != (self.source.clone(), self.target.clone()))
+    }
+
     pub(crate) fn start(&mut self) -> CompareAction {
         let progress = Arc::new(Progress::default());
-        self.request_id = self.request_id.wrapping_add(1);
+        self.request_id = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         self.progress = Some(progress.clone());
+        self.pending = Some((self.source.clone(), self.target.clone()));
         self.error = None;
         let side = |p: &Pick| Side { db: p.db.clone(), schema: p.schema.clone() };
         CompareAction::Start { source: self.source.conn, target: self.target.conn, sides: Box::new((side(&self.source), side(&self.target))), progress }
@@ -174,10 +190,11 @@ impl CompareDialog {
         if request_id != self.request_id || self.progress.take().is_none() {
             return;
         }
+        let pair = self.pending.take().unwrap_or_default();
         match result {
             Ok(models) => {
                 let (source, target) = *models;
-                let outcome = Outcome::new(source, target);
+                let outcome = Outcome::new(pair, source, target);
                 self.selected = outcome.comparison.objects.iter().position(|o| o.status == Status::Different).or((!outcome.comparison.objects.is_empty()).then_some(0));
                 self.outcome = Some(outcome);
             }
@@ -190,8 +207,12 @@ impl CompareDialog {
         let dark = ctx.global_style().visuals.dark_mode;
         let p = palette(dark);
         let name = |id: ConnId| conns.iter().find(|c| c.cfg.id == id).map(|c| c.cfg.name.clone()).unwrap_or_default();
-        let subtitle = format!("{} → {}", name(self.source.conn), name(self.target.conn));
-        let target_read_only = conns.iter().find(|c| c.cfg.id == self.target.conn).is_some_and(|c| c.cfg.read_only);
+        // A result speaks of the pair it compared.
+        let (source, target) = self.outcome.as_ref().map_or((&self.source, &self.target), |o| (&o.pair.0, &o.pair.1));
+        let side = |p: &Pick| if p.schema.is_empty() || p.schema == p.db { format!("{} · {}", name(p.conn), p.db) } else { format!("{} · {}.{}", name(p.conn), p.db, p.schema) };
+        let subtitle = format!("{} → {}", side(source), side(target));
+        let target_read_only = conns.iter().find(|c| c.cfg.id == target.conn).is_some_and(|c| c.cfg.read_only);
+        let stale = self.stale();
         crate::ui::workflow_dialog::show(ctx, egui::Id::new("schema_compare"), tr("Compare Schemas"), &subtitle, vec2(1360.0, 900.0), |root, regions| {
             let mut body = regions.body_ui(root);
             if let Some(a) = self.pickers(&mut body, conns, &p) {
@@ -216,25 +237,29 @@ impl CompareDialog {
             let mut footer = regions.footer_ui(root);
             footer.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                let ready = self.outcome.as_ref().filter(|o| o.scriptable()).map(|o| o.text.clone());
+                // Nothing leaves the dialog from a result the pickers no longer match.
+                let ready = self.outcome.as_ref().filter(|o| o.scriptable() && !stale).map(|o| (o.text.clone(), o.pair.1.clone()));
                 ui.add_enabled_ui(ready.is_some(), |ui| {
                     if theme::secondary_button(ui, tr("Copy")).clicked()
-                        && let Some(text) = &ready
+                        && let Some((text, _)) = &ready
                     {
                         ui.ctx().copy_text(text.clone());
                     }
                     if theme::secondary_button(ui, tr("Save .sql…")).clicked()
-                        && let Some(text) = &ready
+                        && let Some((text, target)) = &ready
                     {
-                        action = Some(CompareAction::Save(text.clone()));
+                        action = Some(CompareAction::Save { schema: target.schema.clone(), text: text.clone() });
                     }
                     if theme::primary_button(ui, tr("Open in Console")).clicked()
-                        && let Some(text) = &ready
+                        && let Some((text, target)) = &ready
                     {
-                        action = Some(CompareAction::OpenConsole(text.clone()));
+                        action = Some(CompareAction::OpenConsole { target: target.clone(), text: text.clone() });
                     }
                 });
-                if target_read_only {
+                if stale {
+                    ui.label(RichText::new("⚠").color(p.warn));
+                    ui.label(RichText::new(tr("The source or target changed: compare again to update the result.")).small().color(p.warn));
+                } else if target_read_only {
                     ui.label(RichText::new("⚠").color(p.warn));
                     ui.label(RichText::new(tr("The target connection is read-only: the script can be reviewed, not run.")).small().color(p.warn));
                 }
@@ -378,11 +403,19 @@ impl CompareDialog {
         if let Err(e) = &o.script {
             ui.add(egui::Label::new(RichText::new(e).color(p.warn)).wrap());
         }
+        // What wasn't compared is always shown: "no differences" never covers it.
+        for (objects, label) in [(&c.skipped_source, tr("Not compared in the source: {objects}")), (&c.skipped_target, tr("Not compared in the target: {objects}"))] {
+            if !objects.is_empty() {
+                let text = label.replace("{objects}", &objects.join(", "));
+                ui.add(egui::Label::new(RichText::new(format!("⚠ {text}")).small().color(p.warn)).wrap());
+            }
+        }
         ui.add_space(8.0);
         if !c.has_differences() {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new(tr("No differences")).font(theme::bold(16.0)).color(p.ok));
+                let (title, color) = if c.complete() { (tr("No differences"), p.ok) } else { (tr("No differences in the compared objects"), p.warn) };
+                ui.label(RichText::new(title).font(theme::bold(16.0)).color(color));
                 ui.label(RichText::new(trf("{n} objects are identical.", &[("n", &c.objects.len())])).color(p.muted));
             });
             return;
@@ -569,7 +602,7 @@ mod tests {
         d.target.schema = "shop_staging".into();
         if result {
             let (src, tgt) = schema_compare::demo_models();
-            let outcome = Outcome::new(src, tgt);
+            let outcome = Outcome::new((d.source.clone(), d.target.clone()), src, tgt);
             d.selected = outcome.comparison.objects.iter().position(|o| o.name == "orders");
             d.outcome = Some(outcome);
             d.show_identical = true;
@@ -594,6 +627,44 @@ mod tests {
         );
         h.run_steps(4);
         h
+    }
+
+    #[test]
+    fn a_stale_result_can_not_leave_the_dialog_and_the_console_gets_the_compared_target() {
+        struct State {
+            d: CompareDialog,
+            opened: Option<Pick>,
+        }
+        let conns = connections();
+        let mut first = true;
+        let mut h = Harness::builder().with_size(vec2(1600.0, 1000.0)).build_ui_state(
+            move |ui, s: &mut State| {
+                if std::mem::take(&mut first) {
+                    theme::install_fonts(ui.ctx());
+                    return;
+                }
+                if let Some(CompareAction::OpenConsole { target, .. }) = s.d.show(ui.ctx(), &conns) {
+                    s.opened = Some(target);
+                }
+            },
+            State { d: dialog(true), opened: None },
+        );
+        h.run_steps(2);
+        assert!(h.query_by_label("Production · shop → Staging · shop.shop_staging").is_some());
+        // The target picker moves away from the compared pair: the result is stale.
+        h.state_mut().d.target.schema = "public".into();
+        h.run_steps(2);
+        assert!(h.query_by_label("The source or target changed: compare again to update the result.").is_some());
+        assert!(h.query_by_label("Production · shop → Staging · shop.shop_staging").is_some(), "the subtitle names the compared pair");
+        h.get_by_label("Open in Console").click();
+        h.run_steps(2);
+        assert!(h.state().opened.is_none(), "a stale script is not opened");
+        h.state_mut().d.target.schema = "shop_staging".into();
+        h.run_steps(2);
+        h.get_by_label("Open in Console").click();
+        h.run_steps(2);
+        let opened = h.state().opened.clone().unwrap();
+        assert_eq!((opened.conn, opened.db.as_str(), opened.schema.as_str()), (2, "shop", "shop_staging"));
     }
 
     #[test]

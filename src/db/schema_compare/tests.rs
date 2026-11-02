@@ -33,11 +33,25 @@ fn table(name: &str, columns: Vec<ColumnDef>, pk: &[&str]) -> TableModel {
 }
 
 fn view(name: &str, body: &str) -> ViewModel {
-    ViewModel { name: name.into(), definition: ViewDefinition { body: body.into(), ..Default::default() } }
+    ViewModel { name: name.into(), definition: ViewDefinition { body: body.into(), ..Default::default() }, ..Default::default() }
+}
+
+/// A PostgreSQL view with its columns and the (table, column) pairs it uses.
+fn pg_view(name: &str, body: &str, columns: &[(&str, &str)], uses: &[(&str, &str)]) -> ViewModel {
+    ViewModel {
+        columns: columns.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+        uses: uses.iter().map(|(t, c)| (t.to_string(), c.to_string())).collect(),
+        ..view(name, body)
+    }
 }
 
 fn model(driver: Driver, schema: &str, tables: Vec<TableModel>, views: Vec<ViewModel>) -> SchemaModel {
-    SchemaModel { driver, db: "db".into(), schema: schema.into(), tables, views }
+    SchemaModel { tables, views, ..SchemaModel::new(driver, "db", schema) }
+}
+
+/// Names of a schema with these tables (and nothing else).
+fn names(driver: Driver, tables: &[&str]) -> Names {
+    Names::of(&model(driver, "s", tables.iter().map(|t| table(t, vec![], &[])).collect(), vec![]))
 }
 
 fn status(c: &Comparison, name: &str) -> Status {
@@ -54,35 +68,53 @@ fn at(script: &Script, needle: &str) -> usize {
 }
 
 #[test]
-fn requalify_moves_bare_quoted_and_literal_qualifiers() {
+fn requalify_moves_only_references_to_the_compared_objects() {
     let d = Driver::Postgres;
-    assert_eq!(requalify(d, "select * from shop.orders o join \"shop\".items i", "shop", "dev"), "select * from dev.orders o join dev.items i");
-    assert_eq!(requalify(d, "nextval('shop.orders_id_seq'::regclass)", "shop", "shop_staging"), "nextval('shop_staging.orders_id_seq'::regclass)");
-    assert_eq!(requalify(d, "shop.orders", "shop", ""), "orders");
+    let n = {
+        let mut m = model(d, "shop", ["orders", "items", "t", "shop"].iter().map(|t| table(t, vec![], &[])).collect(), vec![]);
+        m.sequences.push("orders_id_seq".into());
+        Names::of(&m)
+    };
+    assert_eq!(requalify(d, "select * from shop.orders o join \"shop\".items i", "shop", "dev", &n), "select * from dev.orders o join dev.items i");
+    assert_eq!(requalify(d, "nextval('shop.orders_id_seq'::regclass)", "shop", "shop_staging", &n), "nextval('shop_staging.orders_id_seq'::regclass)");
+    assert_eq!(requalify(d, "shop.orders", "shop", "", &n), "orders");
     // Only a whole qualifier: not part of another name nor a column of an alias.
-    assert_eq!(requalify(d, "myshop.x, o.shop.y, shop_x.z", "shop", "dev"), "myshop.x, o.shop.y, shop_x.z");
-    assert_eq!(requalify(d, "Shop.T", "shop", "Dev"), "\"Dev\".T");
-    assert_eq!(requalify(Driver::MsSql, "[dbo].[t] join dbo.u", "dbo", "stage"), "stage.[t] join stage.u");
+    assert_eq!(requalify(d, "myshop.x, o.shop.y, shop_x.z", "shop", "dev", &n), "myshop.x, o.shop.y, shop_x.z");
+    assert_eq!(requalify(d, "Shop.T", "shop", "Dev", &n), "\"Dev\".T");
+    // A table named like its schema: `shop.id` is that table's column, `shop.shop` the table.
+    assert_eq!(requalify(d, "select shop.id from shop.shop join shop.items on items.id = shop.id", "shop", "dev", &n), "select shop.id from dev.shop join dev.items on items.id = shop.id");
+    // Literals, comments, functions, types and sequences of no compared object stay.
+    for text in ["'shop.orders'", "default 'shop.home'", "-- shop.orders", "/* shop.orders */", "shop.f()", "shop.mood", "nextval('shop.other_seq'::regclass)", "x::shop.mood", "$$shop.orders$$"] {
+        assert_eq!(requalify(d, text, "shop", "dev", &n), text, "{text}");
+    }
+    assert_eq!(requalify(Driver::MsSql, "[dbo].[t] join dbo.items, dbo.fn_total(1), 'dbo.t'", "dbo", "stage", &names(Driver::MsSql, &["t", "items"])), "stage.[t] join stage.items, dbo.fn_total(1), 'dbo.t'");
+    // MySQL: backslash escapes inside literals don't end them early.
+    let text = "concat('a\\'shop.items', `shop`.`items`.x)";
+    assert_eq!(requalify(Driver::MySql, text, "shop", "dev", &names(Driver::MySql, &["items"])), "concat('a\\'shop.items', dev.`items`.x)");
 }
 
 #[test]
 fn equivalent_spellings_compare_equal() {
     let pg = Driver::Postgres;
-    assert_eq!(norm_type(pg, "s", "int4"), norm_type(pg, "s", "integer"));
-    assert_eq!(norm_type(pg, "s", "varchar(20)"), norm_type(pg, "s", "character varying(20)"));
-    assert_eq!(norm_type(pg, "s", "timestamptz"), norm_type(pg, "s", "timestamp with time zone"));
-    assert_eq!(norm_type(pg, "s", "s.mood"), norm_type(pg, "x", "x.mood"));
-    assert_ne!(norm_type(pg, "s", "numeric(10,2)"), norm_type(pg, "s", "numeric(12,2)"));
+    let n = names(pg, &[]);
+    assert_eq!(norm_type(pg, "s", &n, "int4"), norm_type(pg, "s", &n, "integer"));
+    assert_eq!(norm_type(pg, "s", &n, "varchar(20)"), norm_type(pg, "s", &n, "character varying(20)"));
+    assert_eq!(norm_type(pg, "s", &n, "timestamptz"), norm_type(pg, "s", &n, "timestamp with time zone"));
+    // Each schema's own type compares equal; another schema's type does not.
+    let mood = |schema: &str| Names::of(&SchemaModel { types: vec!["mood".into()], ..SchemaModel::new(pg, "db", schema) });
+    assert_eq!(norm_type(pg, "s", &mood("s"), "s.mood"), norm_type(pg, "x", &mood("x"), "x.mood"));
+    assert_ne!(norm_type(pg, "s", &n, "s.mood"), norm_type(pg, "x", &n, "x.mood"));
+    assert_ne!(norm_type(pg, "s", &n, "numeric(10,2)"), norm_type(pg, "s", &n, "numeric(12,2)"));
     let my = Driver::MySql;
-    assert_eq!(norm_type(my, "s", "int(11)"), norm_type(my, "s", "int"));
-    assert_eq!(norm_type(my, "s", "bigint(20) unsigned"), "bigint unsigned");
-    assert_ne!(norm_type(my, "s", "tinyint(1)"), norm_type(my, "s", "tinyint(4)"));
-    assert_eq!(norm_type(Driver::Sqlite, "main", "VARCHAR (20)"), norm_type(Driver::Sqlite, "main", "varchar(20)"));
-    assert_eq!(norm_default(Driver::MsSql, "dbo", Some("((0))")), norm_default(Driver::MsSql, "dbo", Some("0")));
-    assert_eq!(norm_default(Driver::MsSql, "dbo", Some("(getdate())")), Some("getdate()".into()));
-    assert_eq!(norm_default(Driver::Postgres, "s", Some("NULL::character varying")), None);
-    assert_eq!(norm_default(Driver::Sqlite, "main", Some("'A b'")), Some("'A b'".into()));
-    assert_ne!(norm_default(Driver::Sqlite, "main", Some("'A b'")), norm_default(Driver::Sqlite, "main", Some("'a b'")));
+    assert_eq!(norm_type(my, "s", &n, "int(11)"), norm_type(my, "s", &n, "int"));
+    assert_eq!(norm_type(my, "s", &n, "bigint(20) unsigned"), "bigint unsigned");
+    assert_ne!(norm_type(my, "s", &n, "tinyint(1)"), norm_type(my, "s", &n, "tinyint(4)"));
+    assert_eq!(norm_type(Driver::Sqlite, "main", &n, "VARCHAR (20)"), norm_type(Driver::Sqlite, "main", &n, "varchar(20)"));
+    assert_eq!(norm_default(Driver::MsSql, "dbo", &n, Some("((0))")), norm_default(Driver::MsSql, "dbo", &n, Some("0")));
+    assert_eq!(norm_default(Driver::MsSql, "dbo", &n, Some("(getdate())")), Some("getdate()".into()));
+    assert_eq!(norm_default(Driver::Postgres, "s", &n, Some("NULL::character varying")), None);
+    assert_eq!(norm_default(Driver::Sqlite, "main", &n, Some("'A b'")), Some("'A b'".into()));
+    assert_ne!(norm_default(Driver::Sqlite, "main", &n, Some("'A b'")), norm_default(Driver::Sqlite, "main", &n, Some("'a b'")));
     assert_eq!(strip_parens("(a) + (b)"), "(a) + (b)");
     assert_eq!(norm_rule(Driver::MySql, "RESTRICT"), "NO ACTION");
     assert_eq!(norm_rule(Driver::MsSql, "SET_NULL"), "SET NULL");
@@ -113,10 +145,12 @@ fn equal_schemas_show_no_differences_despite_case_blanks_and_qualifiers() {
     let c = compare(&src, &src.clone());
     assert!(!c.has_differences());
     let same = SchemaModel { schema: "elsewhere".into(), ..src.clone() };
-    let moved: Vec<ViewModel> = same.views.iter().map(|v| ViewModel { definition: ViewDefinition { body: requalify(Driver::Postgres, &v.definition.body, "shop", "elsewhere"), ..v.definition.clone() }, ..v.clone() }).collect();
+    let n = Names::of(&src);
+    let moved: Vec<ViewModel> =
+        same.views.iter().map(|v| ViewModel { definition: ViewDefinition { body: requalify(Driver::Postgres, &v.definition.body, "shop", "elsewhere", &n), ..v.definition.clone() }, ..v.clone() }).collect();
     let mut moved_model = SchemaModel { views: moved, ..same };
     for c in moved_model.tables.iter_mut().flat_map(|t| t.details.columns.iter_mut()) {
-        c.default = c.default.as_deref().map(|d| requalify(Driver::Postgres, d, "shop", "elsewhere"));
+        c.default = c.default.as_deref().map(|d| requalify(Driver::Postgres, d, "shop", "elsewhere", &n));
     }
     for f in moved_model.tables.iter_mut().flat_map(|t| t.foreign_keys.iter_mut()) {
         f.ref_schema = "elsewhere".into();
@@ -320,4 +354,160 @@ fn expression_indexes_and_generated_columns_are_reported_not_scripted() {
     assert!(!script.statements.iter().any(|x| x.contains("t_expr")));
     assert_eq!(script.warnings.len(), 2, "{:?}", script.warnings);
     assert!(script.text(&src, &tgt).starts_with("-- Makes db.b match db.a\n-- "));
+}
+
+#[test]
+fn a_table_named_like_its_schema_and_shared_objects_compare_equal_and_stay_shared() {
+    // Reviewer repro: schema rvwa has a table rvwa; defaults use a function of rvwa and a literal
+    // mentioning it. The staging schema rvwb references the same shared function.
+    let d = Driver::Postgres;
+    let t = |schema: &str| {
+        let mut x = table("rvwa", vec![required(col("id", "integer")), col("v", "text"), with_default(col("x", "integer"), "rvwa.f()"), with_default(col("s", "text"), "'rvwa.home'::text")], &["id"]);
+        x.details.pk_name = Some(format!("{schema}_pkey"));
+        x
+    };
+    let body = |schema: &str| format!(" SELECT rvwa.id,\n    other.w\n   FROM {schema}.rvwa\n     JOIN {schema}.other ON other.id = rvwa.id;");
+    let side = |schema: &str| {
+        let v = pg_view("v2", &body(schema), &[("id", "integer"), ("w", "text")], &[("rvwa", "id"), ("other", "id"), ("other", "w")]);
+        model(d, schema, vec![t(schema), table("other", vec![col("id", "integer"), col("w", "text")], &[])], vec![v])
+    };
+    let (src, tgt) = (side("rvwa"), side("rvwb"));
+    let c = compare(&src, &tgt);
+    assert!(!c.has_differences(), "{:#?}", c.objects.iter().filter(|o| o.status != Status::Identical).collect::<Vec<_>>());
+    // A new table and view keep the shared function and the literal, and move the own tables.
+    let empty = model(d, "rvwb", vec![], vec![]);
+    let c = compare(&src, &empty);
+    let script = script(&src, &empty, &c, &c.default_selection()).unwrap();
+    let text = script.statements.join(";\n");
+    assert!(text.contains("x integer default rvwa.f()") && text.contains("default 'rvwa.home'::text"), "{text}");
+    assert!(text.contains("SELECT rvwa.id,") && text.contains("FROM rvwb.rvwa") && text.contains("JOIN rvwb.other ON other.id = rvwa.id"), "{text}");
+}
+
+#[test]
+fn postgres_views_are_replaced_when_they_can_be_and_dropped_only_when_a_column_blocks_them() {
+    let d = Driver::Postgres;
+    let orders = |status_type: &str, pk: &[&str]| table("orders", vec![required(col("id", "integer")), required(col("code", "integer")), col("status", status_type), col("note", "text")], pk);
+    let report = |extra: bool| {
+        let mut cols = vec![("id", "integer"), ("status", "text")];
+        if extra {
+            cols.push(("note", "text"));
+        }
+        let body = if extra { " SELECT id, status, note FROM s.orders;" } else { " SELECT id, status FROM s.orders;" };
+        pg_view("report", body, &cols, &[("orders", "id"), ("orders", "status")])
+    };
+    let notes = pg_view("notes", " SELECT note FROM s.orders;", &[("note", "text")], &[("orders", "note")]);
+    let on_notes = pg_view("on_notes", " SELECT note FROM s.notes;", &[("note", "text")], &[("notes", "note")]);
+    // The primary key changes and `report` gains a column at the end: nothing is dropped, the
+    // view is replaced in place.
+    let src = model(d, "s", vec![orders("text", &["id", "code"])], vec![report(true), notes.clone(), on_notes.clone()]);
+    let tgt = model(d, "s", vec![orders("text", &["id"])], vec![report(false), notes.clone(), on_notes.clone()]);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(!s.statements.iter().any(|x| x.starts_with("drop view")), "{:#?}", s.statements);
+    assert!(s.statements.iter().any(|x| x.starts_with("create or replace view s.report")), "{:#?}", s.statements);
+    assert!(!s.warnings.iter().any(|w| w.contains("Views dropped")));
+    // Dropping a column the view shows can't be done by OR REPLACE.
+    let c = compare(&tgt, &src);
+    let s = script(&tgt, &src, &c, &all(&c)).unwrap();
+    assert!(at(&s, "drop view s.report") < at(&s, "create view s.report"), "{:#?}", s.statements);
+    // Retyping `note` drops the views on it (and the views on those), and creates them again
+    // with their definition, with a warning naming them.
+    let src = model(d, "s", vec![orders("character varying(20)", &["id"])], vec![report(false), notes.clone(), on_notes.clone()]);
+    let tgt = model(d, "s", vec![table("orders", vec![required(col("id", "integer")), required(col("code", "integer")), col("status", "character varying(20)"), col("note", "integer")], &["id"])], vec![report(false), notes.clone(), on_notes.clone()]);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert!(at(&s, "drop view s.on_notes") < at(&s, "drop view s.notes"));
+    assert!(at(&s, "drop view s.notes") < at(&s, "alter column note type"));
+    assert!(at(&s, "alter column note type") < at(&s, "create view s.notes") && at(&s, "create view s.notes") < at(&s, "create view s.on_notes"));
+    assert!(!s.statements.iter().any(|x| x.contains("view s.report")), "report doesn't use note: {:#?}", s.statements);
+    assert!(s.warnings.iter().any(|w| w.contains("lose their grants") && w.contains("notes, on_notes")), "{:?}", s.warnings);
+    // An unselected view on a dropped table is dropped with it, not created again.
+    let src = model(d, "s", vec![], vec![]);
+    let tgt = model(d, "s", vec![orders("text", &["id"])], vec![notes]);
+    let c = compare(&src, &tgt);
+    let only_table: Vec<bool> = c.objects.iter().map(|o| o.kind == Kind::Table).collect();
+    let s = script(&src, &tgt, &c, &only_table).unwrap();
+    assert!(at(&s, "drop view s.notes") < at(&s, "drop table s.orders"));
+    assert!(!s.statements.iter().any(|x| x.starts_with("create")), "{:#?}", s.statements);
+    assert!(s.warnings.iter().any(|w| w.contains("“notes” uses a dropped table")), "{:?}", s.warnings);
+    assert!(s.warnings.iter().any(|w| w.contains("Drops table “orders”")), "{:?}", s.warnings);
+}
+
+#[test]
+fn sqlite_rebuilds_warn_about_lost_data_and_restore_the_session() {
+    let src = model(Driver::Sqlite, "main", vec![table("a", vec![required(col("id", "INTEGER")), col("n", "TEXT")], &["id"])], vec![]);
+    let mut tgt = model(Driver::Sqlite, "main", vec![table("a", vec![required(col("id", "INTEGER")), col("n", "INTEGER"), col("legacy", "TEXT")], &["id"])], vec![]);
+    tgt.pragmas = vec![("foreign_keys".into(), "on".into()), ("legacy_alter_table".into(), "off".into())];
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    for w in ["Drops column “legacy” and all its data", "Changing the type of “n” can truncate", "Run the script as a whole"] {
+        assert!(s.warnings.iter().any(|x| x.contains(w)), "{w}: {:?}", s.warnings);
+    }
+    assert_eq!(&s.statements[..2], ["pragma foreign_keys = off", "pragma legacy_alter_table = on"]);
+    let n = s.statements.len();
+    assert_eq!(&s.statements[n - 2..], ["pragma foreign_keys = on", "pragma legacy_alter_table = off"]);
+    // Run as SQLite runs a console script (one batch): the settings come back.
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("pragma foreign_keys = on; create table a (id INTEGER not null, n INTEGER, legacy TEXT, primary key (id)); insert into a values (1, 5, 'x');").unwrap();
+    db.execute_batch(&s.text(&src, &tgt)).unwrap();
+    assert_eq!(db.query_row("pragma foreign_keys", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(db.query_row("pragma legacy_alter_table", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(db.query_row("select n from a", [], |r| r.get::<_, String>(0)).unwrap(), "5");
+}
+
+#[test]
+fn sql_server_scripts_are_split_into_go_batches() {
+    let src = model(Driver::MsSql, "dbo", vec![table("t", vec![required(col("id", "int"))], &["id"])], vec![view("v", "select id from dbo.t")]);
+    let tgt = model(Driver::MsSql, "stage", vec![], vec![]);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    let text = s.text(&src, &tgt);
+    let batches = crate::sql::split_batches(&text, Driver::MsSql);
+    assert_eq!(batches.len(), s.statements.len(), "{text}");
+    let view = batches.iter().find(|b| b.text.contains("view")).unwrap();
+    assert!(view.text.trim_start().starts_with("create or alter view stage.v as"), "{}", view.text);
+    assert!(!text.contains(';'), "{text}");
+}
+
+#[test]
+fn mysql_generated_columns_are_written_with_their_expression_or_left_out() {
+    let d = Driver::MySql;
+    let generated = |name: &str, extra: &str| ColumnDef { generated: true, extra: extra.into(), ..col(name, "int") };
+    let src = model(d, "a", vec![table("g", vec![required(col("id", "int")), generated("dbl", "generated always as ((`id` * 2)) virtual"), generated("raw", "VIRTUAL GENERATED")], &["id"])], vec![]);
+    let tgt = model(d, "b", vec![], vec![]);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    let create = &s.statements[at(&s, "create table b.g")];
+    assert!(create.contains("dbl int generated always as ((`id` * 2)) virtual"), "{create}");
+    assert!(!create.contains("raw") && !create.to_lowercase().contains("virtual generated"), "{create}");
+    assert!(s.warnings.iter().any(|w| w.contains("g.raw is a computed column whose expression isn't available")), "{:?}", s.warnings);
+    // auto_increment added on its own: MODIFY keeps the comment and the collation.
+    let col_with = |extra: &str| ColumnDef { extra: extra.into(), comment: "Order's id".into(), collation: Some("utf8mb4_bin".into()), ..required(col("code", "varchar(20)")) };
+    let src = model(d, "a", vec![table("t", vec![col_with("on update current_timestamp")], &["code"])], vec![]);
+    let tgt = model(d, "b", vec![table("t", vec![col_with("")], &["code"])], vec![]);
+    let c = compare(&src, &tgt);
+    let s = script(&src, &tgt, &c, &all(&c)).unwrap();
+    assert_eq!(s.statements, ["alter table b.t modify column code varchar(20) collate utf8mb4_bin not null on update current_timestamp comment 'Order''s id'"]);
+}
+
+#[test]
+fn skipped_objects_are_reported_and_never_count_as_no_differences() {
+    let mut src = model(Driver::Postgres, "s", vec![], vec![]);
+    src.skipped.push("events (partitioned table)".into());
+    let tgt = model(Driver::Postgres, "s", vec![], vec![]);
+    let c = compare(&src, &tgt);
+    assert!(!c.has_differences() && !c.complete());
+    assert_eq!(c.skipped_source, ["events (partitioned table)"]);
+    assert!(compare(&tgt, &tgt).complete());
+}
+
+#[test]
+fn long_warnings_wrap_into_comment_lines() {
+    let m = model(Driver::Postgres, "s", vec![], vec![]);
+    let script = Script { statements: vec!["select 1".into()], warnings: vec!["word ".repeat(60)] };
+    let text = script.text(&m, &m);
+    let lines: Vec<&str> = text.lines().skip(1).take_while(|l| l.starts_with("--")).collect();
+    assert!(lines.len() >= 3 && lines.iter().all(|l| l.len() <= 101), "{text}");
+    assert!(lines[1..].iter().all(|l| l.starts_with("--   word")), "{text}");
+    assert_eq!(lines.iter().map(|l| l.matches("word").count()).sum::<usize>(), 60);
 }
