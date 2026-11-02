@@ -344,8 +344,8 @@ Thank you to everyone who has contributed code, fixes and translations to DataCr
 
 | # | Contributor | Commits | Share | Lines changed | Share |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 95 | 47.5% | +43,370 / −3,469 | 39.2% |
-| 2 | [YoSiem](https://github.com/YoSiem) | 89 | 44.5% | +50,949 / −7,792 | 49.1% |
+| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 96 | 47.5% | +43,373 / −3,469 | 39.1% |
+| 2 | [YoSiem](https://github.com/YoSiem) | 90 | 44.6% | +51,002 / −7,822 | 49.2% |
 | 3 | [Claude](https://github.com/claude) | 8 | 4.0% | +6,399 / −41 | 5.4% |
 | 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.0% | +4,258 / −215 | 3.7% |
 | 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.0% | +2,812 / −274 | 2.6% |
