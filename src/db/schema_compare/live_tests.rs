@@ -110,10 +110,13 @@ async fn sqlite_script_makes_the_target_match_the_source() {
     assert_eq!(db.query_row("select total, label from lines", [], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, String>(1)?))).unwrap(), (7.5, "AB".to_string()));
     assert_eq!(db.query_row("select v from settings", [], |r| r.get::<_, String>(0)).unwrap(), "dark");
     drop(db);
-    // The session's settings (DataCraft's SQLite sessions check foreign keys) come back at the
-    // end of the script.
+    // The session's settings come back at the end of the script. Their defaults depend on how the
+    // linked SQLite was built (macOS's system library has foreign keys off and legacy ALTER on).
+    let defaults = rusqlite::Connection::open_in_memory().unwrap();
+    let setting = |name: &str| if defaults.query_row(&format!("pragma {name}"), [], |r| r.get::<_, i64>(0)).unwrap() == 1 { "on" } else { "off" };
+    let restored = [format!("pragma foreign_keys = {}", setting("foreign_keys")), format!("pragma legacy_alter_table = {}", setting("legacy_alter_table"))];
     let n = script.statements.len();
-    assert_eq!(&script.statements[n - 2..], ["pragma foreign_keys = on", "pragma legacy_alter_table = off"]);
+    assert_eq!(&script.statements[n - 2..], restored);
     // Rows survive the rebuilds, converted to the new types.
     let db = rusqlite::Connection::open(&tgt_path).unwrap();
     let rows: Vec<(i64, f64, String)> =
