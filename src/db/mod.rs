@@ -34,6 +34,7 @@ pub mod sqlite;
 pub mod url;
 pub mod views;
 pub mod users;
+pub mod sessions;
 pub mod table_privileges;
 
 use serde::{Deserialize, Serialize};

@@ -298,6 +298,7 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Table editor](docs/table-editor.md) | Keyboard navigation, selections, bulk edits and optional automatic saving |
 | [Navigation and search](docs/navigation-search.md) | Table search, schema search, local groups/colors and tab management |
 | [Database backups](docs/database-backups.md) | Engine support, native utilities, destinations and cancellation |
+| [Session monitor](docs/session-monitor.md) | Server sessions and queries, blocking chains, cancel and terminate per engine |
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Task scheduler](docs/sql-scheduler.md) | Recurring SQL and backup tasks, the background process, time limits and history |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |

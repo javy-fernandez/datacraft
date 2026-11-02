@@ -28,6 +28,7 @@ pub mod routine_dialog;
 pub mod routine_execute;
 pub mod schema_search;
 pub mod script_dialog;
+pub mod session_monitor;
 pub mod theme;
 pub mod view_dialog;
 pub mod user_dialog;

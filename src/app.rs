@@ -69,6 +69,7 @@ mod views;
 mod table_export;
 mod table_shortcuts;
 mod table_grants;
+mod session_monitor;
 
 #[cfg(all(test, target_os = "windows"))]
 mod readme_screenshots;
@@ -347,6 +348,9 @@ pub struct DataCraftApp {
     show_shortcuts: bool,
     show_settings: bool,
     script: Option<crate::ui::script_dialog::ScriptDialog>,
+    /// "Session Monitor…" windows, one per connection.
+    session_monitors: Vec<crate::ui::session_monitor::SessionMonitor>,
+    next_monitor_request: u64,
     check_updates: bool,
     skipped_version: Option<String>,
     /// The update check under way, and whether it was asked for ("Check for Updates…").
@@ -448,6 +452,8 @@ impl DataCraftApp {
             show_shortcuts: false,
             show_settings: false,
             script: None,
+            session_monitors: Vec::new(),
+            next_monitor_request: 0,
             check_updates: persisted.check_updates,
             skipped_version: persisted.skipped_version,
             update_check: None,
@@ -693,6 +699,7 @@ impl DataCraftApp {
                 }
                 Response::TableReportOpened { request_id, result } => self.table_report_opened(request_id, result),
                 Response::Connected { conn, databases } => {
+                    self.reset_session_monitor(conn);
                     // Stale response: the connection was disconnected, edited or deleted while connecting.
                     if !self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connecting) {
                         self.worker.send(Request::Disconnect(conn));
@@ -811,6 +818,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::ConnectFailed { conn, error } => {
+                    self.reset_session_monitor(conn);
                     self.cancel_table_duplicate(conn);
                     self.cancel_startup_table(conn);
                     let was_connected = self.conn(conn).is_some_and(|c| c.status == ConnStatus::Connected);
@@ -841,6 +849,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::Disconnected(conn) => {
+                    self.reset_session_monitor(conn);
                     if let Some(c) = self.conn_mut(conn)
                         && c.status != ConnStatus::Connecting
                     {
@@ -889,6 +898,8 @@ impl DataCraftApp {
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
+                Response::Sessions { conn, request_id, epoch, result } => self.session_list_received(conn, request_id, epoch, result),
+                Response::SessionAction { conn, request_id, result } => self.session_action_done(conn, request_id, result),
                 Response::InspectTable { console, generation, page_rows, result } => {
                     if let Some(index) = self.consoles.iter().position(|c| c.id == console) {
                         let mut reload = false;
@@ -1578,6 +1589,7 @@ impl DataCraftApp {
                     }
                 }
                 ExplorerAction::RunScript(conn, db) => self.run_script(conn, db),
+                ExplorerAction::SessionMonitor(conn) => self.open_session_monitor(conn),
                 ExplorerAction::NewConnection => self.open_new_connection_dialog(),
                 ExplorerAction::Connect(id) => self.connect(id),
                 ExplorerAction::Disconnect(id) => self.disconnect(id),
@@ -2535,7 +2547,7 @@ impl DataCraftApp {
 
     /// A modal dialog is open: shortcuts and run commands are ignored.
     fn modal_open(&self) -> bool {
-        self.backup.is_some() || self.scheduler.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
+        self.backup.is_some() || self.scheduler.is_some() || self.script.is_some() || self.session_monitors.iter().any(|m| m.confirming()) || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_analyze.is_some()
             || self.create.is_some()
@@ -3424,6 +3436,7 @@ impl DataCraftApp {
         self.table_duplicate_dialog(ctx);
         self.show_table_export(ctx);
         self.table_grants_dialog(ctx);
+        self.show_session_monitors(ctx);
         if let Some(dialog) = self.scheduler.as_mut() {
             let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
             if dialog.show(ctx, &configs) { self.scheduler = None; }
@@ -4424,7 +4437,7 @@ mod tests {
             explorer: ExplorerState::default(), backup: None, scheduler: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(), table_model: None,
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), table_export: Default::default(), routines: Default::default(), table_duplicate: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_shortcuts: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
+            show_about: false, show_shortcuts: false, show_settings: false, script: None, session_monitors: Vec::new(), next_monitor_request: 0, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
