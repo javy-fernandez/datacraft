@@ -5,6 +5,7 @@
 use crate::db::ConnectionConfig;
 use std::path::PathBuf;
 
+#[cfg(not(test))]
 const KEYCHAIN_SERVICE: &str = "DataCraft";
 
 pub(crate) fn data_dir() -> PathBuf {
@@ -12,6 +13,10 @@ pub(crate) fn data_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("DATACRAFT_TEST_DATA_DIR") {
         return PathBuf::from(path);
     }
+    // Tests never touch the user's saved connections.
+    #[cfg(test)]
+    return std::env::temp_dir().join(format!("datacraft-test-{}", std::process::id()));
+    #[cfg(not(test))]
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("DataCraft")
 }
 
@@ -19,19 +24,31 @@ fn connections_file() -> PathBuf {
     data_dir().join("connections.json")
 }
 
+/// The credential store entry `user` of DataCraft's service (an in-memory one in tests, which
+/// must never read or delete the user's real credentials).
+#[cfg(not(test))]
+fn entry(user: &str) -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, user).ok()
+}
+
+#[cfg(test)]
+fn entry(_user: &str) -> Option<keyring::Entry> {
+    Some(keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default()))
+}
+
 fn keychain_entry(id: u64) -> Option<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}")).ok()
+    entry(&format!("connection-{id}"))
 }
 
 /// Secret driver properties of a connection, as a JSON object `{name: value}`.
 fn properties_entry(id: u64) -> Option<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}-properties")).ok()
+    entry(&format!("connection-{id}-properties"))
 }
 
 /// The SSH tunnel's password and key passphrase, and the TLS client key's passphrase, as a JSON
 /// object.
 fn ssh_entry(id: u64) -> Option<keyring::Entry> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}-ssh")).ok()
+    entry(&format!("connection-{id}-ssh"))
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -186,7 +203,7 @@ pub fn masking_key() -> String {
     if std::env::var("DATACRAFT_DEMO").is_ok_and(|v| !v.is_empty()) {
         return "datacraft-demo".into();
     }
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, "masking-key").ok();
+    let entry = entry("masking-key");
     if let Some(key) = entry.as_ref().and_then(|e| e.get_password().ok()).filter(|k| !k.is_empty()) {
         return key;
     }
