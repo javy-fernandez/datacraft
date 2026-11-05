@@ -37,6 +37,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 aws-lc-rs = "1.18.2"
 pkcs8 = { version = "0.10", features = ["encryption", "3des", "std"] }
 base64 = "0.22.1"
+bytes = "1"
 uuid = { version = "1.28.0", features = ["v4"] }
 # SSH tunnels to the database through a bastion (pure Rust, crypto on aws-lc like the rest).
 russh = "0.65.0"

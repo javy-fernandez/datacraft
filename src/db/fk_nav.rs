@@ -40,6 +40,31 @@ impl TableKeys {
     }
 }
 
+/// A navigation filter keeps its display text separate from the executable placeholders.
+/// Editing the WHERE field drops the binding rather than applying stale values to new SQL.
+#[derive(Clone)]
+pub struct BoundFilter {
+    pub display: String,
+    pub sql: String,
+    pub parameters: Vec<String>,
+    /// Only this generated statement receives the values; other tab actions run normally.
+    pub query: Option<String>,
+}
+
+pub fn bound_filter(driver: Driver, columns: &[String], values: &[Cell]) -> Option<BoundFilter> {
+    let display = format!("({})", key_filter(driver, columns, values)?);
+    let sql = columns.iter().enumerate().map(|(i, column)| {
+        let parameter = match driver {
+            Driver::Postgres => format!("${}", i + 1),
+            Driver::MsSql => format!("@P{}", i + 1),
+            Driver::Oracle => format!(":{}", i + 1),
+            _ => "?".into(),
+        };
+        format!("{} = {parameter}", driver.quote_ident(column))
+    }).collect::<Vec<_>>().join(" AND ");
+    Some(BoundFilter { display, sql, query: None, parameters: values.iter().map(|v| v.clone().unwrap_or_default()).collect() })
+}
+
 /// A child table and the filter selecting the rows that reference one parent row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Probe {
@@ -209,6 +234,26 @@ mod tests {
         assert_eq!(key_filter(Driver::MsSql, &cols, &vals).unwrap(), "[order id] = N'7' AND [line\"no] = N'O''Brien'");
         assert_eq!(key_filter(Driver::MySql, &cols[..1], &[Some("a\\'b".into())]).unwrap(), "`order id` = 'a\\\\''b'");
         assert_eq!(key_filter(Driver::Oracle, &cols[..1], &vals[..1]).unwrap(), "\"order id\" = '7'");
+    }
+
+    #[test]
+    fn navigation_filters_keep_values_separate_from_dialect_placeholders() {
+        let columns = ["order id".to_string(), "region".to_string()];
+        let values = [Some("O'Brien'); DROP TABLE orders; --".into()), Some("north".into())];
+        for (driver, placeholders) in [
+            (Driver::Postgres, ["$1", "$2"]),
+            (Driver::MsSql, ["@P1", "@P2"]),
+            (Driver::Oracle, [":1", ":2"]),
+            (Driver::MySql, ["?", "?"]),
+            (Driver::MariaDb, ["?", "?"]),
+            (Driver::Sqlite, ["?", "?"]),
+            (Driver::Snowflake, ["?", "?"]),
+        ] {
+            let filter = bound_filter(driver, &columns, &values).unwrap();
+            assert_eq!(filter.sql, format!("{} = {} AND {} = {}", driver.quote_ident(&columns[0]), placeholders[0], driver.quote_ident(&columns[1]), placeholders[1]));
+            assert_eq!(filter.parameters, [values[0].clone().unwrap(), "north".into()]);
+            assert!(!filter.sql.contains("DROP TABLE"));
+        }
     }
 
     #[test]

@@ -210,14 +210,16 @@ impl Inner {
     }
 
     /// Runs `sql` and returns the `data` of the finished query.
-    async fn query(&self, sql: &str) -> anyhow::Result<Value> {
+    async fn query(&self, sql: &str, parameters: &[String]) -> anyhow::Result<Value> {
         let sequence = {
             let mut s = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
             *s += 1;
             *s
         };
         let rid = request_id();
+        let bindings: serde_json::Map<String, Value> = parameters.iter().enumerate().map(|(i, value)| ((i + 1).to_string(), json!({"type": "TEXT", "value": value}))).collect();
         let body = json!({
+            "bindings": bindings,
             "sqlText": sql,
             "sequenceId": sequence,
             "querySubmissionTime": chrono::Utc::now().timestamp_millis(),
@@ -635,10 +637,12 @@ impl SfSession {
         self.broken
     }
 
-    pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> { self.execute_bound(sql, &[], max_rows).await }
+
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let start = Instant::now();
         self.inner.stop_chunks.store(false, std::sync::atomic::Ordering::SeqCst);
-        let data = match self.inner.query(sql).await {
+        let data = match self.inner.query(sql, parameters).await {
             Ok(d) => d,
             Err(e) => {
                 // A failed re-login leaves the session without tokens.

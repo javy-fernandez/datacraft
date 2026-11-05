@@ -740,7 +740,8 @@ impl DataCraftApp {
                             console.running = true;
                             let db = console.db.clone();
                             console.tx_released = false;
-                            self.worker.send(Request::Execute { conn, db, console: console.id, statements, max_rows, manual: console.manual_tx });
+                            let parameters = console.table.as_ref().and_then(|t| t.bound_filter.as_ref().filter(|b| b.display == t.where_clause && statements.len() == 1 && b.query.as_ref() == statements.first())).map(|b| b.parameters.clone()).unwrap_or_default();
+                            self.worker.send(Request::Execute { conn, db, console: console.id, statements, max_rows, manual: console.manual_tx, parameters });
                         }
                     }
                     self.recheck_edit_targets(conn);
@@ -911,11 +912,13 @@ impl DataCraftApp {
                     }
                 }
                 Response::Executed { console, results, error, elapsed } => {
+                    let succeeded = error.is_none();
                     self.result_salt += 1;
                     let salt = self.result_salt;
                     if let Some(c) = self.console_by_id(console) {
                         apply_execution(c, results, error, elapsed, salt);
                     }
+                    self.navigation_finished(console, succeeded);
                     self.attach_edit_targets(console);
                     self.attach_key_links(console);
                     self.apply_demo_edit(console);
@@ -1514,7 +1517,8 @@ impl DataCraftApp {
                 let db = console.db.clone();
                 let manual = console.manual_tx;
                 console.tx_released = false;
-                self.worker.send(Request::Execute { conn, db, console: id, statements, max_rows, manual });
+                let parameters = console.table.as_ref().and_then(|t| t.bound_filter.as_ref().filter(|b| b.display == t.where_clause && statements.len() == 1 && b.query.as_ref() == statements.first())).map(|b| b.parameters.clone()).unwrap_or_default();
+                self.worker.send(Request::Execute { conn, db, console: id, statements, max_rows, manual, parameters });
             }
             ConnStatus::Connecting => console.pending = Some(statements),
             ConnStatus::Disconnected | ConnStatus::Error(_) => {
@@ -1599,8 +1603,12 @@ impl DataCraftApp {
         let order = if t.order_by.trim().is_empty() && !driver.is_nosql() {
             self.table_columns(conn, c.db.as_deref(), &t.schema, &t.table).unwrap_or(&[]).iter().filter(|c| c.primary_key).map(|c| driver.quote_ident(&c.name)).collect::<Vec<_>>().join(", ")
         } else { t.order_by.clone() };
-        let sql = table_query_page(driver, &t.schema, &t.table, &t.where_clause, &order, self.max_rows, t.offset);
+        let where_clause = t.bound_filter.as_ref().filter(|b| b.display == t.where_clause).map_or(t.where_clause.as_str(), |b| b.sql.as_str());
+        let sql = table_query_page(driver, &t.schema, &t.table, where_clause, &order, self.max_rows, t.offset);
         if let Some(t) = self.consoles.get_mut(idx).and_then(|c| c.table.as_mut()) {
+            if let Some(binding) = t.bound_filter.as_mut() {
+                binding.query = (binding.display == t.where_clause).then(|| sql.clone());
+            }
             t.loaded = true;
             t.page_size = self.max_rows;
         }

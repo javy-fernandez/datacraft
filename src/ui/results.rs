@@ -184,6 +184,19 @@ pub struct ResultView {
 }
 
 impl ResultView {
+    /// A navigation result is already filtered; select and scroll to its first matching row.
+    pub fn highlight_first_row(&mut self) -> bool {
+        // A reused tab may still have local filters from its previous contents.
+        self.filters.clear();
+        self.sort = None;
+        self.order = (0..self.rs.rows.len()).collect();
+        if self.order.is_empty() { return false; }
+        self.select_cell(0, 0, Modifiers::NONE);
+        self.selected_rows = BTreeSet::from([0]);
+        self.scroll_to = Some(0);
+        true
+    }
+
     pub fn selected_cell(&self) -> Option<(usize, usize, Cell)> {
         let (r, c) = self.selected?;
         Some((r, c, self.display_value(self.row_ref(r)?, c).flatten()))
@@ -1602,7 +1615,8 @@ pub fn show_result(
                             || inline.as_ref().is_some_and(|ed| editing_here && ed.changed);
                         // Keys follow the stored values, not pending edits.
                         let stored = match rref { RowRef::Existing(i) => view.rs.rows.get(i), RowRef::New(_) => None };
-                        let link = links.as_deref().zip(stored).and_then(|(l, row)| l.link_at(c, row)).filter(|_| !deleted);
+                        let targets = links.as_deref().zip(stored).map(|(l, row)| l.targets(c, row)).unwrap_or_default();
+                        let link = (!deleted && !targets.is_empty()).then_some(0);
                         let numeric = matches!(&value, Some(Some(v)) if is_numeric(v));
                         let (_, resp) = row.col(|ui| {
                             let r = ui.max_rect();
@@ -1701,8 +1715,13 @@ pub fn show_result(
                         if over_button {
                             resp.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-                        let follow = link.filter(|_| resp.clicked() && on_button(resp.interact_pointer_pos()));
-                        if let Some(jump) = follow.zip(links.as_deref().zip(stored)).and_then(|(k, (l, row))| l.parent(k, row)) {
+                        let mods = ui_mods(&resp);
+                        // Keep ordinary clicks and selection gestures available on related cells.
+                        // Only the explicit follow button (or F4 below) opens navigation targets.
+                        let follow = resp.clicked() && on_button(resp.interact_pointer_pos()) && !mods.command && !mods.shift && !mods.alt;
+                        if follow {
+                            let jump = if stored.is_some_and(|row| row[c].is_none()) { crate::ui::fk_nav::Jump::Null }
+                                else { crate::ui::fk_nav::Jump::Choose { targets, anchor: resp.rect.left_bottom() } };
                             actions.push(GridAction::Jump(jump));
                         } else if resp.clicked() || (resp.secondary_clicked() && !is_sel) {
                             let mods = ui_mods(&resp);
@@ -1982,6 +2001,17 @@ pub fn show_result(
             view.navigate(key, Modifiers::SHIFT, page_rows);
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(30));
+        }
+    }
+    if let Some((r, c)) = view.selected
+        && let Some(RowRef::Existing(row)) = view.row_ref(r)
+        && let Some(links) = view.links.as_ref()
+    {
+        let targets = links.targets(c, &view.rs.rows[row]);
+        if !targets.is_empty() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F4)) {
+            jump = Some(if view.rs.rows[row][c].is_none() { crate::ui::fk_nav::Jump::Null } else {
+                crate::ui::fk_nav::Jump::Choose { targets, anchor: ui.max_rect().left_top() }
+            });
         }
     }
     // First: its Esc closes it only, not also the record view.
@@ -2834,7 +2864,7 @@ mod keyboard_tests {
     }
 
     #[test]
-    fn key_values_follow_from_their_button_while_ctrl_click_keeps_selecting() {
+    fn related_cells_select_normally_and_navigate_with_button_or_f4() {
         use crate::ui::fk_nav::{Jump, Links};
         let key = crate::db::subset::ForeignKey { schema: "main".into(), table: "notes".into(), columns: vec!["note".into()], ref_schema: "main".into(), ref_table: "texts".into(), ref_columns: vec!["code".into()] };
         let mut view = view();
@@ -2854,8 +2884,27 @@ mod keyboard_tests {
         h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
         assert_eq!((h.state().view.selected_cells.clone(), h.state().jump.is_none()), (BTreeSet::from([(0, 1), (2, 0)]), true));
-        // Only a click on the value's follow button asks for the parent row; the NULL key of the
-        // next row has no button.
+        // Plain clicks select related cells, including NULL, without opening navigation.
+        click(&h, pos2(160.0, 50.0));
+        h.run_steps(2);
+        assert_eq!(h.state().view.selected_cells, BTreeSet::from([(0, 1)]));
+        assert!(h.state().jump.is_none());
+        click(&h, pos2(160.0, 74.0));
+        h.run_steps(2);
+        assert_eq!(h.state().view.selected_cells, BTreeSet::from([(1, 1)]));
+        assert!(h.state().jump.is_none());
+
+        h.key_press(Key::F4);
+        h.run_steps(2);
+        assert_eq!(h.state_mut().jump.take(), Some(Jump::Null));
+        click(&h, pos2(160.0, 50.0));
+        h.run_steps(2);
+        h.key_press(Key::F4);
+        h.run_steps(2);
+        let Some(Jump::Choose { targets, .. }) = h.state_mut().jump.take() else { panic!("F4 opens navigation candidates") };
+        assert_eq!(targets[0].clone().jump(), Jump::Parent { key: key.clone(), values: vec![Some("a".into())] });
+
+        // The dedicated follow button still opens candidates and handles NULL values.
         let follow = |h: &mut egui_kittest::Harness<'static, State>, y: f32| {
             (100..900).step_by(6).find_map(|x| {
                 click(h, pos2(x as f32, y));
@@ -2863,8 +2912,10 @@ mod keyboard_tests {
                 h.state_mut().jump.take()
             })
         };
-        assert_eq!(follow(&mut h, 74.0), None);
-        assert_eq!(follow(&mut h, 50.0), Some(Jump::Parent { key, values: vec![Some("a".into())] }));
+        assert_eq!(follow(&mut h, 74.0), Some(Jump::Null));
+        let Some(Jump::Choose { targets, .. }) = follow(&mut h, 50.0) else { panic!("expected navigation candidates") };
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].clone().jump(), Jump::Parent { key, values: vec![Some("a".into())] });
     }
 
     #[test]

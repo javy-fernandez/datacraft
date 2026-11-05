@@ -687,6 +687,20 @@ impl Engine {
         }
     }
 
+    /// Bound SELECTs use native driver parameters; ordinary statements keep their existing path.
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+        if parameters.is_empty() { return self.execute(sql, max_rows).await; }
+        match self {
+            Engine::Postgres(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::Sqlite(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::MsSql(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::MySql(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::Oracle(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::Snowflake(s) => s.execute_bound(sql, parameters, max_rows).await,
+            _ => anyhow::bail!(crate::i18n::tr("Not available for this engine")),
+        }
+    }
+
     /// Database the session is connected to when opened.
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
         match self {

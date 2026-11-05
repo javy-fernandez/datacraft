@@ -13,11 +13,14 @@ pub struct Links {
     /// Keys referencing the table, with the result columns of the referenced columns (`None`
     /// when the result lacks one of them).
     pub incoming: Vec<(ForeignKey, Option<Vec<usize>>)>,
+    pub inferred: Vec<(ForeignKey, Vec<usize>)>,
 }
 
 /// A navigation asked for by the grid.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Jump {
+    Choose { targets: Vec<Target>, anchor: egui::Pos2 },
+    Null,
     /// The parent row of `key` whose referenced columns hold `values`.
     Parent { key: ForeignKey, values: Vec<Cell> },
     /// "Referenced by…" for one row: each incoming key with the row's referenced values.
@@ -45,13 +48,68 @@ pub fn column_names(result_cols: &[String], columns: &[ColumnInfo]) -> Vec<Optio
         .collect()
 }
 
+/// Candidate resolution is pure: it only reads cached keys, schema and stored cell values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    key: ForeignKey,
+    values: Vec<Cell>,
+    kind: &'static str,
+}
+
+impl Target {
+    pub fn label(&self) -> String {
+        let mapping = self.key.columns.iter().zip(&self.key.ref_columns).map(|(from, to)| format!("{from} → {}.{to}", self.key.ref_table)).collect::<Vec<_>>().join(", ");
+        format!("{}.{}   · {}   · {mapping}", self.key.ref_schema, self.key.ref_table, self.kind)
+    }
+    pub fn jump(self) -> Jump { Jump::Parent { key: self.key, values: self.values } }
+}
+
 impl Links {
+    /// Infer only a conventional `<table>_id` → single-column primary key relation with
+    /// matching types. These are candidates, never claims that a constraint exists.
+    pub fn with_schema(keys: &TableKeys, names: &[Option<String>], schemas: &[crate::db::SchemaInfo], schema: &str, table: &str) -> Option<Self> {
+        let mut links = Self::new(keys, names).unwrap_or_default();
+        let source = schemas.iter().find(|s| s.name == schema)?.tables.iter().find(|t| t.name == table)?;
+        for s in schemas {
+            for target in &s.tables {
+                if target.kind != crate::db::ObjectKind::Table { continue; }
+                for (from_schema, from, to_schema, to) in [(schema, source, s.name.as_str(), target), (s.name.as_str(), target, schema, source)] {
+                    let pk: Vec<_> = to.columns.iter().filter(|c| c.primary_key).collect();
+                    if pk.len() != 1 { continue; }
+                    let singular = to.name.strip_suffix('s').unwrap_or(&to.name);
+                    for column in &from.columns {
+                        if ![format!("{singular}_id"), format!("{}_id", to.name)].iter().any(|n| n.eq_ignore_ascii_case(&column.name)) || !column.data_type.eq_ignore_ascii_case(&pk[0].data_type) { continue; }
+                        let key = ForeignKey { schema: from_schema.into(), table: from.name.clone(), columns: vec![column.name.clone()], ref_schema: to_schema.into(), ref_table: to.name.clone(), ref_columns: vec![pk[0].name.clone()] };
+                        if keys.outgoing.contains(&key) || keys.incoming.contains(&key) { continue; }
+                        let key = if from_schema == schema && from.name == table { key } else { reverse(key) };
+                        let Some(col) = names.iter().position(|n| n.as_ref() == key.columns.first()) else { continue; };
+                        if !links.inferred.iter().any(|(k, _)| k == &key) { links.inferred.push((key, vec![col])); }
+                    }
+                }
+            }
+        }
+        (!links.outgoing.is_empty() || !links.incoming.is_empty() || !links.inferred.is_empty()).then_some(links)
+    }
+
+    pub fn targets(&self, col: usize, row: &[Cell]) -> Vec<Target> {
+        let mut targets = Vec::new();
+        let mut add = |key: ForeignKey, cols: &[usize], kind| {
+            if !cols.contains(&col) || cols.iter().any(|&c| row.get(c).is_none_or(crate::edit::is_lossy_display)) { return; }
+            targets.push(Target { key, values: cols.iter().map(|&c| row[c].clone()).collect(), kind });
+        };
+        for (key, cols) in &self.outgoing { add(key.clone(), cols, "FK"); }
+        for (key, cols) in &self.incoming { if let Some(cols) = cols { add(reverse(key.clone()), cols, "reverse FK"); } }
+        for (key, cols) in &self.inferred { add(key.clone(), cols, "inferred"); }
+        targets.sort_by_key(|t| (match t.kind { "FK" => 0, "reverse FK" => 1, _ => 2 }, t.key.ref_schema.clone(), t.key.ref_table.clone(), t.key.ref_columns.clone()));
+        targets
+    }
+
     /// `None` when no key can be followed from this result.
     pub fn new(keys: &TableKeys, names: &[Option<String>]) -> Option<Self> {
         let at = |cols: &[String]| cols.iter().map(|c| names.iter().position(|n| n.as_deref() == Some(c.as_str()))).collect::<Option<Vec<_>>>();
         let outgoing: Vec<_> = keys.outgoing.iter().filter_map(|k| Some((k.clone(), at(&k.columns)?))).collect();
         let incoming: Vec<_> = keys.incoming.iter().map(|k| (k.clone(), at(&k.ref_columns))).collect();
-        (!outgoing.is_empty() || !incoming.is_empty()).then_some(Self { outgoing, incoming })
+        (!outgoing.is_empty() || !incoming.is_empty()).then_some(Self { outgoing, incoming, inferred: Vec::new() })
     }
 
     /// Outgoing keys (indices) that use result column `col`.
@@ -60,6 +118,7 @@ impl Links {
     }
 
     /// First key at `col` that `row` can follow (no NULL in its columns).
+    #[cfg(test)]
     pub fn link_at(&self, col: usize, row: &[Cell]) -> Option<usize> {
         self.keys_at(col).find(|&k| self.outgoing[k].1.iter().all(|&c| row.get(c).is_some_and(|v| v.is_some() && !crate::edit::is_lossy_display(v))))
     }
@@ -77,6 +136,11 @@ impl Links {
     }
 }
 
+/// Orient every candidate as source → destination, including incoming references.
+fn reverse(key: ForeignKey) -> ForeignKey {
+    ForeignKey { schema: key.ref_schema, table: key.ref_table, columns: key.ref_columns, ref_schema: key.schema, ref_table: key.table, ref_columns: key.columns }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +152,26 @@ mod tests {
     fn key(table: &str, columns: &[&str], ref_table: &str, ref_columns: &[&str]) -> ForeignKey {
         let v = |c: &[&str]| c.iter().map(|s| s.to_string()).collect();
         ForeignKey { schema: "s".into(), table: table.into(), columns: v(columns), ref_schema: "s".into(), ref_table: ref_table.into(), ref_columns: v(ref_columns) }
+    }
+
+    #[test]
+    fn candidates_include_all_directions_self_references_and_inference_in_order() {
+        let outgoing = key("orders", &["id"], "archive", &["id"]);
+        let self_key = key("orders", &["parent_id"], "orders", &["id"]);
+        let keys = TableKeys { outgoing: vec![outgoing, self_key.clone()], incoming: vec![self_key, key("lines", &["order_id"], "orders", &["id"])] };
+        let mut id = col("id", "int"); id.primary_key = true;
+        let schemas = vec![crate::db::SchemaInfo { name: "s".into(), tables: vec![
+            crate::db::TableInfo { name: "orders".into(), kind: crate::db::ObjectKind::Table, columns: vec![id.clone(), col("parent_id", "int")] },
+            crate::db::TableInfo { name: "notes".into(), kind: crate::db::ObjectKind::Table, columns: vec![id, col("order_id", "int")] },
+        ] }];
+        let links = Links::with_schema(&keys, &[Some("id".into()), Some("parent_id".into())], &schemas, "s", "orders").unwrap();
+        let targets = links.targets(0, &[Some("42".into()), Some("7".into())]);
+        assert_eq!(targets.iter().map(|t| (t.kind, t.key.ref_table.as_str())).collect::<Vec<_>>(), [("FK", "archive"), ("reverse FK", "lines"), ("reverse FK", "orders"), ("inferred", "notes")]);
+        assert_eq!(targets[1].key.ref_columns, ["order_id"]);
+        assert_eq!(targets[1].values, [Some("42".into())]);
+        assert!(links.targets(9, &[None, None]).is_empty());
+        assert!(links.targets(0, &[None, None])[0].values[0].is_none());
+        assert_eq!(links.targets(1, &[None, Some("7".into())])[0].key.ref_table, "orders");
     }
 
     #[test]

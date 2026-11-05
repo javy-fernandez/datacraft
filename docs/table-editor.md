@@ -60,13 +60,19 @@ Sorting or filtering commits an open editor into pending changes first.
 
 ## Follow foreign keys
 
-Cells of declared foreign-key columns have a faint underline. Hovering one shows
-a small arrow button at the edge of the cell away from the value; click it to open
-the referenced row. Clicking the value itself, with or without Ctrl/⌘, still
-selects cells as usual. The parent table opens filtered to that key, in its
-existing tab when that tab has no pending changes or running query, otherwise in
-a new tab. Right-click a cell for **Go to referenced row** (one item per key using
-the column, with the parent table shown on the right) and **Referenced by…**.
+Cells with related-table targets have a faint underline. Hovering one shows a
+small arrow button at the edge of the cell away from the value. Click the arrow,
+or select the cell and press **F4**, to choose a target. The dropdown lists the
+target table, relation type and column mapping, with declared foreign keys first.
+Use Up/Down and Enter to choose, or Esc to close. Clicking the value itself,
+with or without Ctrl/⌘, still selects cells as usual.
+
+Targets include declared foreign keys, reverse foreign keys and inferred
+`<table>_id` references to a single-column primary key with the same data type.
+Inference uses already-loaded schema metadata. The target table opens filtered
+to the matching values and highlights the first matching row. It reuses an idle
+tab without pending changes, or opens a new tab. Right-click a cell for **Go to
+referenced row** (one item per declared key using the column) and **Referenced by…**.
 
 ![The follow button of a foreign-key value](screenshots/fk-navigation/grid-links.png)
 
@@ -74,10 +80,11 @@ the column, with the parent table shown on the right) and **Referenced by…**.
 
 The jump uses the normal Filter & Sort builder: one `=` condition per key column,
 so the filter can be edited, cleared or re-applied like any other. Values are
-quoted for the connection's dialect; composite keys produce one condition per
-column. A key with a NULL in any of its columns references nothing and is not a
-link, and new (unsaved) rows have no links. Links follow the stored values, not
-pending edits.
+shown using the connection's dialect, while navigation queries send them as
+native bind parameters; composite keys produce one condition per column.
+Navigating a key with a NULL value shows “Cannot navigate: source value is NULL”.
+An empty target shows “No matching row in `<table>` for `<value>`”. New (unsaved)
+rows have no links. Links follow the stored values, not pending edits.
 
 ![The referenced customer, filtered, with the Back button](screenshots/fk-navigation/referenced-row.png)
 

@@ -92,7 +92,12 @@ impl OraSession {
             return Ok(Vec::new());
         }
         let commit = self.autocommit;
-        self.with_conn(move |conn| run(conn, &sql, display, max_rows, commit).map(|rs| vec![rs])).await
+        self.with_conn(move |conn| run(conn, &sql, display, &[], max_rows, commit).map(|rs| vec![rs])).await
+    }
+
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+        let (sql, parameters) = (sql.to_string(), parameters.to_vec());
+        self.with_conn(move |conn| run(conn, &sql, sql.clone(), &parameters, max_rows, false).map(|rs| vec![rs])).await
     }
 
     /// Manual transactions: statements stop committing themselves (Oracle has no BEGIN; the
@@ -418,7 +423,7 @@ fn cell(row: &Row, i: usize, kind: &CellKind) -> Cell {
     value.unwrap_or_else(|e| Some(format!("<{e}>")))
 }
 
-fn run(conn: &Connection, sql: &str, display: String, max_rows: usize, commit: bool) -> Result<ResultSet, oracle::Error> {
+fn run(conn: &Connection, sql: &str, display: String, parameters: &[String], max_rows: usize, commit: bool) -> Result<ResultSet, oracle::Error> {
     let start = Instant::now();
     let fetch = if max_rows == 0 {
         1000
@@ -428,7 +433,8 @@ fn run(conn: &Connection, sql: &str, display: String, max_rows: usize, commit: b
     let mut stmt = conn.statement(sql).fetch_array_size(fetch).build()?;
     let mut rs = ResultSet { statement: display, ..Default::default() };
     if stmt.is_query() {
-        let rows = stmt.query(&[])?;
+        let params: Vec<&dyn oracle::sql_type::ToSql> = parameters.iter().map(|v| v as &dyn oracle::sql_type::ToSql).collect();
+        let rows = stmt.query(&params)?;
         let kinds: Vec<CellKind> = rows.column_info().iter().map(|c| cell_kind(c.oracle_type())).collect();
         rs.columns = rows.column_info().iter().map(|c| c.name().to_string()).collect();
         for row in rows {
