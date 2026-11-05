@@ -259,6 +259,17 @@ mod tests {
         assert_eq!(conn.query_row("SELECT count(*) FROM target", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
     }
 
+    #[test]
+    fn multi_navigation_handles_a_thousand_composite_keys() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE target(id TEXT,shop TEXT); INSERT INTO target VALUES('0','s'),('999','s'),('500','other')").unwrap();
+        let rows: Vec<_> = (0..1000).map(|i| vec![Some(i.to_string()), Some("s".into())]).collect();
+        let filter = super::super::fk_nav::bound_filter_rows(Driver::Sqlite, &["id".into(), "shop".into()], &rows).unwrap();
+        let sql = format!("SELECT * FROM target WHERE {}", filter.sql);
+        let results = run_batch(&conn, &sql, &filter.parameters, 10).unwrap();
+        assert_eq!(results[0].rows, vec![vec![Some("0".into()), Some("s".into())], vec![Some("999".into()), Some("s".into())]]);
+    }
+
     /// Database in a temporary file that is removed afterwards.
     struct TempDb(std::path::PathBuf);
 

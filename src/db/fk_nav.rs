@@ -52,12 +52,42 @@ pub struct BoundFilter {
 }
 
 pub fn bound_filter(driver: Driver, columns: &[String], values: &[Cell]) -> Option<BoundFilter> {
+    bound_filter_at(driver, columns, values, 0)
+}
+
+/// OR complete tuples, rather than independent IN lists that could match unrelated rows.
+/// NULL tuples cannot reference a row; duplicate tuples need only one set of bind values.
+pub fn bound_filter_rows(driver: Driver, columns: &[String], rows: &[Vec<Cell>]) -> Option<BoundFilter> {
+    let mut seen = std::collections::HashSet::new();
+    let mut filters = Vec::new();
+    let mut parameters = Vec::new();
+    for row in rows {
+        if columns.len() != row.len() { return None; }
+        if row.iter().any(|v| v.is_none() || crate::edit::is_lossy_display(v)) || !seen.insert(row) { continue; }
+        let filter = if parameters.is_empty() { bound_filter(driver, columns, row)? } else { bound_filter_at(driver, columns, row, parameters.len())? };
+        parameters.extend(filter.parameters.clone());
+        filters.push(filter);
+    }
+    if filters.len() == 1 { return filters.pop(); }
+    if filters.is_empty() { return None; }
+    let display = format!("({})", filters.iter().map(|f| f.display.as_str()).collect::<Vec<_>>().join(" OR "));
+    // Keep expression depth logarithmic for large selections, including SQLite's limit.
+    fn disjunction(filters: &[BoundFilter]) -> String {
+        if filters.len() == 1 { return format!("({})", filters[0].sql); }
+        let (left, right) = filters.split_at(filters.len() / 2);
+        format!("({} OR {})", disjunction(left), disjunction(right))
+    }
+    let sql = disjunction(&filters);
+    Some(BoundFilter { display, sql, parameters, query: None })
+}
+
+fn bound_filter_at(driver: Driver, columns: &[String], values: &[Cell], offset: usize) -> Option<BoundFilter> {
     let display = format!("({})", key_filter(driver, columns, values)?);
     let sql = columns.iter().enumerate().map(|(i, column)| {
         let parameter = match driver {
-            Driver::Postgres => format!("${}", i + 1),
-            Driver::MsSql => format!("@P{}", i + 1),
-            Driver::Oracle => format!(":{}", i + 1),
+            Driver::Postgres => format!("${}", offset + i + 1),
+            Driver::MsSql => format!("@P{}", offset + i + 1),
+            Driver::Oracle => format!(":{}", offset + i + 1),
             _ => "?".into(),
         };
         format!("{} = {parameter}", driver.quote_ident(column))
@@ -254,6 +284,22 @@ mod tests {
             assert_eq!(filter.parameters, [values[0].clone().unwrap(), "north".into()]);
             assert!(!filter.sql.contains("DROP TABLE"));
         }
+    }
+
+    #[test]
+    fn multi_row_filters_number_parameters_globally_and_preserve_pairs() {
+        let columns = ["id".into(), "shop".into()];
+        let rows = [vec![Some("1".into()), Some("north".into())], vec![Some("2".into()), Some("south".into())], vec![Some("1".into()), Some("north".into())], vec![None, Some("ignored".into())]];
+        for (driver, last) in [(Driver::Postgres, "$4"), (Driver::MsSql, "@P4"), (Driver::Oracle, ":4"), (Driver::Sqlite, "?"), (Driver::MySql, "?"), (Driver::MariaDb, "?"), (Driver::Snowflake, "?")] {
+            let filter = bound_filter_rows(driver, &columns, &rows).unwrap();
+            assert_eq!(filter.parameters, ["1", "north", "2", "south"]);
+            assert!(filter.sql.contains(last));
+            assert_eq!(filter.sql.matches(" OR ").count(), 1);
+            assert_eq!(filter.sql.matches(" AND ").count(), 2);
+            assert!(!filter.sql.contains("north"));
+        }
+        assert!(bound_filter_rows(Driver::Sqlite, &columns, &rows[3..]).is_none());
+        assert!(bound_filter_rows(Driver::Sqlite, &columns, &[vec![Some("1".into())]]).is_none());
     }
 
     #[test]

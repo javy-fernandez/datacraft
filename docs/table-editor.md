@@ -67,12 +67,21 @@ target table, relation type and column mapping, with declared foreign keys first
 Use Up/Down and Enter to choose, or Esc to close. Clicking the value itself,
 with or without Ctrl/⌘, still selects cells as usual.
 
+Select several cells with Ctrl/Command-click, Shift-click or a rectangular range,
+or select whole rows, to navigate all selected related values together. F4 and
+the follow button on a selected cell use that selection; a button on an unselected
+cell follows only that cell. Context-menu targets use the same selection.
+Duplicate keys are merged. NULL keys are skipped when valid keys are selected;
+an all-NULL selection shows the NULL message. Composite-key values stay paired
+per source row, so selecting `(A, north)` and `(B, south)` cannot match
+`(A, south)` or `(B, north)`.
+
 Targets include declared foreign keys, reverse foreign keys and inferred
 `<table>_id` references to a single-column primary key with the same data type.
 Inference uses already-loaded schema metadata. The target table opens filtered
 to the matching values and highlights the first matching row. It reuses an idle
-tab without pending changes, or opens a new tab. Right-click a cell for **Go to
-referenced row** (one item per declared key using the column) and **Referenced by…**.
+tab without pending changes, or opens a new tab. Right-click a cell to choose
+one of the same related-table targets, or use **Referenced by…** for row counts.
 
 ![The follow button of a foreign-key value](screenshots/fk-navigation/grid-links.png)
 

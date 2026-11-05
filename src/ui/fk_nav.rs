@@ -23,6 +23,8 @@ pub enum Jump {
     Null,
     /// The parent row of `key` whose referenced columns hold `values`.
     Parent { key: ForeignKey, values: Vec<Cell> },
+    /// Matching complete key tuples from multiple selected source rows.
+    Rows { key: ForeignKey, values: Vec<Vec<Cell>> },
     /// "Referenced by…" for one row: each incoming key with the row's referenced values.
     Children { keys: Vec<(ForeignKey, Option<Vec<Cell>>)> },
 }
@@ -54,6 +56,7 @@ pub struct Target {
     key: ForeignKey,
     values: Vec<Cell>,
     kind: &'static str,
+    additional: Vec<Vec<Cell>>,
 }
 
 impl Target {
@@ -61,7 +64,20 @@ impl Target {
         let mapping = self.key.columns.iter().zip(&self.key.ref_columns).map(|(from, to)| format!("{from} → {}.{to}", self.key.ref_table)).collect::<Vec<_>>().join(", ");
         format!("{}.{}   · {}   · {mapping}", self.key.ref_schema, self.key.ref_table, self.kind)
     }
-    pub fn jump(self) -> Jump { Jump::Parent { key: self.key, values: self.values } }
+    pub fn has_values(&self) -> bool {
+        std::iter::once(&self.values).chain(&self.additional).any(|values| values.iter().all(Option::is_some))
+    }
+
+    pub fn jump(self) -> Jump {
+        let mut values: Vec<_> = std::iter::once(self.values).chain(self.additional).filter(|v| v.iter().all(Option::is_some)).collect();
+        values.sort();
+        values.dedup();
+        match values.len() {
+            0 => Jump::Null,
+            1 => Jump::Parent { key: self.key, values: values.pop().unwrap() },
+            _ => Jump::Rows { key: self.key, values },
+        }
+    }
 }
 
 impl Links {
@@ -95,11 +111,28 @@ impl Links {
         let mut targets = Vec::new();
         let mut add = |key: ForeignKey, cols: &[usize], kind| {
             if !cols.contains(&col) || cols.iter().any(|&c| row.get(c).is_none_or(crate::edit::is_lossy_display)) { return; }
-            targets.push(Target { key, values: cols.iter().map(|&c| row[c].clone()).collect(), kind });
+            targets.push(Target { key, values: cols.iter().map(|&c| row[c].clone()).collect(), kind, additional: Vec::new() });
         };
         for (key, cols) in &self.outgoing { add(key.clone(), cols, "FK"); }
         for (key, cols) in &self.incoming { if let Some(cols) = cols { add(reverse(key.clone()), cols, "reverse FK"); } }
         for (key, cols) in &self.inferred { add(key.clone(), cols, "inferred"); }
+        targets.sort_by_key(|t| (match t.kind { "FK" => 0, "reverse FK" => 1, _ => 2 }, t.key.ref_schema.clone(), t.key.ref_table.clone(), t.key.ref_columns.clone()));
+        targets
+    }
+
+    /// Combine selected cells by relation, keeping composite values from each source row
+    /// together. Selecting two columns of one composite key still contributes one tuple.
+    pub fn targets_for_cells<'a>(&self, cells: impl IntoIterator<Item = (usize, &'a [Cell])>) -> Vec<Target> {
+        let mut targets: Vec<Target> = Vec::new();
+        for (column, row) in cells {
+            for target in self.targets(column, row) {
+                if let Some(existing) = targets.iter_mut().find(|t| t.key == target.key && t.kind == target.kind) {
+                    existing.additional.push(target.values);
+                } else {
+                    targets.push(target);
+                }
+            }
+        }
         targets.sort_by_key(|t| (match t.kind { "FK" => 0, "reverse FK" => 1, _ => 2 }, t.key.ref_schema.clone(), t.key.ref_table.clone(), t.key.ref_columns.clone()));
         targets
     }
@@ -113,6 +146,7 @@ impl Links {
     }
 
     /// Outgoing keys (indices) that use result column `col`.
+    #[cfg(test)]
     pub fn keys_at(&self, col: usize) -> impl Iterator<Item = usize> + '_ {
         self.outgoing.iter().enumerate().filter(move |(_, (_, cols))| cols.contains(&col)).map(|(i, _)| i)
     }
@@ -123,6 +157,7 @@ impl Links {
         self.keys_at(col).find(|&k| self.outgoing[k].1.iter().all(|&c| row.get(c).is_some_and(|v| v.is_some() && !crate::edit::is_lossy_display(v))))
     }
 
+    #[cfg(test)]
     pub fn parent(&self, key: usize, row: &[Cell]) -> Option<Jump> {
         let (key, cols) = self.outgoing.get(key)?;
         let values: Vec<Cell> = cols.iter().map(|&c| row.get(c).cloned().flatten()).collect();
@@ -172,6 +207,23 @@ mod tests {
         assert!(links.targets(9, &[None, None]).is_empty());
         assert!(links.targets(0, &[None, None])[0].values[0].is_none());
         assert_eq!(links.targets(1, &[None, Some("7".into())])[0].key.ref_table, "orders");
+    }
+
+    #[test]
+    fn multi_selection_deduplicates_complete_keys_and_skips_null_tuples() {
+        let key = key("lines", &["order_id", "shop"], "orders", &["id", "shop"]);
+        let links = Links::new(&TableKeys { outgoing: vec![key.clone()], incoming: Vec::new() }, &[Some("order_id".into()), Some("shop".into())]).unwrap();
+        let rows = [
+            vec![Some("1".into()), Some("north".into())],
+            vec![Some("2".into()), Some("south".into())],
+            vec![Some("1".into()), Some("north".into())],
+            vec![None, Some("north".into())],
+            vec![Some("0x12…".into()), Some("north".into())],
+        ];
+        let targets = links.targets_for_cells(rows.iter().flat_map(|r| [(0, r.as_slice()), (1, r.as_slice())]));
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].clone().jump(), Jump::Rows { key, values: rows[..2].to_vec() });
+        assert_eq!(links.targets_for_cells([(0, rows[3].as_slice())])[0].clone().jump(), Jump::Null);
     }
 
     #[test]

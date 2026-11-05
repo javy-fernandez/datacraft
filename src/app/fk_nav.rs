@@ -89,17 +89,25 @@ struct Child {
 
 /// The table filtered to the rows whose `columns` hold `values`, as builder conditions.
 fn filtered(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], values: &[Cell]) -> Option<Filtered> {
-    let bound_filter = crate::db::fk_nav::bound_filter(driver, columns, values)?;
+    filtered_rows(driver, conn, db, schema, table, columns, &[values.to_vec()])
+}
+
+fn filtered_rows(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], values: &[Vec<Cell>]) -> Option<Filtered> {
+    use crate::ui::filter_sort::{Connector, FilterRow, Group};
+    let bound_filter = crate::db::fk_nav::bound_filter_rows(driver, columns, values)?;
     let where_clause = bound_filter.display.clone();
+    let conditions = |values: &[String]| columns.iter().zip(values).map(|(column, value)| {
+        Node::Condition(Condition { enabled: true, column: column.clone(), operator: Operator::Equal, value: value.clone(), second: String::new() }).into()
+    }).collect::<Vec<FilterRow>>();
     let mut filter = FilterSort::default();
-    filter.filter.children = columns
-        .iter()
-        .zip(values)
-        .map(|(column, value)| {
-            let value = value.clone().unwrap_or_default();
-            Node::Condition(Condition { enabled: true, column: column.clone(), operator: Operator::Equal, value, second: String::new() }).into()
-        })
-        .collect();
+    // Reconstruct only normalized, non-NULL tuples actually used by the bound query.
+    filter.filter.children = if bound_filter.parameters.len() == columns.len() {
+        conditions(&bound_filter.parameters)
+    } else {
+        bound_filter.parameters.chunks(columns.len()).map(|values| FilterRow {
+            node: Node::Group(Group { children: conditions(values) }), connector: Connector::Or,
+        }).collect()
+    };
     Some(Filtered { conn, db: db.into(), schema: schema.into(), table: table.into(), where_clause, bound_filter: Some(bound_filter), order_by: String::new(), filter })
 }
 
@@ -215,6 +223,11 @@ impl DataCraftApp {
         match jump {
             Jump::Choose { targets, anchor } => { self.fk_nav.popup = Some((self.consoles[idx].id, anchor, targets, 0)); }
             Jump::Null => self.info("Cannot navigate: source value is NULL"),
+            Jump::Rows { key, values } => {
+                if let Some(target) = filtered_rows(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &values) {
+                    self.go(origin, &target);
+                } else { self.info("Cannot navigate: source value is NULL"); }
+            }
             Jump::Parent { key, values } => {
                 if values.iter().any(Option::is_none) { self.info("Cannot navigate: source value is NULL"); return; }
                 if let Some(target) = filtered(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &values) {
@@ -458,6 +471,49 @@ mod tests {
     /// The tab of `table` finished loading and its keys were looked up.
     fn loaded(app: &DataCraftApp, table: &str) -> bool {
         app.consoles.iter().any(|c| !c.is_busy() && c.table.as_ref().is_some_and(|t| t.table == table) && c.results.last().is_some_and(|v| v.links_checked))
+    }
+
+    #[test]
+    fn sqlite_multi_selection_matches_complete_keys_in_both_directions() {
+        let path = std::env::temp_dir().join(format!("datacraft-fk-multi-{}.db", uuid::Uuid::new_v4()));
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE shops(code TEXT,region TEXT,PRIMARY KEY(code,region));
+            CREATE TABLE orders(id INTEGER PRIMARY KEY,shop TEXT,region TEXT,FOREIGN KEY(shop,region) REFERENCES shops(code,region));
+            INSERT INTO shops VALUES('A','north'),('B','south'),('A','south'),('B','north');
+            INSERT INTO orders VALUES(1,'A','north'),(2,'B','south'),(3,'A','north'),(4,'A',NULL),(5,'A','south'),(6,'B','north');").unwrap();
+        drop(db);
+        let mut app = super::super::tests::tabs_app();
+        let mut cfg = ConnectionConfig::new(7, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        app.conns.push(ConnState::new(cfg));
+        app.connect(7);
+        pump(&mut app, |app| app.conn(7).is_some_and(|c| c.status == ConnStatus::Connected));
+        app.open_table(&TableRef { conn: 7, db: "main".into(), schema: "main".into(), table: "orders".into() });
+        pump(&mut app, |app| loaded(app, "orders"));
+        let orders = tab(&app, "orders");
+        let view = app.consoles[orders].results.last().unwrap();
+        let links = view.links.as_ref().unwrap();
+        let targets = links.targets_for_cells(view.rs.rows[..4].iter().flat_map(|r| [(1, r.as_slice()), (2, r.as_slice())]));
+        assert_eq!(targets.len(), 1);
+        app.follow_key(orders, targets[0].clone().jump());
+        pump(&mut app, |app| loaded(app, "shops"));
+        let shops = tab(&app, "shops");
+        let view = app.consoles[shops].results.last().unwrap();
+        assert_eq!(view.rs.rows, vec![vec![Some("A".into()), Some("north".into())], vec![Some("B".into()), Some("south".into())]]);
+        let table = app.consoles[shops].table.as_ref().unwrap();
+        assert_eq!(table.bound_filter.as_ref().unwrap().parameters, ["A", "north", "B", "south"]);
+        let columns = [ColumnInfo { name: "code".into(), data_type: "TEXT".into(), nullable: false, primary_key: true }, ColumnInfo { name: "region".into(), data_type: "TEXT".into(), nullable: false, primary_key: true }];
+        assert_eq!(table.filter_sort.sql(Driver::Sqlite, &columns).unwrap().0, table.where_clause);
+        let reverse = view.links.as_ref().unwrap().targets_for_cells(view.rs.rows.iter().map(|r| (0, r.as_slice())));
+        app.follow_key(shops, reverse[0].clone().jump());
+        pump(&mut app, |app| loaded(app, "orders"));
+        assert_eq!(app.consoles[orders].results[0].rs.rows.iter().map(|r| r[0].as_deref().unwrap()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        app.key_history(false);
+        pump(&mut app, |app| loaded(app, "shops"));
+        assert_eq!(app.consoles[shops].results[0].rs.rows.len(), 2);
+        app.worker.send(Request::Disconnect(7));
+        drop(app);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
