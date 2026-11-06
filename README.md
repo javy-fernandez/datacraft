@@ -344,11 +344,12 @@ Thank you to everyone who has contributed code, fixes and translations to DataCr
 
 | # | Contributor | Commits | Share | Lines changed | Share |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 96 | 47.5% | +43,373 / −3,469 | 39.1% |
-| 2 | [YoSiem](https://github.com/YoSiem) | 90 | 44.6% | +51,002 / −7,822 | 49.2% |
-| 3 | [Claude](https://github.com/claude) | 8 | 4.0% | +6,399 / −41 | 5.4% |
-| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 3.0% | +4,258 / −215 | 3.7% |
+| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 101 | 48.3% | +43,572 / −3,526 | 39.0% |
+| 2 | [YoSiem](https://github.com/YoSiem) | 90 | 43.1% | +51,002 / −7,822 | 48.7% |
+| 3 | [Claude](https://github.com/claude) | 8 | 3.8% | +6,399 / −41 | 5.3% |
+| 4 | [Ivan Temchenko](https://github.com/35359595) | 6 | 2.9% | +4,258 / −215 | 3.7% |
 | 5 | [Aaron Price](https://github.com/aaronprice00) | 2 | 1.0% | +2,812 / −274 | 2.6% |
+| | 1 others | 2 | 1.0% | 788 | 0.7% |
 
 Counted from non-merge commits on `main`; merge commits, bots and `Cargo.lock` are excluded.
 The chart is refreshed by the [contributors workflow](.github/workflows/contributors.yml).
