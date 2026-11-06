@@ -1767,6 +1767,11 @@
     "The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.": "スクリプトは 1 つのトランザクション (XACT_ABORT) で実行されます: 失敗したステートメントは他のすべてを元に戻します。",
     "This engine commits each DDL statement: if one fails, the statements before it stay applied.": "このエンジンは DDL ステートメントごとにコミットします: 1 つが失敗しても、それより前のステートメントは適用されたままです。",
     "alter, loses data": "変更 (データ損失)",
-    "Drops columns or changes their type: left out of the script unless checked.": "列の削除または型の変更を含みます: チェックしない限りスクリプトには含まれません。"
+    "Drops columns or changes their type: left out of the script unless checked.": "列の削除または型の変更を含みます: チェックしない限りスクリプトには含まれません。",
+    "Cannot navigate: source value is NULL": "移動できません: 元の値が NULL です",
+    "No matching row in `{table}` for `{value}`": "`{table}` に `{value}` と一致する行がありません",
+    "FK": "FK",
+    "reverse FK": "逆方向 FK",
+    "inferred": "推定"
   }
 }

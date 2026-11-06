@@ -101,7 +101,12 @@ impl SqliteSession {
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let sql = sql.to_string();
-        self.with_conn(move |conn| run_batch(conn, &sql, max_rows)).await
+        self.with_conn(move |conn| run_batch(conn, &sql, &[], max_rows)).await
+    }
+
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+        let (sql, parameters) = (sql.to_string(), parameters.to_vec());
+        self.with_conn(move |conn| run_batch(conn, &sql, &parameters, max_rows)).await
     }
 
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {
@@ -133,16 +138,17 @@ impl SqliteSession {
     }
 }
 
-fn run_batch(conn: &Connection, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+fn run_batch(conn: &Connection, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
     let mut results = Vec::new();
     let mut batch = Batch::new(conn, sql);
     loop {
         let start = Instant::now();
         let Some(mut stmt) = batch.next()? else { break };
         let mut rs = ResultSet {
-            statement: stmt.expanded_sql().unwrap_or_else(|| sql.trim().to_string()).trim().to_string(),
+            statement: if parameters.is_empty() { stmt.expanded_sql().unwrap_or_else(|| sql.trim().to_string()).trim().to_string() } else { sql.trim().to_string() },
             ..Default::default()
         };
+        for (i, value) in parameters.iter().enumerate() { stmt.raw_bind_parameter(i + 1, value)?; }
         let ncols = stmt.column_count();
         if ncols > 0 {
             rs.columns = stmt.column_names().into_iter().map(str::to_string).collect();
@@ -238,6 +244,31 @@ fn load_schema(conn: &Connection) -> anyhow::Result<Vec<SchemaInfo>> {
 mod tests {
     use super::*;
     use crate::db::Driver;
+
+    #[test]
+    fn bound_navigation_matches_quoted_keys_without_executing_their_contents() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE target(id TEXT PRIMARY KEY)").unwrap();
+        let value = "O'Brien'); DROP TABLE target; --".to_string();
+        conn.execute("INSERT INTO target VALUES (?)", [&value]).unwrap();
+        let sql = "SELECT * FROM target WHERE id = ? LIMIT 10";
+        let rows = run_batch(&conn, sql, std::slice::from_ref(&value), 10).unwrap();
+        assert_eq!(rows[0].rows, vec![vec![Some(value)]]);
+        assert_eq!(rows[0].statement, sql);
+        assert!(run_batch(&conn, sql, &["missing".into()], 10).unwrap()[0].rows.is_empty());
+        assert_eq!(conn.query_row("SELECT count(*) FROM target", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn multi_navigation_handles_a_thousand_composite_keys() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE target(id TEXT,shop TEXT); INSERT INTO target VALUES('0','s'),('999','s'),('500','other')").unwrap();
+        let rows: Vec<_> = (0..1000).map(|i| vec![Some(i.to_string()), Some("s".into())]).collect();
+        let filter = super::super::fk_nav::bound_filter_rows(Driver::Sqlite, &["id".into(), "shop".into()], &[], &rows).unwrap();
+        let sql = format!("SELECT * FROM target WHERE {}", filter.sql);
+        let results = run_batch(&conn, &sql, &filter.parameters, 10).unwrap();
+        assert_eq!(results[0].rows, vec![vec![Some("0".into()), Some("s".into())], vec![Some("999".into()), Some("s".into())]]);
+    }
 
     /// Database in a temporary file that is removed afterwards.
     struct TempDb(std::path::PathBuf);

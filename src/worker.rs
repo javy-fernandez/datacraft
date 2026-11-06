@@ -104,6 +104,8 @@ pub enum Request {
         db: Option<String>,
         console: ConsoleId,
         statements: Vec<String>,
+        /// Native bind values; navigation runs a single SELECT with these parameters.
+        parameters: Vec<String>,
         max_rows: usize,
         manual: bool,
     },
@@ -1315,10 +1317,10 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             }
             vec![]
         }
-        Request::Execute { conn, db, console, statements, max_rows, manual: true } => {
-            Box::pin(execute_manual(state, conn, db, console, statements, max_rows)).await
+        Request::Execute { conn, db, console, statements, max_rows, manual: true, parameters } => {
+            Box::pin(execute_manual(state, conn, db, console, (statements, parameters), max_rows)).await
         }
-        Request::Execute { conn, db, console, statements, max_rows, manual: false } => {
+        Request::Execute { conn, db, console, statements, max_rows, manual: false, parameters } => {
             use std::sync::atomic::Ordering::SeqCst;
             let start = Instant::now();
             let running = Arc::new(Running::default());
@@ -1359,7 +1361,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                         break;
                     }
                     let result = tokio::select! {
-                        r = s.execute(&stmt, max_rows) => r,
+                        r = s.execute_bound(&stmt, &parameters, max_rows) => r,
                         _ = running.abandon.notified() => {
                             abandoned = true;
                             Err(anyhow::anyhow!(tr("Query cancelled")))
@@ -1410,7 +1412,8 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
 
 /// `Execute` in Manual mode: on the console's own session, inside the transaction it keeps open.
 /// The transaction begins before the first statement that doesn't itself control it.
-async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console: ConsoleId, statements: Vec<String>, max_rows: usize) -> Vec<Response> {
+async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console: ConsoleId, query: (Vec<String>, Vec<String>), max_rows: usize) -> Vec<Response> {
+    let (statements, parameters) = query;
     use crate::db::transaction::{self, Control};
     use std::sync::atomic::Ordering::SeqCst;
     let start = Instant::now();
@@ -1467,7 +1470,7 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
         let was_aborted = t.tx.is_some_and(|tx| tx.aborted);
         if result.is_ok() {
             result = tokio::select! {
-                r = t.session.execute(&stmt, max_rows) => r,
+                r = t.session.execute_bound(&stmt, &parameters, max_rows) => r,
                 _ = running.abandon.notified() => {
                     abandoned = true;
                     Err(anyhow::anyhow!(tr("Query cancelled")))
@@ -2082,7 +2085,7 @@ mod tests {
         let w = Worker::start(egui::Context::default());
         w.send(Request::Connect(cfg.clone()));
         wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));
-        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select pg_sleep(30) /* dc monitor test */".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select pg_sleep(30) /* dc monitor test */".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let started = Instant::now();
         let (mut row, mut epoch, mut monitor_pid) = (None, 0, String::new());
         for request_id in 1..=50 {
@@ -2114,7 +2117,7 @@ mod tests {
         }
         assert_eq!(cancelled, Some(Ok(())));
         assert!(executed.expect("the console's query ended").is_some(), "the console's query was cancelled");
-        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select 1".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 33, db: None, console: 330, statements: vec!["select 1".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 330, .. })) else { unreachable!() };
         assert_eq!((error, results[0].rows[0][0].as_deref()), (None, Some("1")), "the console's session survived");
 
@@ -2251,14 +2254,14 @@ mod tests {
         wait_for(&w, |r| matches!(r, Response::Connected { .. }));
         // Endless recursive CTE: only a cancel stops it.
         let endless = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c".to_string();
-        w.send(Request::Execute { conn: 7, db: None, console: 1, statements: vec![endless], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 7, db: None, console: 1, statements: vec![endless], max_rows: 10, manual: false, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(300));
         w.send(Request::Cancel { console: 1 });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 1, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert_eq!(error.as_deref(), Some(tr("Query cancelled")));
         // The session is still usable.
-        w.send(Request::Execute { conn: 7, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 7, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 2, .. }));
         let Response::Executed { error, results, .. } = r else { unreachable!() };
         assert!(error.is_none() && results.len() == 1);
@@ -2270,7 +2273,7 @@ mod tests {
         let w = Worker::start(egui::Context::default());
         w.send(Request::Connect(cfg));
         wait_for(&w, |r| matches!(r, Response::Connected { .. }));
-        w.send(Request::Execute { conn, db: None, console: 3, statements: vec![write.into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn, db: None, console: 3, statements: vec![write.into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 3, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert!(error.is_some(), "the server accepted a write on a read-only connection");
@@ -2302,7 +2305,7 @@ mod tests {
         w.send(Request::RunDdl { conn, db: None, statements, close_db: None, transaction: true });
         let Response::DdlDone { result, .. } = wait_for(&w, |r| matches!(r, Response::DdlDone { .. })) else { unreachable!() };
         assert!(result.is_err());
-        w.send(Request::Execute { conn, db: None, console: 4, statements: vec![format!("select count(*) from {table}")], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn, db: None, console: 4, statements: vec![format!("select count(*) from {table}")], max_rows: 10, manual: false, parameters: Vec::new() });
         let Response::Executed { results, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 4, .. })) else { unreachable!() };
         assert_eq!(results[0].rows[0][0].as_deref(), Some("0"));
         w.send(Request::RunDdl { conn, db: None, statements: vec![format!("drop table {table}")], close_db: None, transaction: false });
@@ -2377,7 +2380,7 @@ mod tests {
             transaction: false,
         });
         wait_for(&w, |r| matches!(r, Response::DdlDone { result: Ok(_), .. }));
-        w.send(Request::Execute { conn, db: None, console: 4, statements: vec!["select sleep(4)".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn, db: None, console: 4, statements: vec!["select sleep(4)".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(300));
         let start = Instant::now();
         for request_id in 1..=3 {
@@ -2481,14 +2484,14 @@ mod tests {
         w.send(Request::Connect(cfg));
         wait_for(&w, |r| matches!(r, Response::Connected { .. }));
         let start = Instant::now();
-        w.send(Request::Execute { conn: 8, db: None, console: 1, statements: vec!["select sleep(30)".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 8, db: None, console: 1, statements: vec!["select sleep(30)".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(500));
         w.send(Request::Cancel { console: 1 });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 1, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert_eq!(error.as_deref(), Some(tr("Query cancelled")));
         assert!(start.elapsed() < Duration::from_secs(10));
-        w.send(Request::Execute { conn: 8, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 8, db: None, console: 2, statements: vec!["select 1".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let r = wait_for(&w, |r| matches!(r, Response::Executed { console: 2, .. }));
         let Response::Executed { error, .. } = r else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
@@ -2774,7 +2777,7 @@ mod tests {
     }
 
     fn first_rows(w: &Worker, conn: ConnId, console: ConsoleId, statements: &[&str]) -> Vec<ResultSet> {
-        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100, manual: false });
+        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100, manual: false, parameters: Vec::new() });
         let r = wait_for(w, |r| matches!(r, Response::Executed { console: c, .. } if *c == console));
         let Response::Executed { results, error, .. } = r else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
@@ -3058,7 +3061,7 @@ mod tests {
         assert!(!d.columns[2].nullable);
         assert_eq!(d.columns[2].default.as_deref(), Some("1"));
         // The rows survive, under the new names.
-        w.send(Request::Execute { conn, db: None, console: 5, statements: vec!["select id, title, price from dc_goods".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn, db: None, console: 5, statements: vec!["select id, title, price from dc_goods".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 5, .. })) else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
         assert_eq!(results[0].rows, vec![vec![Some("1".into()), Some("pen".into()), Some("3".into())]]);
@@ -3124,7 +3127,7 @@ mod tests {
         assert!(d.autoincrement);
         assert_eq!(d.columns[1].data_type, "bigint");
         assert!(!d.columns[1].nullable);
-        w.send(Request::Execute { conn: 14, db: None, console: 6, statements: vec!["select n from dc_view".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 14, db: None, console: 6, statements: vec!["select n from dc_view".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 6, .. })) else { unreachable!() };
         assert!(error.is_none(), "{error:?}");
         assert_eq!(results[0].rows, vec![vec![Some("1".into())]]);
@@ -3194,7 +3197,7 @@ mod tests {
 
     /// A Manual `Execute`: (results, error, the transaction after it, why it ended).
     fn manual_run(w: &Worker, conn: ConnId, console: ConsoleId, statements: &[&str]) -> (Vec<ResultSet>, Option<String>, Option<TxInfo>, Option<TxNote>) {
-        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100, manual: true });
+        w.send(Request::Execute { conn, db: None, console, statements: statements.iter().map(|s| s.to_string()).collect(), max_rows: 100, manual: true, parameters: Vec::new() });
         manual_reply(w, console)
     }
 
@@ -3306,7 +3309,7 @@ mod tests {
         manual_run(&w, 31, 1, &["insert into t values (1)"]);
         // Endless recursive CTE on the console's own session: only a cancel stops it.
         let endless = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c";
-        w.send(Request::Execute { conn: 31, db: None, console: 1, statements: vec![endless.into()], max_rows: 10, manual: true });
+        w.send(Request::Execute { conn: 31, db: None, console: 1, statements: vec![endless.into()], max_rows: 10, manual: true, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(300));
         w.send(Request::Cancel { console: 1 });
         let (_, error, tx, note) = manual_reply(&w, 1);
@@ -3352,7 +3355,7 @@ mod tests {
         // the transaction back, and it is rolled back.
         manual_run(&w, 35, 2, &["insert into t values (3)"]);
         let endless = "with recursive c(n) as (select 1 union all select n + 1 from c) select count(*) from c";
-        w.send(Request::Execute { conn: 35, db: None, console: 2, statements: vec![endless.into()], max_rows: 10, manual: true });
+        w.send(Request::Execute { conn: 35, db: None, console: 2, statements: vec![endless.into()], max_rows: 10, manual: true, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(300));
         w.send(Request::ReleaseConsole { console: 2 });
         std::thread::sleep(Duration::from_millis(100));
@@ -3494,7 +3497,7 @@ mod tests {
 
         // Cancel reaches the console's own session (and PostgreSQL aborts the transaction).
         manual_run(&w, 33, 11, &[&insert(6)]);
-        w.send(Request::Execute { conn: 33, db: None, console: 11, statements: vec!["select pg_sleep(30)".into()], max_rows: 10, manual: true });
+        w.send(Request::Execute { conn: 33, db: None, console: 11, statements: vec!["select pg_sleep(30)".into()], max_rows: 10, manual: true, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(500));
         let started = Instant::now();
         w.send(Request::Cancel { console: 11 });
@@ -3508,7 +3511,7 @@ mod tests {
         // Roll Back while a statement runs (the confirmation stops it first): the rollback
         // waits behind the cancelled statement instead of hanging.
         manual_run(&w, 33, 11, &[&insert(9)]);
-        w.send(Request::Execute { conn: 33, db: None, console: 11, statements: vec!["select pg_sleep(30)".into()], max_rows: 10, manual: true });
+        w.send(Request::Execute { conn: 33, db: None, console: 11, statements: vec!["select pg_sleep(30)".into()], max_rows: 10, manual: true, parameters: Vec::new() });
         std::thread::sleep(Duration::from_millis(300));
         let started = Instant::now();
         w.send(Request::Cancel { console: 11 });
@@ -3525,7 +3528,7 @@ mod tests {
         let pid = first_rows(&w, 33, 12, &["select pg_backend_pid()"])[0].rows[0][0].clone().unwrap();
         let (_, error, tx, _) = manual_run(&w, 33, 11, &[&format!("select pg_terminate_backend({pid})")]);
         assert!(error.is_none() && tx.is_some_and(|t| t.statements == 2), "{error:?}");
-        w.send(Request::Execute { conn: 33, db: None, console: 12, statements: vec!["select 1".into()], max_rows: 10, manual: false });
+        w.send(Request::Execute { conn: 33, db: None, console: 12, statements: vec!["select 1".into()], max_rows: 10, manual: false, parameters: Vec::new() });
         wait_for(&w, |r| matches!(r, Response::ConnectFailed { conn: 33, .. }));
         w.send(Request::Connect(cfg.clone()));
         wait_for(&w, |r| matches!(r, Response::Connected { conn: 33, .. }));

@@ -209,6 +209,18 @@ impl MySession {
         }
     }
 
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+        let params = mysql_async::Params::Positional(parameters.iter().map(|v| Value::Bytes(v.as_bytes().to_vec())).collect());
+        let outcome = async {
+            let mut result = self.conn.exec_iter(sql, params).await?;
+            collect_results(sql, max_rows, &mut result).await
+        }.await;
+        outcome.map_err(|e| {
+            if breaks_connection(&e) { self.broken = true; }
+            my_error(e)
+        })
+    }
+
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
         if let Some(db) = self.scalar_strings("SELECT DATABASE()").await?.into_iter().next() {
             return Ok(db);
@@ -365,10 +377,14 @@ async fn open(opts: OptsBuilder) -> Result<Conn, Option<mysql_async::Error>> {
 }
 
 async fn run(conn: &mut Conn, sql: &str, max_rows: usize) -> Result<Vec<ResultSet>, mysql_async::Error> {
-    let statement = sql.trim().to_string();
-    let mut start = Instant::now();
     let mut result = conn.query_iter(sql).await?;
 
+    collect_results(sql, max_rows, &mut result).await
+}
+
+async fn collect_results<P: mysql_async::prelude::Protocol>(sql: &str, max_rows: usize, result: &mut mysql_async::QueryResult<'_, '_, P>) -> Result<Vec<ResultSet>, mysql_async::Error> {
+    let statement = sql.trim().to_string();
+    let mut start = Instant::now();
     let mut results: Vec<ResultSet> = Vec::new();
     // Every result set must be read to the end even when truncating; otherwise the connection is
     // left half-read. `next()` returns None at the end of each set and moves on to the next one.

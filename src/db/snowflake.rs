@@ -210,14 +210,14 @@ impl Inner {
     }
 
     /// Runs `sql` and returns the `data` of the finished query.
-    async fn query(&self, sql: &str) -> anyhow::Result<Value> {
+    async fn query(&self, sql: &str, parameters: &[String]) -> anyhow::Result<Value> {
         let sequence = {
             let mut s = self.sequence.lock().unwrap_or_else(|e| e.into_inner());
             *s += 1;
             *s
         };
         let rid = request_id();
-        let body = json!({
+        let mut body = json!({
             "sqlText": sql,
             "sequenceId": sequence,
             "querySubmissionTime": chrono::Utc::now().timestamp_millis(),
@@ -226,6 +226,11 @@ impl Inner {
             "describeOnly": false,
             "parameters": { "JDBC_QUERY_RESULT_FORMAT": "JSON" },
         });
+        // Only bound statements carry bindings; the rest send what they always did.
+        if !parameters.is_empty() {
+            let bindings: serde_json::Map<String, Value> = parameters.iter().enumerate().map(|(i, value)| ((i + 1).to_string(), json!({"type": "TEXT", "value": value}))).collect();
+            body["bindings"] = Value::Object(bindings);
+        }
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = Some((rid.clone(), sql.to_string()));
         let result = self.query_loop(&rid, &body).await;
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -635,10 +640,12 @@ impl SfSession {
         self.broken
     }
 
-    pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> { self.execute_bound(sql, &[], max_rows).await }
+
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let start = Instant::now();
         self.inner.stop_chunks.store(false, std::sync::atomic::Ordering::SeqCst);
-        let data = match self.inner.query(sql).await {
+        let data = match self.inner.query(sql, parameters).await {
             Ok(d) => d,
             Err(e) => {
                 // A failed re-login leaves the session without tokens.

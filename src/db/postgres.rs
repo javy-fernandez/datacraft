@@ -15,6 +15,7 @@ use futures_util::TryStreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_postgres::config::SslMode;
 use tokio_postgres::tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream};
+use tokio_postgres::types::{Kind, Type};
 use tokio_postgres::{Client, SimpleQueryMessage, Socket};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::ClientConfig;
@@ -275,6 +276,29 @@ impl PgSession {
         Ok(results)
     }
 
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+        let start = Instant::now();
+        // Keep the same text cell representation as simple_query, including custom SQL types.
+        let description = self.client.prepare(sql).await.map_err(pg_error)?;
+        let projection = description.columns().iter().map(|c| {
+            let name = super::Driver::Postgres.quote_ident(c.name());
+            // A boolean's text cast says true/false; simple_query (and its output function) t/f.
+            let boolean = c.type_() == &Type::BOOL || matches!(c.type_().kind(), Kind::Domain(t) if *t == Type::BOOL);
+            if boolean { format!("CASE WHEN {name} THEN 't' WHEN NOT {name} THEN 'f' END AS {name}") } else { format!("{name}::text AS {name}") }
+        }).collect::<Vec<_>>().join(", ");
+        let query = format!("SELECT {projection} FROM ({sql}) AS dc_navigation");
+        let values: Vec<TextParameter<'_>> = parameters.iter().map(|v| TextParameter(v)).collect();
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = values.iter().map(|v| v as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
+        let mut stream = std::pin::pin!(self.client.query_raw(query.as_str(), params).await.map_err(pg_error)?);
+        let mut rs = ResultSet { statement: sql.into(), columns: description.columns().iter().map(|c| c.name().to_string()).collect(), ..Default::default() };
+        while let Some(row) = stream.try_next().await.map_err(pg_error)? {
+            if rs.rows.len() >= max_rows { rs.truncated = true; continue; }
+            rs.rows.push((0..row.len()).map(|i| row.try_get::<_, Option<String>>(i)).collect::<Result<_, _>>().map_err(pg_error)?);
+        }
+        rs.elapsed = start.elapsed();
+        Ok(vec![rs])
+    }
+
     pub async fn introspect(&mut self) -> anyhow::Result<Vec<SchemaInfo>> {
         const SQL: &str = r#"
             SELECT t.table_schema, t.table_name, t.table_type,
@@ -531,4 +555,18 @@ mod tls_tests {
         let err = connect(plain, "localhost", s(TlsMode::Require, "")).await;
         assert!(!err.contains("login"), "{err}");
     }
+}
+
+/// PostgreSQL parses a bound value using its inferred column type, so UUIDs, numerics,
+/// dates and user-defined keys need no lossy client-side conversion.
+#[derive(Debug)]
+struct TextParameter<'a>(&'a str);
+impl tokio_postgres::types::ToSql for TextParameter<'_> {
+    fn to_sql(&self, _: &tokio_postgres::types::Type, out: &mut bytes::BytesMut) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        out.extend_from_slice(self.0.as_bytes());
+        Ok(tokio_postgres::types::IsNull::No)
+    }
+    fn accepts(_: &tokio_postgres::types::Type) -> bool { true }
+    fn encode_format(&self, _: &tokio_postgres::types::Type) -> tokio_postgres::types::Format { tokio_postgres::types::Format::Text }
+    tokio_postgres::types::to_sql_checked!();
 }

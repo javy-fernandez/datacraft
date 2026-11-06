@@ -34,11 +34,13 @@ pub(super) struct State {
     forward: Vec<Place>,
     dialog: Option<Dialog>,
     next_request: u64,
+    pending: HashMap<u64, (String, String)>,
+    popup: Option<(u64, egui::Pos2, Vec<crate::ui::fk_nav::Target>, usize)>,
 }
 
 impl State {
     pub(super) fn is_open(&self) -> bool {
-        self.dialog.is_some()
+        self.dialog.is_some() || self.popup.is_some()
     }
 }
 
@@ -57,6 +59,7 @@ struct Filtered {
     schema: String,
     table: String,
     where_clause: String,
+    bound_filter: Option<crate::db::fk_nav::BoundFilter>,
     order_by: String,
     filter: FilterSort,
 }
@@ -85,18 +88,30 @@ struct Child {
 }
 
 /// The table filtered to the rows whose `columns` hold `values`, as builder conditions.
-fn filtered(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], values: &[Cell]) -> Option<Filtered> {
-    let where_clause = format!("({})", key_filter(driver, columns, values)?);
+/// `types` are the data types of `columns` (empty when unknown).
+#[allow(clippy::too_many_arguments)]
+fn filtered(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], types: &[String], values: &[Cell]) -> Option<Filtered> {
+    filtered_rows(driver, conn, db, schema, table, columns, types, &[values.to_vec()])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filtered_rows(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], types: &[String], values: &[Vec<Cell>]) -> Option<Filtered> {
+    use crate::ui::filter_sort::{Connector, FilterRow, Group};
+    let bound_filter = crate::db::fk_nav::bound_filter_rows(driver, columns, types, values)?;
+    let where_clause = bound_filter.display.clone();
+    let conditions = |values: &[String]| columns.iter().zip(values).map(|(column, value)| {
+        Node::Condition(Condition { enabled: true, column: column.clone(), operator: Operator::Equal, value: value.clone(), second: String::new() }).into()
+    }).collect::<Vec<FilterRow>>();
     let mut filter = FilterSort::default();
-    filter.filter.children = columns
-        .iter()
-        .zip(values)
-        .map(|(column, value)| {
-            let value = value.clone().unwrap_or_default();
-            Node::Condition(Condition { enabled: true, column: column.clone(), operator: Operator::Equal, value, second: String::new() }).into()
-        })
-        .collect();
-    Some(Filtered { conn, db: db.into(), schema: schema.into(), table: table.into(), where_clause, order_by: String::new(), filter })
+    // Reconstruct only normalized, non-NULL tuples actually used by the bound query.
+    filter.filter.children = if bound_filter.parameters.len() == columns.len() {
+        conditions(&bound_filter.parameters)
+    } else {
+        bound_filter.parameters.chunks(columns.len()).map(|values| FilterRow {
+            node: Node::Group(Group { children: conditions(values) }), connector: Connector::Or,
+        }).collect()
+    };
+    Some(Filtered { conn, db: db.into(), schema: schema.into(), table: table.into(), where_clause, bound_filter: Some(bound_filter), order_by: String::new(), filter })
 }
 
 /// Which references the catalog readers of `driver` cannot see.
@@ -145,7 +160,7 @@ impl DataCraftApp {
             let id = (conn, db.clone(), schema.clone(), table.clone());
             match self.fk_nav.cache.get(&id) {
                 Some(Keys::Ready(keys)) => {
-                    view.links = Links::new(keys, &names).map(Arc::new);
+                    view.links = self.conns.iter().find(|c| c.cfg.id == conn).and_then(|c| c.schemas(Some(&db))).and_then(|schemas| Links::with_schema(keys, &names, schemas, &schema, &table)).or_else(|| Links::new(keys, &names)).map(Arc::new);
                     view.links_checked = true;
                 }
                 Some(Keys::Failed) => view.links_checked = true,
@@ -198,7 +213,7 @@ impl DataCraftApp {
             let conn = c.conn?;
             let db = self.conn(conn)?.resolve_db(c.db.as_deref())?.to_string();
             let filter = t.filter_sort.clone();
-            Some(Filtered { conn, db, schema: t.schema.clone(), table: t.table.clone(), where_clause: t.where_clause.clone(), order_by: t.order_by.clone(), filter })
+            Some(Filtered { conn, db, schema: t.schema.clone(), table: t.table.clone(), where_clause: t.where_clause.clone(), bound_filter: t.bound_filter.clone(), order_by: t.order_by.clone(), filter })
         });
         Some(Place { console: c.id, table })
     }
@@ -209,8 +224,18 @@ impl DataCraftApp {
         let Some(cs) = self.conn(conn) else { return };
         let (driver, db) = (cs.cfg.driver, cs.resolve_db(self.consoles[idx].db.as_deref()).unwrap_or_default().to_string());
         match jump {
+            Jump::Choose { targets, anchor } => { self.fk_nav.popup = Some((self.consoles[idx].id, anchor, targets, 0)); }
+            Jump::Null => self.info(tr("Cannot navigate: source value is NULL")),
+            Jump::Rows { key, values } => {
+                let types = self.key_types(conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns);
+                if let Some(target) = filtered_rows(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &types, &values) {
+                    self.go(origin, &target);
+                } else { self.info(tr("Cannot navigate: source value is NULL")); }
+            }
             Jump::Parent { key, values } => {
-                if let Some(target) = filtered(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &values) {
+                if values.iter().any(Option::is_none) { self.info(tr("Cannot navigate: source value is NULL")); return; }
+                let types = self.key_types(conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns);
+                if let Some(target) = filtered(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &types, &values) {
                     self.go(origin, &target);
                 }
             }
@@ -259,7 +284,9 @@ impl DataCraftApp {
 
     /// Shows `target` (in a clean tab of that table, or a new one) and records where it came from.
     fn go(&mut self, origin: Place, target: &Filtered) {
-        if self.open_filtered(target, None).is_some() {
+        if let Some(idx) = self.open_filtered(target, None) {
+            let value = target.bound_filter.as_ref().map(|b| b.parameters.join(", ")).unwrap_or_default();
+            self.fk_nav.pending.insert(self.consoles[idx].id, (target.table.clone(), value));
             self.fk_nav.back.push(origin);
             if self.fk_nav.back.len() > HISTORY {
                 self.fk_nav.back.remove(0);
@@ -294,6 +321,7 @@ impl DataCraftApp {
         };
         let t = self.consoles[idx].table.as_mut()?;
         t.where_clause.clone_from(&target.where_clause);
+        t.bound_filter = target.bound_filter.clone();
         t.order_by.clone_from(&target.order_by);
         t.filter_sort = target.filter.clone();
         t.offset = 0;
@@ -334,7 +362,40 @@ impl DataCraftApp {
         [!self.fk_nav.back.is_empty(), !self.fk_nav.forward.is_empty()]
     }
 
+    pub(super) fn navigation_finished(&mut self, console: u64, succeeded: bool) {
+        let Some((table, value)) = self.fk_nav.pending.remove(&console) else { return };
+        if !succeeded { return; }
+        let found = self.console_by_id(console).and_then(|c| c.results.first_mut()).is_some_and(|v| v.highlight_first_row());
+        if !found { self.info(trf("No matching row in `{table}` for `{value}`", &[("table", &table), ("value", &value)])); }
+    }
+
+    /// Data types of a known table's `columns` (empty when the table isn't loaded).
+    fn key_types(&self, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String]) -> Vec<String> {
+        let Some(known) = self.table_columns(conn, Some(db), schema, table) else { return Vec::new() };
+        columns.iter().map(|c| known.iter().find(|k| &k.name == c).map(|k| k.data_type.clone()).unwrap_or_default()).collect()
+    }
+
     pub(super) fn references_dialog(&mut self, ctx: &egui::Context) {
+        if let Some((console, anchor, targets, mut selected)) = self.fk_nav.popup.clone() {
+            if targets.is_empty() { self.fk_nav.popup = None; return; }
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, Key::ArrowDown) { selected = (selected + 1) % targets.len(); }
+                if i.consume_key(egui::Modifiers::NONE, Key::ArrowUp) { selected = (selected + targets.len() - 1) % targets.len(); }
+            });
+            if let Some(popup) = self.fk_nav.popup.as_mut() { popup.3 = selected; }
+            let id = egui::Id::new("navigation_targets");
+            let area = egui::Area::new(id).kind(egui::UiKind::Modal).order(egui::Order::Foreground).fixed_pos(anchor).constrain(true);
+            let mut chosen = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter)).then(|| targets[selected].clone().jump());
+            let popup = egui::Modal::new(id).area(area).backdrop_color(egui::Color32::TRANSPARENT).show(ctx, |ui| {
+                ui.label(RichText::new(tr("Go to referenced row")).strong());
+                for (i, target) in targets.into_iter().enumerate() {
+                    let label = target.label();
+                    if ui.selectable_label(i == selected, label).clicked() { chosen = Some(target.jump()); }
+                }
+            });
+            if popup.should_close() || chosen.is_some() { self.fk_nav.popup = None; }
+            if let Some(jump) = chosen && let Some(idx) = self.consoles.iter().position(|c| c.id == console) { self.follow_key(idx, jump); }
+        }
         let Some(dialog) = self.fk_nav.dialog.as_ref() else { return };
         let p = palette(ctx.global_style().visuals.dark_mode);
         let (mut close, mut open) = (false, None);
@@ -393,7 +454,8 @@ impl DataCraftApp {
         dialog.cancel.store(true, Ordering::Relaxed);
         let target = open.and_then(|i| {
             let child = dialog.children.get(i)?;
-            filtered(dialog.driver, dialog.conn, &dialog.db, &child.key.schema, &child.key.table, &child.key.columns, child.values.as_ref()?)
+            let types = self.key_types(dialog.conn, &dialog.db, &child.key.schema, &child.key.table, &child.key.columns);
+            filtered(dialog.driver, dialog.conn, &dialog.db, &child.key.schema, &child.key.table, &child.key.columns, &types, child.values.as_ref()?)
         });
         if let Some(target) = target {
             self.go(dialog.origin, &target);
@@ -421,6 +483,49 @@ mod tests {
     /// The tab of `table` finished loading and its keys were looked up.
     fn loaded(app: &DataCraftApp, table: &str) -> bool {
         app.consoles.iter().any(|c| !c.is_busy() && c.table.as_ref().is_some_and(|t| t.table == table) && c.results.last().is_some_and(|v| v.links_checked))
+    }
+
+    #[test]
+    fn sqlite_multi_selection_matches_complete_keys_in_both_directions() {
+        let path = std::env::temp_dir().join(format!("datacraft-fk-multi-{}.db", uuid::Uuid::new_v4()));
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE shops(code TEXT,region TEXT,PRIMARY KEY(code,region));
+            CREATE TABLE orders(id INTEGER PRIMARY KEY,shop TEXT,region TEXT,FOREIGN KEY(shop,region) REFERENCES shops(code,region));
+            INSERT INTO shops VALUES('A','north'),('B','south'),('A','south'),('B','north');
+            INSERT INTO orders VALUES(1,'A','north'),(2,'B','south'),(3,'A','north'),(4,'A',NULL),(5,'A','south'),(6,'B','north');").unwrap();
+        drop(db);
+        let mut app = super::super::tests::tabs_app();
+        let mut cfg = ConnectionConfig::new(7, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        app.conns.push(ConnState::new(cfg));
+        app.connect(7);
+        pump(&mut app, |app| app.conn(7).is_some_and(|c| c.status == ConnStatus::Connected));
+        app.open_table(&TableRef { conn: 7, db: "main".into(), schema: "main".into(), table: "orders".into() });
+        pump(&mut app, |app| loaded(app, "orders"));
+        let orders = tab(&app, "orders");
+        let view = app.consoles[orders].results.last().unwrap();
+        let links = view.links.as_ref().unwrap();
+        let targets = links.targets_for_cells(view.rs.rows[..4].iter().flat_map(|r| [(1, r.as_slice()), (2, r.as_slice())]));
+        assert_eq!(targets.len(), 1);
+        app.follow_key(orders, targets[0].clone().jump());
+        pump(&mut app, |app| loaded(app, "shops"));
+        let shops = tab(&app, "shops");
+        let view = app.consoles[shops].results.last().unwrap();
+        assert_eq!(view.rs.rows, vec![vec![Some("A".into()), Some("north".into())], vec![Some("B".into()), Some("south".into())]]);
+        let table = app.consoles[shops].table.as_ref().unwrap();
+        assert_eq!(table.bound_filter.as_ref().unwrap().parameters, ["A", "north", "B", "south"]);
+        let columns = [ColumnInfo { name: "code".into(), data_type: "TEXT".into(), nullable: false, primary_key: true }, ColumnInfo { name: "region".into(), data_type: "TEXT".into(), nullable: false, primary_key: true }];
+        assert_eq!(table.filter_sort.sql(Driver::Sqlite, &columns).unwrap().0, table.where_clause);
+        let reverse = view.links.as_ref().unwrap().targets_for_cells(view.rs.rows.iter().map(|r| (0, r.as_slice())));
+        app.follow_key(shops, reverse[0].clone().jump());
+        pump(&mut app, |app| loaded(app, "orders"));
+        assert_eq!(app.consoles[orders].results[0].rs.rows.iter().map(|r| r[0].as_deref().unwrap()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        app.key_history(false);
+        pump(&mut app, |app| loaded(app, "shops"));
+        assert_eq!(app.consoles[shops].results[0].rs.rows.len(), 2);
+        app.worker.send(Request::Disconnect(7));
+        drop(app);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -461,6 +566,9 @@ mod tests {
         let view = app.consoles[shops].results.last().unwrap();
         assert_eq!(view.rs.rows.len(), 1);
         assert_eq!(view.rs.rows[0][2].as_deref(), Some("O'Brien"));
+        assert_eq!(view.row_position(), Some((1, 1)));
+        assert!(view.rs.statement.contains('?'));
+        assert_eq!(t.bound_filter.as_ref().unwrap().parameters, ["N'1", "north"]);
         let children = view.links.as_ref().unwrap().children(&view.rs.rows[0]).unwrap();
         app.follow_key(shops, children);
         pump(&mut app, |app| app.fk_nav.dialog.as_ref().is_some_and(|d| !d.pending));
@@ -499,6 +607,18 @@ mod tests {
         pump(&mut app, |app| loaded(app, "shops"));
         app.key_history(false);
         assert_eq!(app.active, 0);
+
+        // Dangling keys report an empty target; NULL never starts a query.
+        let dangling = Jump::Parent { key: simple.outgoing[0].0.clone(), values: vec![Some("missing".into()), Some("north".into())] };
+        app.follow_key(orders, dangling);
+        pump(&mut app, |app| loaded(app, "shops"));
+        assert!(app.consoles[shops].results[0].rs.rows.is_empty());
+        assert_eq!(app.status_msg.as_ref().unwrap().0, "No matching row in `shops` for `missing, north`");
+        app.follow_key(orders, Jump::Null);
+        assert_eq!(app.status_msg.as_ref().unwrap().0, "Cannot navigate: source value is NULL");
+        assert!(!app.consoles[shops].is_busy());
+        app.follow_key(orders, links.parent(key, &rows[0]).unwrap());
+        pump(&mut app, |app| loaded(app, "shops"));
 
         app.forget_keys(7, Some(("main", "main", "shops")));
         let shops_id: TableId = (7, "main".into(), "main".into(), "shops".into());
@@ -594,7 +714,7 @@ mod screenshots {
             ..Default::default()
         };
         let mut tab = table_tab(2, "customers", customer, &customer_keys, 8);
-        let target = filtered(Driver::MariaDb, 7, "shop", "shop", "customers", &["id".into()], &[Some("103".into())]).unwrap();
+        let target = filtered(Driver::MariaDb, 7, "shop", "shop", "customers", &["id".into()], &[], &[Some("103".into())]).unwrap();
         let t = tab.table.as_mut().unwrap();
         t.where_clause = target.where_clause;
         t.filter_sort = target.filter;

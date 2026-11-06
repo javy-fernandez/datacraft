@@ -1767,6 +1767,11 @@
     "The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.": "Skrypt działa w jednej transakcji (XACT_ABORT): nieudana instrukcja wycofuje wszystkie pozostałe.",
     "This engine commits each DDL statement: if one fails, the statements before it stay applied.": "Ten silnik zatwierdza każdą instrukcję DDL: jeśli jedna się nie powiedzie, wcześniejsze pozostają zastosowane.",
     "alter, loses data": "zmień, utrata danych",
-    "Drops columns or changes their type: left out of the script unless checked.": "Usuwa kolumny lub zmienia ich typ: nie trafia do skryptu, dopóki nie zostanie zaznaczone."
+    "Drops columns or changes their type: left out of the script unless checked.": "Usuwa kolumny lub zmienia ich typ: nie trafia do skryptu, dopóki nie zostanie zaznaczone.",
+    "Cannot navigate: source value is NULL": "Nie można przejść: wartość źródłowa to NULL",
+    "No matching row in `{table}` for `{value}`": "Brak pasującego wiersza w `{table}` dla `{value}`",
+    "FK": "FK",
+    "reverse FK": "odwrotny FK",
+    "inferred": "wywnioskowany"
   }
 }

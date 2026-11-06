@@ -196,6 +196,7 @@ pub struct TableTab {
     pub schema: String,
     pub table: String,
     pub where_clause: String,
+    pub bound_filter: Option<crate::db::fk_nav::BoundFilter>,
     pub order_by: String,
     /// false until the first load (restored tabs load when activated).
     pub loaded: bool,
@@ -324,6 +325,7 @@ impl Console {
             schema,
             table,
             where_clause: String::new(),
+            bound_filter: None,
             order_by: String::new(),
             loaded: false,
             save_on_row_change: false,

@@ -184,6 +184,19 @@ pub struct ResultView {
 }
 
 impl ResultView {
+    /// A navigation result is already filtered; select and scroll to its first matching row.
+    pub fn highlight_first_row(&mut self) -> bool {
+        // A reused tab may still have local filters from its previous contents.
+        self.filters.clear();
+        self.sort = None;
+        self.order = (0..self.rs.rows.len()).collect();
+        if self.order.is_empty() { return false; }
+        self.select_cell(0, 0, Modifiers::NONE);
+        self.selected_rows = BTreeSet::from([0]);
+        self.scroll_to = Some(0);
+        true
+    }
+
     pub fn selected_cell(&self) -> Option<(usize, usize, Cell)> {
         let (r, c) = self.selected?;
         Some((r, c, self.display_value(self.row_ref(r)?, c).flatten()))
@@ -618,6 +631,31 @@ impl ResultView {
             .iter()
             .filter_map(|&(r, c)| self.row_ref(r).map(|row| (row, c)))
             .collect()
+    }
+
+    fn related_targets(&self, clicked: Option<(usize, usize)>) -> Vec<crate::ui::fk_nav::Target> {
+        let Some(links) = self.links.as_ref() else { return Vec::new() };
+        let mut cells = self.selected_cells.clone();
+        if let Some((r, c)) = self.selected { cells.insert((r, c)); }
+        for &r in &self.selected_rows { cells.extend((0..self.rs.columns.len()).map(|c| (r, c))); }
+        // A button on an unselected cell follows that cell, without pulling in an unrelated selection.
+        if let Some(cell) = clicked && !cells.contains(&cell) { cells = BTreeSet::from([cell]); }
+        links.targets_for_cells(cells.into_iter().filter_map(|(r, c)| {
+            let RowRef::Existing(row) = self.row_ref(r)? else { return None };
+            if self.edit.as_ref().is_some_and(|e| e.state.is_deleted(RowRef::Existing(row))) { return None; }
+            Some((c, self.rs.rows.get(row)?.as_slice()))
+        }))
+    }
+
+    fn related_jump(&self, clicked: Option<(usize, usize)>, anchor: egui::Pos2) -> Option<crate::ui::fk_nav::Jump> {
+        let targets = self.related_targets(clicked);
+        if targets.is_empty() { return None; }
+        Some(if !targets.iter().any(crate::ui::fk_nav::Target::has_values) {
+            crate::ui::fk_nav::Jump::Null
+        } else if targets.len() == 1 {
+            // A single target needs no choice.
+            targets.into_iter().next()?.jump()
+        } else { crate::ui::fk_nav::Jump::Choose { targets, anchor } })
     }
 
     fn cell_selected(&self, r: usize, c: usize) -> bool {
@@ -1602,7 +1640,8 @@ pub fn show_result(
                             || inline.as_ref().is_some_and(|ed| editing_here && ed.changed);
                         // Keys follow the stored values, not pending edits.
                         let stored = match rref { RowRef::Existing(i) => view.rs.rows.get(i), RowRef::New(_) => None };
-                        let link = links.as_deref().zip(stored).and_then(|(l, row)| l.link_at(c, row)).filter(|_| !deleted);
+                        let targets = links.as_deref().zip(stored).map(|(l, row)| l.targets(c, row)).unwrap_or_default();
+                        let link = (!deleted && !targets.is_empty()).then_some(0);
                         let numeric = matches!(&value, Some(Some(v)) if is_numeric(v));
                         let (_, resp) = row.col(|ui| {
                             let r = ui.max_rect();
@@ -1701,10 +1740,13 @@ pub fn show_result(
                         if over_button {
                             resp.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-                        let follow = link.filter(|_| resp.clicked() && on_button(resp.interact_pointer_pos()));
-                        if let Some(jump) = follow.zip(links.as_deref().zip(stored)).and_then(|(k, (l, row))| l.parent(k, row)) {
-                            actions.push(GridAction::Jump(jump));
-                        } else if resp.clicked() || (resp.secondary_clicked() && !is_sel) {
+                        let mods = ui_mods(&resp);
+                        // Keep ordinary clicks and selection gestures available on related cells.
+                        // Only the explicit follow button (or F4 below) opens navigation targets.
+                        let follow = resp.clicked() && on_button(resp.interact_pointer_pos()) && !mods.command && !mods.shift && !mods.alt;
+                        if follow {
+                            if let Some(jump) = view.related_jump(Some((vr, c)), resp.rect.left_bottom()) { actions.push(GridAction::Jump(jump)); }
+                        } else if resp.clicked() || (resp.secondary_clicked() && !is_sel && !view.selected_rows.contains(&vr)) {
                             let mods = ui_mods(&resp);
                             actions.push(GridAction::Select { vr, col: Some(c), mods });
                         }
@@ -1763,11 +1805,9 @@ pub fn show_result(
                                 ui.close();
                             }
                             if let (Some(l), Some(row)) = (links.as_deref(), stored) {
-                                for k in l.keys_at(c) {
-                                    let target = l.parent(k, row);
-                                    let button = egui::Button::new(tr("Go to referenced row")).shortcut_text(l.outgoing[k].0.ref_table.as_str());
-                                    if ui.add_enabled(target.is_some(), button).clicked() && let Some(target) = target {
-                                        actions.push(GridAction::Jump(target));
+                                for target in view.related_targets(Some((vr, c))) {
+                                    if ui.button(target.label()).clicked() {
+                                        actions.push(GridAction::Jump(target.jump()));
                                         ui.close();
                                     }
                                 }
@@ -1984,6 +2024,10 @@ pub fn show_result(
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
     }
+    if ui.input(|i| i.key_pressed(Key::F4))
+        && let Some(target) = view.related_jump(None, ui.max_rect().left_top())
+        && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F4))
+    { jump = Some(target); }
     // First: its Esc closes it only, not also the record view.
     value_popup_ui(ui, view);
     record_view_ui(ui, view, columns_info);
@@ -2834,7 +2878,7 @@ mod keyboard_tests {
     }
 
     #[test]
-    fn key_values_follow_from_their_button_while_ctrl_click_keeps_selecting() {
+    fn related_cells_select_normally_and_navigate_with_button_or_f4() {
         use crate::ui::fk_nav::{Jump, Links};
         let key = crate::db::subset::ForeignKey { schema: "main".into(), table: "notes".into(), columns: vec!["note".into()], ref_schema: "main".into(), ref_table: "texts".into(), ref_columns: vec!["code".into()] };
         let mut view = view();
@@ -2854,8 +2898,27 @@ mod keyboard_tests {
         h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
         assert_eq!((h.state().view.selected_cells.clone(), h.state().jump.is_none()), (BTreeSet::from([(0, 1), (2, 0)]), true));
-        // Only a click on the value's follow button asks for the parent row; the NULL key of the
-        // next row has no button.
+        // Plain clicks select related cells, including NULL, without opening navigation.
+        click(&h, pos2(160.0, 50.0));
+        h.run_steps(2);
+        assert_eq!(h.state().view.selected_cells, BTreeSet::from([(0, 1)]));
+        assert!(h.state().jump.is_none());
+        click(&h, pos2(160.0, 74.0));
+        h.run_steps(2);
+        assert_eq!(h.state().view.selected_cells, BTreeSet::from([(1, 1)]));
+        assert!(h.state().jump.is_none());
+
+        h.key_press(Key::F4);
+        h.run_steps(2);
+        assert_eq!(h.state_mut().jump.take(), Some(Jump::Null));
+        click(&h, pos2(160.0, 50.0));
+        h.run_steps(2);
+        h.key_press(Key::F4);
+        h.run_steps(2);
+        // A single target needs no choice: F4 follows it.
+        assert_eq!(h.state_mut().jump.take(), Some(Jump::Parent { key: key.clone(), values: vec![Some("a".into())] }));
+
+        // The dedicated follow button does the same and handles NULL values.
         let follow = |h: &mut egui_kittest::Harness<'static, State>, y: f32| {
             (100..900).step_by(6).find_map(|x| {
                 click(h, pos2(x as f32, y));
@@ -2863,8 +2926,54 @@ mod keyboard_tests {
                 h.state_mut().jump.take()
             })
         };
-        assert_eq!(follow(&mut h, 74.0), None);
-        assert_eq!(follow(&mut h, 50.0), Some(Jump::Parent { key, values: vec![Some("a".into())] }));
+        assert_eq!(follow(&mut h, 74.0), Some(Jump::Null));
+        assert_eq!(follow(&mut h, 50.0), Some(Jump::Parent { key: key.clone(), values: vec![Some("a".into())] }));
+
+        // Several targets open the chooser.
+        let other = crate::db::subset::ForeignKey { ref_table: "archive".into(), ..key.clone() };
+        let view = &mut h.state_mut().view;
+        view.links = Links::new(&crate::db::fk_nav::TableKeys { outgoing: vec![key, other], incoming: Vec::new() }, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
+        let Some(Jump::Choose { targets, .. }) = view.related_jump(Some((0, 1)), pos2(0.0, 0.0)) else { panic!("expected navigation candidates") };
+        assert_eq!(targets.len(), 2);
+    }
+
+    #[test]
+    fn multi_selection_f4_and_follow_button_use_the_same_related_values() {
+        use crate::ui::fk_nav::{Jump, Links};
+        let key = crate::db::subset::ForeignKey { schema: "main".into(), table: "notes".into(), columns: vec!["note".into()], ref_schema: "main".into(), ref_table: "texts".into(), ref_columns: vec!["code".into()] };
+        let mut view = view();
+        view.links = Links::new(&crate::db::fk_nav::TableKeys { outgoing: vec![key.clone()], incoming: Vec::new() }, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
+        let mut h = harness_for(view, false);
+        click(&h, pos2(160.0, 50.0));
+        h.run_steps(2);
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
+        h.run_steps(2);
+        assert_eq!(h.state().view.selected_cells, BTreeSet::from([(0, 1), (1, 1), (2, 1)]));
+        h.key_press(Key::F4);
+        h.run_steps(2);
+        let expected = Jump::Rows { key: key.clone(), values: vec![vec![Some("a".into())], vec![Some("c".into())]] };
+        assert_eq!(h.state_mut().jump.take(), Some(expected.clone()), "F4 should use the selected range");
+        // Directly verify the selected-cell button path, independent of column widths.
+        assert_eq!(h.state().view.related_jump(Some((0, 1)), pos2(0.0, 0.0)), Some(expected.clone()));
+        h.event(egui::Event::PointerMoved(pos2(160.0, 50.0)));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+        }
+        h.run_steps(3);
+        h.get_by_label_contains("main.texts").click();
+        h.run_steps(2);
+        assert_eq!(h.state_mut().jump.take(), Some(expected));
+        let view = &mut h.state_mut().view;
+        view.selected = None;
+        view.selected_cells.clear();
+        view.selected_rows = BTreeSet::from([0, 2]);
+        assert_eq!(view.related_jump(Some((1, 1)), pos2(0.0, 0.0)), Some(Jump::Null), "an unselected cell navigates on its own");
+        assert_eq!(view.related_targets(None)[0].clone().jump(), Jump::Rows { key, values: vec![vec![Some("a".into())], vec![Some("c".into())]] });
+        // Visual sorting maps back to stored rows; a selection of rows 0 and 1 now means c + a.
+        view.order = vec![2, 0, 1];
+        view.selected_rows = BTreeSet::from([0, 1]);
+        assert!(matches!(view.related_targets(None)[0].clone().jump(), Jump::Rows { values, .. } if values == vec![vec![Some("a".into())], vec![Some("c".into())]]));
     }
 
     #[test]

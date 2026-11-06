@@ -81,7 +81,7 @@ impl MsSession {
     }
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
-        match run(&mut self.client, sql, max_rows).await {
+        match run(&mut self.client, sql, &[], max_rows).await {
             Ok(results) => Ok(results),
             Err(e) => {
                 // Server errors (syntax, permissions...) don't invalidate the connection.
@@ -91,6 +91,13 @@ impl MsSession {
                 Err(ms_error(e))
             }
         }
+    }
+
+    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+        run(&mut self.client, sql, parameters, max_rows).await.map_err(|e| {
+            if !matches!(e, tiberius::error::Error::Server(_)) { self.broken = true; }
+            ms_error(e)
+        })
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
@@ -245,11 +252,13 @@ pub(super) fn type_label(data_type: &str, max_len: Option<i64>, precision: Optio
 async fn run(
     client: &mut Client<Compat<TcpStream>>,
     sql: &str,
+    parameters: &[String],
     max_rows: usize,
 ) -> Result<Vec<ResultSet>, tiberius::error::Error> {
     let statement = sql.trim().to_string();
     let mut start = Instant::now();
-    let mut stream = client.simple_query(sql).await?;
+    let params: Vec<&dyn tiberius::ToSql> = parameters.iter().map(|v| v as &dyn tiberius::ToSql).collect();
+    let mut stream = if params.is_empty() { client.simple_query(sql).await? } else { client.query(sql, &params).await? };
 
     let mut results: Vec<ResultSet> = Vec::new();
     // The whole stream must be consumed even when truncating; otherwise the connection is left half-read.

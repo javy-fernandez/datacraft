@@ -1341,6 +1341,7 @@ dependencies = [
  "anyhow",
  "aws-lc-rs",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "dirs",
  "eframe",
