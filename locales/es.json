@@ -1767,6 +1767,11 @@
     "The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.": "El script se ejecuta en una transacción (XACT_ABORT): una sentencia que falla deshace todas las demás.",
     "This engine commits each DDL statement: if one fails, the statements before it stay applied.": "Este motor confirma cada sentencia DDL: si una falla, las sentencias anteriores quedan aplicadas.",
     "alter, loses data": "modificar, pierde datos",
-    "Drops columns or changes their type: left out of the script unless checked.": "Elimina columnas o cambia su tipo: queda fuera del script salvo que se marque."
+    "Drops columns or changes their type: left out of the script unless checked.": "Elimina columnas o cambia su tipo: queda fuera del script salvo que se marque.",
+    "Cannot navigate: source value is NULL": "No se puede navegar: el valor de origen es NULL",
+    "No matching row in `{table}` for `{value}`": "Ninguna fila coincide en `{table}` para `{value}`",
+    "FK": "FK",
+    "reverse FK": "FK inversa",
+    "inferred": "deducida"
   }
 }

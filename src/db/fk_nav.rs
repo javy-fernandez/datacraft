@@ -51,20 +51,22 @@ pub struct BoundFilter {
     pub query: Option<String>,
 }
 
-pub fn bound_filter(driver: Driver, columns: &[String], values: &[Cell]) -> Option<BoundFilter> {
-    bound_filter_at(driver, columns, values, 0)
+/// `types` are the key columns' data types (empty when unknown).
+#[cfg(test)]
+fn bound_filter(driver: Driver, columns: &[String], types: &[String], values: &[Cell]) -> Option<BoundFilter> {
+    bound_filter_at(driver, columns, types, values, 0)
 }
 
 /// OR complete tuples, rather than independent IN lists that could match unrelated rows.
 /// NULL tuples cannot reference a row; duplicate tuples need only one set of bind values.
-pub fn bound_filter_rows(driver: Driver, columns: &[String], rows: &[Vec<Cell>]) -> Option<BoundFilter> {
+pub fn bound_filter_rows(driver: Driver, columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Option<BoundFilter> {
     let mut seen = std::collections::HashSet::new();
     let mut filters = Vec::new();
     let mut parameters = Vec::new();
     for row in rows {
         if columns.len() != row.len() { return None; }
         if row.iter().any(|v| v.is_none() || crate::edit::is_lossy_display(v)) || !seen.insert(row) { continue; }
-        let filter = if parameters.is_empty() { bound_filter(driver, columns, row)? } else { bound_filter_at(driver, columns, row, parameters.len())? };
+        let filter = bound_filter_at(driver, columns, types, row, parameters.len())?;
         parameters.extend(filter.parameters.clone());
         filters.push(filter);
     }
@@ -81,11 +83,13 @@ pub fn bound_filter_rows(driver: Driver, columns: &[String], rows: &[Vec<Cell>])
     Some(BoundFilter { display, sql, parameters, query: None })
 }
 
-fn bound_filter_at(driver: Driver, columns: &[String], values: &[Cell], offset: usize) -> Option<BoundFilter> {
+fn bound_filter_at(driver: Driver, columns: &[String], types: &[String], values: &[Cell], offset: usize) -> Option<BoundFilter> {
     let display = format!("({})", key_filter(driver, columns, values)?);
     let sql = columns.iter().enumerate().map(|(i, column)| {
         let parameter = match driver {
             Driver::Postgres => format!("${}", offset + i + 1),
+            // Strings are sent as nvarchar: a (var)char key would be converted and scanned.
+            Driver::MsSql if types.get(i).is_some_and(|t| is_ansi_string(t)) => format!("CAST(@P{} AS varchar(8000))", offset + i + 1),
             Driver::MsSql => format!("@P{}", offset + i + 1),
             Driver::Oracle => format!(":{}", offset + i + 1),
             _ => "?".into(),
@@ -93,6 +97,12 @@ fn bound_filter_at(driver: Driver, columns: &[String], values: &[Cell], offset: 
         format!("{} = {parameter}", driver.quote_ident(column))
     }).collect::<Vec<_>>().join(" AND ");
     Some(BoundFilter { display, sql, query: None, parameters: values.iter().map(|v| v.clone().unwrap_or_default()).collect() })
+}
+
+/// SQL Server's single-byte strings: `char(n)`, `varchar(n)` and `varchar(max)`.
+fn is_ansi_string(data_type: &str) -> bool {
+    let base = data_type.split('(').next().unwrap_or_default().trim();
+    base.eq_ignore_ascii_case("varchar") || base.eq_ignore_ascii_case("char")
 }
 
 /// A child table and the filter selecting the rows that reference one parent row.
@@ -279,7 +289,7 @@ mod tests {
             (Driver::Sqlite, ["?", "?"]),
             (Driver::Snowflake, ["?", "?"]),
         ] {
-            let filter = bound_filter(driver, &columns, &values).unwrap();
+            let filter = bound_filter(driver, &columns, &[], &values).unwrap();
             assert_eq!(filter.sql, format!("{} = {} AND {} = {}", driver.quote_ident(&columns[0]), placeholders[0], driver.quote_ident(&columns[1]), placeholders[1]));
             assert_eq!(filter.parameters, [values[0].clone().unwrap(), "north".into()]);
             assert!(!filter.sql.contains("DROP TABLE"));
@@ -291,15 +301,27 @@ mod tests {
         let columns = ["id".into(), "shop".into()];
         let rows = [vec![Some("1".into()), Some("north".into())], vec![Some("2".into()), Some("south".into())], vec![Some("1".into()), Some("north".into())], vec![None, Some("ignored".into())]];
         for (driver, last) in [(Driver::Postgres, "$4"), (Driver::MsSql, "@P4"), (Driver::Oracle, ":4"), (Driver::Sqlite, "?"), (Driver::MySql, "?"), (Driver::MariaDb, "?"), (Driver::Snowflake, "?")] {
-            let filter = bound_filter_rows(driver, &columns, &rows).unwrap();
+            let filter = bound_filter_rows(driver, &columns, &[], &rows).unwrap();
             assert_eq!(filter.parameters, ["1", "north", "2", "south"]);
             assert!(filter.sql.contains(last));
             assert_eq!(filter.sql.matches(" OR ").count(), 1);
             assert_eq!(filter.sql.matches(" AND ").count(), 2);
             assert!(!filter.sql.contains("north"));
         }
-        assert!(bound_filter_rows(Driver::Sqlite, &columns, &rows[3..]).is_none());
-        assert!(bound_filter_rows(Driver::Sqlite, &columns, &[vec![Some("1".into())]]).is_none());
+        assert!(bound_filter_rows(Driver::Sqlite, &columns, &[], &rows[3..]).is_none());
+        assert!(bound_filter_rows(Driver::Sqlite, &columns, &[], &[vec![Some("1".into())]]).is_none());
+    }
+
+    #[test]
+    fn sql_server_casts_parameters_for_single_byte_string_keys() {
+        let columns = ["code".to_string(), "name".to_string(), "id".to_string()];
+        let types = ["varchar(20)".to_string(), "nvarchar(50)".to_string(), "int".to_string()];
+        let values = [Some("A".into()), Some("B".into()), Some("1".into())];
+        let filter = bound_filter(Driver::MsSql, &columns, &types, &values).unwrap();
+        assert_eq!(filter.sql, "[code] = CAST(@P1 AS varchar(8000)) AND [name] = @P2 AND [id] = @P3");
+        assert!(is_ansi_string("CHAR(3)") && is_ansi_string("varchar(max)") && !is_ansi_string("nchar(3)") && !is_ansi_string("text"));
+        // Only SQL Server needs it.
+        assert!(!bound_filter(Driver::MySql, &columns, &types, &values).unwrap().sql.contains("CAST"));
     }
 
     #[test]

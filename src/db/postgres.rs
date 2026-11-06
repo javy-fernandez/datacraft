@@ -15,6 +15,7 @@ use futures_util::TryStreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_postgres::config::SslMode;
 use tokio_postgres::tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream};
+use tokio_postgres::types::{Kind, Type};
 use tokio_postgres::{Client, SimpleQueryMessage, Socket};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::ClientConfig;
@@ -281,7 +282,9 @@ impl PgSession {
         let description = self.client.prepare(sql).await.map_err(pg_error)?;
         let projection = description.columns().iter().map(|c| {
             let name = super::Driver::Postgres.quote_ident(c.name());
-            format!("{name}::text AS {name}")
+            // A boolean's text cast says true/false; simple_query (and its output function) t/f.
+            let boolean = c.type_() == &Type::BOOL || matches!(c.type_().kind(), Kind::Domain(t) if *t == Type::BOOL);
+            if boolean { format!("CASE WHEN {name} THEN 't' WHEN NOT {name} THEN 'f' END AS {name}") } else { format!("{name}::text AS {name}") }
         }).collect::<Vec<_>>().join(", ");
         let query = format!("SELECT {projection} FROM ({sql}) AS dc_navigation");
         let values: Vec<TextParameter<'_>> = parameters.iter().map(|v| TextParameter(v)).collect();

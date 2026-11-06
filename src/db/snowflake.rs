@@ -217,9 +217,7 @@ impl Inner {
             *s
         };
         let rid = request_id();
-        let bindings: serde_json::Map<String, Value> = parameters.iter().enumerate().map(|(i, value)| ((i + 1).to_string(), json!({"type": "TEXT", "value": value}))).collect();
-        let body = json!({
-            "bindings": bindings,
+        let mut body = json!({
             "sqlText": sql,
             "sequenceId": sequence,
             "querySubmissionTime": chrono::Utc::now().timestamp_millis(),
@@ -228,6 +226,11 @@ impl Inner {
             "describeOnly": false,
             "parameters": { "JDBC_QUERY_RESULT_FORMAT": "JSON" },
         });
+        // Only bound statements carry bindings; the rest send what they always did.
+        if !parameters.is_empty() {
+            let bindings: serde_json::Map<String, Value> = parameters.iter().enumerate().map(|(i, value)| ((i + 1).to_string(), json!({"type": "TEXT", "value": value}))).collect();
+            body["bindings"] = Value::Object(bindings);
+        }
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = Some((rid.clone(), sql.to_string()));
         let result = self.query_loop(&rid, &body).await;
         *self.running.lock().unwrap_or_else(|e| e.into_inner()) = None;

@@ -62,7 +62,7 @@ pub struct Target {
 impl Target {
     pub fn label(&self) -> String {
         let mapping = self.key.columns.iter().zip(&self.key.ref_columns).map(|(from, to)| format!("{from} → {}.{to}", self.key.ref_table)).collect::<Vec<_>>().join(", ");
-        format!("{}.{}   · {}   · {mapping}", self.key.ref_schema, self.key.ref_table, self.kind)
+        format!("{}.{}   · {}   · {mapping}", self.key.ref_schema, self.key.ref_table, crate::i18n::tr(self.kind))
     }
     pub fn has_values(&self) -> bool {
         std::iter::once(&self.values).chain(&self.additional).any(|values| values.iter().all(Option::is_some))
@@ -92,9 +92,9 @@ impl Links {
                 for (from_schema, from, to_schema, to) in [(schema, source, s.name.as_str(), target), (s.name.as_str(), target, schema, source)] {
                     let pk: Vec<_> = to.columns.iter().filter(|c| c.primary_key).collect();
                     if pk.len() != 1 { continue; }
-                    let singular = to.name.strip_suffix('s').unwrap_or(&to.name);
+                    let id_columns: Vec<String> = singulars(&to.name).into_iter().map(|n| format!("{n}_id")).collect();
                     for column in &from.columns {
-                        if ![format!("{singular}_id"), format!("{}_id", to.name)].iter().any(|n| n.eq_ignore_ascii_case(&column.name)) || !column.data_type.eq_ignore_ascii_case(&pk[0].data_type) { continue; }
+                        if !id_columns.iter().any(|n| n.eq_ignore_ascii_case(&column.name)) || type_family(&column.data_type) != type_family(&pk[0].data_type) { continue; }
                         let key = ForeignKey { schema: from_schema.into(), table: from.name.clone(), columns: vec![column.name.clone()], ref_schema: to_schema.into(), ref_table: to.name.clone(), ref_columns: vec![pk[0].name.clone()] };
                         if keys.outgoing.contains(&key) || keys.incoming.contains(&key) { continue; }
                         let key = if from_schema == schema && from.name == table { key } else { reverse(key) };
@@ -171,6 +171,30 @@ impl Links {
     }
 }
 
+/// The table name and its likely singulars: `categories` → `category`, `boxes` → `box`,
+/// `orders` → `order`.
+fn singulars(table: &str) -> Vec<String> {
+    let lower = table.to_ascii_lowercase();
+    let mut names = vec![table.to_string()];
+    if lower.ends_with("ies") && table.len() > 3 { names.push(format!("{}y", &table[..table.len() - 3])); }
+    if lower.ends_with("es") && table.len() > 2 { names.push(table[..table.len() - 2].to_string()); }
+    if lower.ends_with('s') && !lower.ends_with("ss") && table.len() > 1 { names.push(table[..table.len() - 1].to_string()); }
+    names
+}
+
+/// Data types that hold comparable key values: integers of any width, strings of any length and
+/// national or not, and otherwise the type without its length or precision.
+fn type_family(data_type: &str) -> String {
+    let base = data_type.split('(').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let base = base.strip_suffix(" unsigned").unwrap_or(&base).trim();
+    match base {
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "int2" | "int4" | "int8" | "serial" | "bigserial" | "smallserial" => "integer".into(),
+        "char" | "varchar" | "nchar" | "nvarchar" | "text" | "ntext" | "character" | "character varying" | "varchar2" | "nvarchar2" | "string" | "bpchar" => "string".into(),
+        "uuid" | "uniqueidentifier" => "uuid".into(),
+        other => other.into(),
+    }
+}
+
 /// Orient every candidate as source → destination, including incoming references.
 fn reverse(key: ForeignKey) -> ForeignKey {
     ForeignKey { schema: key.ref_schema, table: key.ref_table, columns: key.ref_columns, ref_schema: key.schema, ref_table: key.table, ref_columns: key.columns }
@@ -207,6 +231,27 @@ mod tests {
         assert!(links.targets(9, &[None, None]).is_empty());
         assert!(links.targets(0, &[None, None])[0].values[0].is_none());
         assert_eq!(links.targets(1, &[None, Some("7".into())])[0].key.ref_table, "orders");
+    }
+
+    #[test]
+    fn inference_knows_common_plurals_and_type_families() {
+        assert!(singulars("categories").contains(&"category".to_string()));
+        assert!(singulars("boxes").contains(&"box".to_string()));
+        assert!(singulars("orders").contains(&"order".to_string()));
+        assert!(!singulars("address").contains(&"addres".to_string()));
+        assert_eq!(type_family("int"), type_family("INTEGER"));
+        assert_eq!(type_family("bigint unsigned"), type_family("int4"));
+        assert_eq!(type_family("varchar(36)"), type_family("nvarchar(40)"));
+        assert_ne!(type_family("int"), type_family("varchar(10)"));
+        assert_eq!(type_family("numeric(10,2)"), type_family("NUMERIC(12,0)"));
+
+        let mut id = col("id", "integer"); id.primary_key = true;
+        let schemas = vec![crate::db::SchemaInfo { name: "s".into(), tables: vec![
+            crate::db::TableInfo { name: "products".into(), kind: crate::db::ObjectKind::Table, columns: vec![col("sku", "text"), col("category_id", "int")] },
+            crate::db::TableInfo { name: "categories".into(), kind: crate::db::ObjectKind::Table, columns: vec![id] },
+        ] }];
+        let links = Links::with_schema(&TableKeys::default(), &[Some("sku".into()), Some("category_id".into())], &schemas, "s", "products").unwrap();
+        assert_eq!(links.inferred[0].0.ref_table, "categories");
     }
 
     #[test]

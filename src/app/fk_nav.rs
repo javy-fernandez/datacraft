@@ -88,13 +88,16 @@ struct Child {
 }
 
 /// The table filtered to the rows whose `columns` hold `values`, as builder conditions.
-fn filtered(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], values: &[Cell]) -> Option<Filtered> {
-    filtered_rows(driver, conn, db, schema, table, columns, &[values.to_vec()])
+/// `types` are the data types of `columns` (empty when unknown).
+#[allow(clippy::too_many_arguments)]
+fn filtered(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], types: &[String], values: &[Cell]) -> Option<Filtered> {
+    filtered_rows(driver, conn, db, schema, table, columns, types, &[values.to_vec()])
 }
 
-fn filtered_rows(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], values: &[Vec<Cell>]) -> Option<Filtered> {
+#[allow(clippy::too_many_arguments)]
+fn filtered_rows(driver: Driver, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String], types: &[String], values: &[Vec<Cell>]) -> Option<Filtered> {
     use crate::ui::filter_sort::{Connector, FilterRow, Group};
-    let bound_filter = crate::db::fk_nav::bound_filter_rows(driver, columns, values)?;
+    let bound_filter = crate::db::fk_nav::bound_filter_rows(driver, columns, types, values)?;
     let where_clause = bound_filter.display.clone();
     let conditions = |values: &[String]| columns.iter().zip(values).map(|(column, value)| {
         Node::Condition(Condition { enabled: true, column: column.clone(), operator: Operator::Equal, value: value.clone(), second: String::new() }).into()
@@ -222,15 +225,17 @@ impl DataCraftApp {
         let (driver, db) = (cs.cfg.driver, cs.resolve_db(self.consoles[idx].db.as_deref()).unwrap_or_default().to_string());
         match jump {
             Jump::Choose { targets, anchor } => { self.fk_nav.popup = Some((self.consoles[idx].id, anchor, targets, 0)); }
-            Jump::Null => self.info("Cannot navigate: source value is NULL"),
+            Jump::Null => self.info(tr("Cannot navigate: source value is NULL")),
             Jump::Rows { key, values } => {
-                if let Some(target) = filtered_rows(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &values) {
+                let types = self.key_types(conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns);
+                if let Some(target) = filtered_rows(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &types, &values) {
                     self.go(origin, &target);
-                } else { self.info("Cannot navigate: source value is NULL"); }
+                } else { self.info(tr("Cannot navigate: source value is NULL")); }
             }
             Jump::Parent { key, values } => {
-                if values.iter().any(Option::is_none) { self.info("Cannot navigate: source value is NULL"); return; }
-                if let Some(target) = filtered(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &values) {
+                if values.iter().any(Option::is_none) { self.info(tr("Cannot navigate: source value is NULL")); return; }
+                let types = self.key_types(conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns);
+                if let Some(target) = filtered(driver, conn, &db, &key.ref_schema, &key.ref_table, &key.ref_columns, &types, &values) {
                     self.go(origin, &target);
                 }
             }
@@ -361,7 +366,13 @@ impl DataCraftApp {
         let Some((table, value)) = self.fk_nav.pending.remove(&console) else { return };
         if !succeeded { return; }
         let found = self.console_by_id(console).and_then(|c| c.results.first_mut()).is_some_and(|v| v.highlight_first_row());
-        if !found { self.info(format!("No matching row in `{table}` for `{value}`")); }
+        if !found { self.info(trf("No matching row in `{table}` for `{value}`", &[("table", &table), ("value", &value)])); }
+    }
+
+    /// Data types of a known table's `columns` (empty when the table isn't loaded).
+    fn key_types(&self, conn: ConnId, db: &str, schema: &str, table: &str, columns: &[String]) -> Vec<String> {
+        let Some(known) = self.table_columns(conn, Some(db), schema, table) else { return Vec::new() };
+        columns.iter().map(|c| known.iter().find(|k| &k.name == c).map(|k| k.data_type.clone()).unwrap_or_default()).collect()
     }
 
     pub(super) fn references_dialog(&mut self, ctx: &egui::Context) {
@@ -443,7 +454,8 @@ impl DataCraftApp {
         dialog.cancel.store(true, Ordering::Relaxed);
         let target = open.and_then(|i| {
             let child = dialog.children.get(i)?;
-            filtered(dialog.driver, dialog.conn, &dialog.db, &child.key.schema, &child.key.table, &child.key.columns, child.values.as_ref()?)
+            let types = self.key_types(dialog.conn, &dialog.db, &child.key.schema, &child.key.table, &child.key.columns);
+            filtered(dialog.driver, dialog.conn, &dialog.db, &child.key.schema, &child.key.table, &child.key.columns, &types, child.values.as_ref()?)
         });
         if let Some(target) = target {
             self.go(dialog.origin, &target);
@@ -702,7 +714,7 @@ mod screenshots {
             ..Default::default()
         };
         let mut tab = table_tab(2, "customers", customer, &customer_keys, 8);
-        let target = filtered(Driver::MariaDb, 7, "shop", "shop", "customers", &["id".into()], &[Some("103".into())]).unwrap();
+        let target = filtered(Driver::MariaDb, 7, "shop", "shop", "customers", &["id".into()], &[], &[Some("103".into())]).unwrap();
         let t = tab.table.as_mut().unwrap();
         t.where_clause = target.where_clause;
         t.filter_sort = target.filter;

@@ -1767,6 +1767,11 @@
     "The script runs in one transaction (XACT_ABORT): a failing statement undoes all the others.": "脚本在一个事务（XACT_ABORT）中运行：失败的语句会撤销所有其他语句。",
     "This engine commits each DDL statement: if one fails, the statements before it stay applied.": "此引擎会提交每条 DDL 语句：如果某条失败，之前的语句仍会保留。",
     "alter, loses data": "修改，会丢失数据",
-    "Drops columns or changes their type: left out of the script unless checked.": "删除列或更改其类型：除非勾选，否则不会包含在脚本中。"
+    "Drops columns or changes their type: left out of the script unless checked.": "删除列或更改其类型：除非勾选，否则不会包含在脚本中。",
+    "Cannot navigate: source value is NULL": "无法跳转：源值为 NULL",
+    "No matching row in `{table}` for `{value}`": "`{table}` 中没有与 `{value}` 匹配的行",
+    "FK": "外键",
+    "reverse FK": "反向外键",
+    "inferred": "推断"
   }
 }

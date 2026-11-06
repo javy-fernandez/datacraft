@@ -650,9 +650,12 @@ impl ResultView {
     fn related_jump(&self, clicked: Option<(usize, usize)>, anchor: egui::Pos2) -> Option<crate::ui::fk_nav::Jump> {
         let targets = self.related_targets(clicked);
         if targets.is_empty() { return None; }
-        Some(if targets.iter().any(crate::ui::fk_nav::Target::has_values) {
-            crate::ui::fk_nav::Jump::Choose { targets, anchor }
-        } else { crate::ui::fk_nav::Jump::Null })
+        Some(if !targets.iter().any(crate::ui::fk_nav::Target::has_values) {
+            crate::ui::fk_nav::Jump::Null
+        } else if targets.len() == 1 {
+            // A single target needs no choice.
+            targets.into_iter().next()?.jump()
+        } else { crate::ui::fk_nav::Jump::Choose { targets, anchor } })
     }
 
     fn cell_selected(&self, r: usize, c: usize) -> bool {
@@ -2912,10 +2915,10 @@ mod keyboard_tests {
         h.run_steps(2);
         h.key_press(Key::F4);
         h.run_steps(2);
-        let Some(Jump::Choose { targets, .. }) = h.state_mut().jump.take() else { panic!("F4 opens navigation candidates") };
-        assert_eq!(targets[0].clone().jump(), Jump::Parent { key: key.clone(), values: vec![Some("a".into())] });
+        // A single target needs no choice: F4 follows it.
+        assert_eq!(h.state_mut().jump.take(), Some(Jump::Parent { key: key.clone(), values: vec![Some("a".into())] }));
 
-        // The dedicated follow button still opens candidates and handles NULL values.
+        // The dedicated follow button does the same and handles NULL values.
         let follow = |h: &mut egui_kittest::Harness<'static, State>, y: f32| {
             (100..900).step_by(6).find_map(|x| {
                 click(h, pos2(x as f32, y));
@@ -2924,9 +2927,14 @@ mod keyboard_tests {
             })
         };
         assert_eq!(follow(&mut h, 74.0), Some(Jump::Null));
-        let Some(Jump::Choose { targets, .. }) = follow(&mut h, 50.0) else { panic!("expected navigation candidates") };
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].clone().jump(), Jump::Parent { key, values: vec![Some("a".into())] });
+        assert_eq!(follow(&mut h, 50.0), Some(Jump::Parent { key: key.clone(), values: vec![Some("a".into())] }));
+
+        // Several targets open the chooser.
+        let other = crate::db::subset::ForeignKey { ref_table: "archive".into(), ..key.clone() };
+        let view = &mut h.state_mut().view;
+        view.links = Links::new(&crate::db::fk_nav::TableKeys { outgoing: vec![key, other], incoming: Vec::new() }, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
+        let Some(Jump::Choose { targets, .. }) = view.related_jump(Some((0, 1)), pos2(0.0, 0.0)) else { panic!("expected navigation candidates") };
+        assert_eq!(targets.len(), 2);
     }
 
     #[test]
@@ -2944,13 +2952,10 @@ mod keyboard_tests {
         assert_eq!(h.state().view.selected_cells, BTreeSet::from([(0, 1), (1, 1), (2, 1)]));
         h.key_press(Key::F4);
         h.run_steps(2);
-        let Some(Jump::Choose { targets, .. }) = h.state_mut().jump.take() else { panic!("F4 should use the selected range") };
         let expected = Jump::Rows { key: key.clone(), values: vec![vec![Some("a".into())], vec![Some("c".into())]] };
-        assert_eq!(targets[0].clone().jump(), expected);
+        assert_eq!(h.state_mut().jump.take(), Some(expected.clone()), "F4 should use the selected range");
         // Directly verify the selected-cell button path, independent of column widths.
-        let Some(Jump::Choose { targets, .. }) = h.state().view.related_jump(Some((0, 1)), pos2(0.0, 0.0)) else { panic!() };
-        let from_button = Some(targets[0].clone().jump());
-        assert_eq!(from_button, Some(expected.clone()));
+        assert_eq!(h.state().view.related_jump(Some((0, 1)), pos2(0.0, 0.0)), Some(expected.clone()));
         h.event(egui::Event::PointerMoved(pos2(160.0, 50.0)));
         for pressed in [true, false] {
             h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
