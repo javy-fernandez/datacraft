@@ -200,6 +200,8 @@ pub struct TableTab {
     pub order_by: String,
     /// false until the first load (restored tabs load when activated).
     pub loaded: bool,
+    /// Explorer navigation requested while the table's data is loading.
+    pub pending_column: Option<Vec<String>>,
     /// Opt-in: submit pending grid changes when leaving the edited rows.
     pub save_on_row_change: bool,
     /// Foreign-key navigation history can go back / forward (set by the app).
@@ -328,6 +330,7 @@ impl Console {
             bound_filter: None,
             order_by: String::new(),
             loaded: false,
+            pending_column: None,
             save_on_row_change: false,
             history: [false; 2],
         });
@@ -353,6 +356,20 @@ impl Console {
         match self.result_tab {
             ResultTab::Result(i) if i < self.results.len() => Some(i),
             _ => None,
+        }
+    }
+
+    pub fn focus_table_column(&mut self, columns: &[String]) -> bool {
+        let Some(index) = self.edit_view_index() else { return false };
+        let Some(column) = columns.iter().find(|column| self.results[index].rs.columns.contains(column)) else { return false };
+        if !self.results[index].focus_column(column) { return false; }
+        self.result_tab = ResultTab::Result(index);
+        true
+    }
+
+    pub fn apply_pending_column(&mut self) {
+        if let Some(columns) = self.table.as_mut().and_then(|t| t.pending_column.take()) {
+            self.focus_table_column(&columns);
         }
     }
 

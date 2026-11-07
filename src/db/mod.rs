@@ -18,6 +18,8 @@ pub mod kusto;
 pub mod mongo;
 pub mod mssql;
 pub mod object_info;
+pub mod indexes;
+pub mod table_structure;
 pub mod table_model;
 pub mod fk_nav;
 pub mod schema_search;

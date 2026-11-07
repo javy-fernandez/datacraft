@@ -18,6 +18,7 @@ pub enum Ico {
     Table,
     View,
     Column,
+    Index,
     Key,
     /// A stored procedure (Database Explorer).
     Procedure,
@@ -85,6 +86,12 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
     };
     let obj = |c: Color32| if enabled { c } else { color };
     match ico {
+        Ico::Index => {
+            for y in [3.5, 8.0, 12.5] {
+                painter.circle_stroke(at(3.0, y), 1.0 * s, st(color));
+                line(&[(6.0, y), (14.0, y)], color);
+            }
+        }
         Ico::Code => {
             line(&[(9.5, 1.5), (3.0, 1.5), (3.0, 14.5), (13.0, 14.5), (13.0, 5.0), (9.5, 1.5), (9.5, 5.0), (13.0, 5.0)], color);
             line(&[(6.5, 7.5), (4.5, 9.5), (6.5, 11.5)], color);

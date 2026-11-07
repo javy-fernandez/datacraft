@@ -930,6 +930,14 @@
     "The view definition request timed out": "La petición de la definición de la vista ha excedido el tiempo"
   },
   "modify_table": {
+    "Keys": "Claves",
+    "Foreign Keys": "Claves foráneas",
+    "No keys": "Sin claves",
+    "No foreign keys": "Sin claves foráneas",
+    "Open Referenced Table": "Abrir tabla referenciada",
+    "The table metadata is too large to display": "Los metadatos de la tabla son demasiado grandes para mostrarlos",
+    "No indexes": "Sin índices",
+    "Too many indexes to display": "Demasiados índices para mostrar",
     "Modify Table…": "Modificar tabla…",
     "Modify Table": "Modificar tabla",
     "Loading table structure…": "Cargando la estructura de la tabla…",

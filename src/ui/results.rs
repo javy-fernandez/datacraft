@@ -156,6 +156,8 @@ pub struct ResultView {
     selected_rows: BTreeSet<usize>,
     anchor: Option<usize>,
     scroll_to: Option<usize>,
+    /// Column requested by explorer navigation, also when the grid has no rows.
+    scroll_to_column: Option<usize>,
     find_open: bool,
     find_query: String,
     find_focus: bool,
@@ -184,6 +186,19 @@ pub struct ResultView {
 }
 
 impl ResultView {
+    /// Focus a real result column without changing filters, order or staged edits.
+    pub fn focus_column(&mut self, name: &str) -> bool {
+        let Some(col) = self.rs.columns.iter().position(|c| c == name) else { return false };
+        self.commit_edit();
+        if self.n_view_rows() > 0 {
+            let row = self.selected.map_or(0, |(r, _)| r).min(self.n_view_rows() - 1);
+            self.select_cell(row, col, Modifiers::NONE);
+            self.scroll_to = Some(row);
+        }
+        self.scroll_to_column = Some(col);
+        true
+    }
+
     /// A navigation result is already filtered; select and scroll to its first matching row.
     pub fn highlight_first_row(&mut self) -> bool {
         // A reused tab may still have local filters from its previous contents.
@@ -321,6 +336,7 @@ impl ResultView {
             selected_rows: BTreeSet::new(),
             anchor: None,
             scroll_to: None,
+            scroll_to_column: None,
             find_open: false,
             find_query: String::new(),
             find_focus: false,
@@ -1509,6 +1525,7 @@ pub fn show_result(
     let sort = view.sort;
     let selected_rows = view.selected_rows.clone();
     let scroll_to = view.scroll_to.take();
+    let scroll_to_column = view.scroll_to_column.take();
     // The inline editor is taken out of the view so it can be edited while `view` is read.
     let mut inline = view.edit.as_mut().and_then(|e| e.editing.take());
 
@@ -1557,7 +1574,7 @@ pub fn show_result(
                     let mut sort_hit = Rect::NOTHING;
                     let (_, resp) = header.col(|ui| {
                         let r = ui.max_rect();
-                        if scroll_to.is_some() && view.selected.is_some_and(|(_, c)| c == i) { scroll_cell = Some(r); }
+                        if scroll_to_column == Some(i) || (scroll_to.is_some() && view.selected.is_some_and(|(_, c)| c == i)) { scroll_cell = Some(r); }
                         ui.painter().rect_filled(r, 0.0, p.header_bg);
                         ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.grid));
                         let painter = ui.painter_at(r);
@@ -2542,6 +2559,37 @@ pub fn show_output(ui: &mut Ui, log: &[OutputEntry]) {
 
 fn statement_title_long(sql: &str) -> String {
     truncate_chars(&sql.split_whitespace().collect::<Vec<_>>().join(" "), 160)
+}
+
+#[cfg(test)]
+mod column_navigation_tests {
+    use super::*;
+
+    #[test]
+    fn explorer_column_navigation_reveals_columns_in_populated_and_empty_grids() {
+        for empty in [false, true] {
+            let rows = if empty { Vec::new() } else { vec![vec![Some("one".into()); 30], vec![Some("two".into()); 30]] };
+            let mut view = ResultView::new(ResultSet { columns: (0..30).map(|c| format!("column_{c:02}")).collect(), rows, ..Default::default() }, 500 + u64::from(empty));
+            if !empty { view.select_cell(1, 0, Modifiers::NONE); }
+            assert!(!view.focus_column("unavailable"));
+            let mut first = true;
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 460.0)).build_ui_state(move |ui, state: &mut (ResultView, f32)| {
+                if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+                let id = ui.make_persistent_id(egui::IdSalt::new(("result_h", state.0.salt)));
+                show_result(ui, &mut state.0, false, None, false, true);
+                state.1 = egui::scroll_area::State::load(ui.ctx(), id).unwrap().offset.x;
+            }, (view, 0.0));
+            h.run_steps(3);
+            assert!(h.state_mut().0.focus_column("column_29"));
+            h.run_steps(20);
+            assert!(h.state().1 > 1000.0, "navigation must reveal offscreen columns even without rows");
+            assert_eq!(h.state().0.selected, if empty { None } else { Some((1, 29)) });
+            assert!(!h.state().0.is_dirty());
+            assert!(h.state_mut().0.focus_column("column_00"));
+            h.run_steps(20);
+            assert!(h.state().1 < 60.0);
+        }
+    }
 }
 
 #[cfg(test)]

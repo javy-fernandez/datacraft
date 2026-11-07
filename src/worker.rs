@@ -92,6 +92,7 @@ pub enum Request {
     DatabaseChoices { conn: ConnId },
     /// "Modify Table…": the table's full structure (defaults, primary key, indexes).
     TableDetails { conn: ConnId, db: String, schema: String, table: String, request_id: u64 },
+    TableObjects { conn: ConnId, db: String, schema: String, table: String, group: crate::db::table_structure::Group, request_id: u64 },
     TableGrants {
         conn: ConnId, db: String, schema: String, table: String, request_id: u64,
         request: crate::db::table_privileges::Request, cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -206,6 +207,7 @@ pub enum Response {
     DdlDone { conn: ConnId, result: Result<(), String> },
     RoutineSaved { console: ConsoleId, result: Result<(), String>, identity: Option<crate::db::routines::RoutineRef> },
     TableDetails { request_id: u64, result: Result<Box<crate::db::alter::TableDetails>, String> },
+    TableObjects { conn: ConnId, db: String, schema: String, table: String, group: crate::db::table_structure::Group, request_id: u64, result: Result<Vec<crate::db::table_structure::TableObject>, String> },
     TableGrants { conn: ConnId, request_id: u64, result: Result<crate::db::table_privileges::Grants, String> },
     DatabaseChoices { conn: ConnId, result: Result<crate::db::create_db::DatabaseChoices, String> },
     /// Result of `Users`.
@@ -636,6 +638,32 @@ async fn fetch_object_info(
         state.forget_meta(conn, &session).await;
     }
     result
+}
+
+fn table_objects(state: &State, conn: ConnId, db: String, schema: String, table: String, group: crate::db::table_structure::Group, request_id: u64) -> futures_util::future::BoxFuture<'_, Vec<Response>> {
+    Box::pin(async move {
+        let result = async {
+            let driver = state.live.lock().await.get(&conn).map(|l| l.cfg.driver).ok_or_else(|| anyhow::anyhow!(tr("Connection lost")))?;
+            let (session, target) = state.meta_session_for(conn, &db).await?;
+            let mut s = session.lock().await;
+            let cancel = s.cancel_handle();
+            let query = async {
+                s.use_database(&target).await?;
+                crate::db::table_structure::load(&mut s, driver, &schema, &table, group).await
+            };
+            let (result, broken) = match tokio::time::timeout(std::time::Duration::from_secs(15), query).await {
+                Ok(result) => (result, s.is_closed()),
+                Err(_) => {
+                    let cancelled = match cancel { Some(h) => h.cancel().await.is_ok(), None => false };
+                    (Err(anyhow::anyhow!(tr("Object information request timed out"))), !cancelled)
+                }
+            };
+            drop(s);
+            if broken { state.forget_meta(conn, &session).await; }
+            result
+        }.await.map_err(|e| format!("{e:#}"));
+        vec![Response::TableObjects { conn, db, schema, table, group, request_id, result }]
+    })
 }
 
 /// Foreign keys of one table. Built outside `handle` and boxed: in debug builds even a boxed
@@ -1207,6 +1235,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             .await;
             vec![Response::TableDetails { request_id, result: result.map(Box::new).map_err(|e| format!("{e:#}")) }]
         }
+        Request::TableObjects { conn, db, schema, table, group, request_id } => table_objects(state, conn, db, schema, table, group, request_id).await,
         Request::ApplyChanges { conn, db, console, statements } => {
             let (session, target) = match state.session_for(conn, db.as_deref()).await {
                 Ok(s) => s,
@@ -1906,6 +1935,46 @@ mod tests {
         }
         drop(worker);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn table_objects_are_loaded_through_the_worker_on_a_read_only_connection() {
+        let path = std::env::temp_dir().join(format!("datacraft-index-worker-{}.db", uuid::Uuid::new_v4()));
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE customers(id INTEGER PRIMARY KEY); CREATE TABLE orders(id INTEGER PRIMARY KEY, email TEXT, customer_id INTEGER REFERENCES customers(id)); CREATE UNIQUE INDEX orders_email ON orders(email);").unwrap();
+        drop(db);
+        let worker = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(73, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        cfg.read_only = true;
+        worker.send(Request::Connect(cfg));
+        wait_for(&worker, |r| matches!(r, Response::Connected { conn: 73, .. }));
+        worker.send(Request::TableObjects { conn: 73, db: "main".into(), schema: "main".into(), table: "orders".into(), group: crate::db::table_structure::Group::Indexes, request_id: 701 });
+        let Response::TableObjects { conn, db, schema, table, result, .. } = wait_for(&worker, |r| matches!(r, Response::TableObjects { request_id: 701, .. })) else { unreachable!() };
+        assert_eq!((conn, db.as_str(), schema.as_str(), table.as_str()), (73, "main", "main", "orders"));
+        let indexes = result.unwrap();
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].name, "orders_email");
+        assert!(indexes[0].unique);
+        assert_eq!(indexes[0].columns, ["email"]);
+        for group in [crate::db::table_structure::Group::Keys, crate::db::table_structure::Group::ForeignKeys] {
+            worker.send(Request::TableObjects { conn: 73, db: "main".into(), schema: "main".into(), table: "orders".into(), group, request_id: 702 });
+            let Response::TableObjects { group: received_group, result, .. } = wait_for(&worker, |r| matches!(r, Response::TableObjects { request_id: 702, .. })) else { unreachable!() };
+            assert_eq!(received_group, group);
+            let objects = result.unwrap();
+            assert_eq!(objects.len(), 1);
+            if group == crate::db::table_structure::Group::Keys {
+                assert!(objects[0].primary_key);
+                assert_eq!(objects[0].columns, ["id"]);
+            } else {
+                assert_eq!(objects[0].columns, ["customer_id"]);
+                assert_eq!(objects[0].reference.as_ref().unwrap().table, "customers");
+            }
+        }
+        worker.send(Request::Disconnect(73));
+        wait_for(&worker, |r| matches!(r, Response::Disconnected(73)));
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
