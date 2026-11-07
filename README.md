@@ -119,6 +119,10 @@ Choose **AND/OR** on each condition row to mix operators, and use groups with vi
 
 Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Schema…** searches the database instead. See [search behavior and scope](docs/navigation-search.md).
 
+Expand a table in the Database Explorer to browse its **Columns**, **Keys**, **Indexes**, and **Foreign Keys** folders. Keys include primary and unique constraints; foreign keys show the referenced table and column pairs, with **Open Referenced Table** in their context menu. Each metadata folder loads on demand and has a **Refresh** action, including on read-only connections. The table's context menu opens the matching folder directly. Folders follow the engine's capabilities: ClickHouse includes primary and skipping indexes, while Snowflake exposes keys and foreign keys.
+
+Click a column, key, index, or foreign key to focus its matching column in an open table editor. Expand a key or index to select a specific column; double-click opens the table if needed. Navigation preserves the current row, filters, and pending edits. **Open Referenced Table** also focuses the referenced column.
+
 ## Move, export and back up data
 
 - **Import and export:** import CSV/TSV into tables; export results as CSV, TSV, JSON, SQL inserts or Markdown.

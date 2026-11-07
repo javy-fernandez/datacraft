@@ -930,6 +930,14 @@
     "The view definition request timed out": "ビュー定義の取得がタイムアウトしました"
   },
   "modify_table": {
+    "Keys": "キー",
+    "Foreign Keys": "外部キー",
+    "No keys": "キーがありません",
+    "No foreign keys": "外部キーがありません",
+    "Open Referenced Table": "参照先テーブルを開く",
+    "The table metadata is too large to display": "テーブルのメタデータが大きすぎて表示できません",
+    "No indexes": "インデックスがありません",
+    "Too many indexes to display": "表示するインデックスが多すぎます",
     "Modify Table…": "テーブルの変更…",
     "Modify Table": "テーブルの変更",
     "Loading table structure…": "テーブル構造を読み込み中…",
