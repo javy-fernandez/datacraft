@@ -930,6 +930,7 @@
     "The view definition request timed out": "A solicitação da definição da view expirou"
   },
   "modify_table": {
+    "Structure": "Estrutura",
     "Keys": "Chaves",
     "Foreign Keys": "Chaves estrangeiras",
     "No keys": "Nenhuma chave",

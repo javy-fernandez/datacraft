@@ -930,6 +930,7 @@
     "The view definition request timed out": "视图定义请求超时"
   },
   "modify_table": {
+    "Structure": "结构",
     "Keys": "键",
     "Foreign Keys": "外键",
     "No keys": "没有键",

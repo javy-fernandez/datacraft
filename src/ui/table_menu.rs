@@ -55,11 +55,18 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         ui.close();
     }
     if sql {
-        for group in crate::db::table_structure::Group::ALL.into_iter().filter(|g| g.supported(cx.driver)) {
-            if ui.add_enabled(cx.connected && table, egui::Button::new(group.label())).clicked() {
-                if let Some(t) = tables.first() { actions.push(ExplorerAction::ShowTableObjects(t.clone(), group)); }
-                ui.close();
-            }
+        let groups: Vec<_> = crate::db::table_structure::Group::ALL.into_iter().filter(|g| g.supported(cx.driver)).collect();
+        if !groups.is_empty() {
+            ui.add_enabled_ui(cx.connected && table, |ui| {
+                ui.menu_button(tr("Structure"), |ui| {
+                    for group in groups {
+                        if ui.button(group.label()).clicked() {
+                            if let Some(t) = tables.first() { actions.push(ExplorerAction::ShowTableObjects(t.clone(), group)); }
+                            ui.close();
+                        }
+                    }
+                });
+            });
         }
         button!(writable && table, "Modify Table…", &|t: &TableRef| ExplorerAction::ModifyTable(t.clone()));
         let grants = writable && table && crate::db::table_privileges::supported(cx.driver);
@@ -216,6 +223,8 @@ mod grants_tests {
             let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 1100.0)).build_ui_state(
                 move |ui, actions: &mut Vec<ExplorerAction>| show(ui, std::slice::from_ref(&target), Some(ObjectKind::Table), TableContext { driver: Driver::Postgres, connected: true, read_only: true }, actions), Vec::new());
             h.run_steps(2);
+            assert!(h.query_by_label(group.label()).is_none(), "structure folders live in a submenu");
+            h.get_by_label("Structure").click(); h.run_steps(2);
             h.get_by_label(group.label()).click(); h.run_steps(2);
             assert!(matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, g)] if t == &table && *g == group));
         }
@@ -238,12 +247,14 @@ mod grants_tests {
             let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 1100.0)).build_ui_state(
                 move |ui, actions: &mut Vec<ExplorerAction>| show(ui, &tables, Some(kind), TableContext { driver, connected, read_only }, actions), Vec::new());
             h.run_steps(2);
-            assert_eq!(h.query_by_label("Indexes").is_some(), visible);
+            assert_eq!(h.query_by_label("Structure").is_some(), visible || driver == Driver::Snowflake);
             if !visible { continue; }
-            let button = h.get_by_label("Indexes");
+            let button = h.get_by_label("Structure");
             assert_eq!(!button.accesskit_node().is_disabled(), enabled);
             button.click(); h.run_steps(2);
+            assert_eq!(h.query_by_label("Indexes").is_some(), enabled);
             if enabled {
+                h.get_by_label("Indexes").click(); h.run_steps(2);
                 assert!(matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, crate::db::table_structure::Group::Indexes)] if t == &table));
             } else { assert!(h.state().is_empty()); }
         }

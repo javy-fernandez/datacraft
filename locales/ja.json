@@ -930,6 +930,7 @@
     "The view definition request timed out": "ビュー定義の取得がタイムアウトしました"
   },
   "modify_table": {
+    "Structure": "構造",
     "Keys": "キー",
     "Foreign Keys": "外部キー",
     "No keys": "キーがありません",

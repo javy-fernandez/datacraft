@@ -930,6 +930,7 @@
     "The view definition request timed out": "La petición de la definición de la vista ha excedido el tiempo"
   },
   "modify_table": {
+    "Structure": "Estructura",
     "Keys": "Claves",
     "Foreign Keys": "Claves foráneas",
     "No keys": "Sin claves",

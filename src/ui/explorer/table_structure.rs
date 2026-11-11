@@ -60,6 +60,7 @@ fn message(ui: &mut Ui, depth: usize, text: &str) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn folder(
     ui: &mut Ui,
     state: &mut ExplorerState,
@@ -68,8 +69,8 @@ fn folder(
     label: &str,
     detail: &str,
     depth: usize,
-) -> egui::Response {
-    let open = state.expanded.contains(key);
+    open: bool,
+) -> (egui::Response, bool) {
     let row = tree_row(
         ui,
         state,
@@ -89,10 +90,7 @@ fn folder(
     if row.resp.clicked() || row.resp.secondary_clicked() {
         state.selected_table = Some(table.clone());
     }
-    if row.toggled {
-        toggle(state, key, open);
-    }
-    row.resp
+    (row.resp, row.toggled)
 }
 
 pub(super) fn columns(
@@ -103,8 +101,10 @@ pub(super) fn columns(
     info: &TableInfo,
     depth: usize,
 ) {
+    // Columns start expanded, as before the folders existed; only a collapse is remembered.
     let key = columns_key(table);
-    folder(
+    let open = !state.collapsed.contains(&key);
+    let (_, toggled) = folder(
         ui,
         state,
         table,
@@ -112,8 +112,14 @@ pub(super) fn columns(
         tr("Columns"),
         &info.columns.len().to_string(),
         depth,
+        open,
     );
-    if state.expanded.contains(&key) {
+    if toggled && open {
+        state.collapsed.insert(key.clone());
+    } else if toggled {
+        state.collapsed.remove(&key);
+    }
+    if !state.collapsed.contains(&key) {
         column_rows(ui, state, actions, table, &key, &info.columns, depth + 1);
     }
 }
@@ -153,7 +159,12 @@ pub(super) fn show(
         None if state.table_objects.contains_key(&cache_key) => tr("loading…").to_string(),
         None => String::new(),
     };
-    folder(ui, state, table, &key, group.label(), &detail, depth).context_menu(|ui| {
+    let open = state.expanded.contains(&key);
+    let (resp, toggled) = folder(ui, state, table, &key, group.label(), &detail, depth, open);
+    if toggled {
+        toggle(state, &key, open);
+    }
+    resp.context_menu(|ui| {
         if ui
             .add_enabled(connected, egui::Button::new(tr("Refresh")))
             .clicked()
@@ -249,8 +260,8 @@ pub(super) fn show(
                             ui.ctx().copy_text(object.name.clone());
                             ui.close();
                         }
-                        if let Some(reference) = &object.reference {
-                            if ui
+                        if let Some(reference) = &object.reference
+                            && ui
                                 .add_enabled(
                                     connected,
                                     egui::Button::new(tr("Open Referenced Table")),
@@ -264,7 +275,6 @@ pub(super) fn show(
                                 });
                                 ui.close();
                             }
-                        }
                     });
                 if state.expanded.contains(&key) {
                     for (i, column) in object.columns.iter().enumerate() {
@@ -416,11 +426,10 @@ mod tests {
                         },
                     );
                     for action in actions {
-                        if let ExplorerAction::LoadTableObjects(t, group, refresh) = action {
-                            if state.0.request_table_objects(&t, group, refresh).is_some() {
+                        if let ExplorerAction::LoadTableObjects(t, group, refresh) = action
+                            && state.0.request_table_objects(&t, group, refresh).is_some() {
                                 state.1 += 1;
                             }
-                        }
                     }
                 },
                 (state, 0),
@@ -547,15 +556,14 @@ mod tests {
             assert!(h.query_by_label(label).is_some());
         }
         assert!(
-            h.query_by_label("customer_id").is_none(),
-            "columns stay in their folder"
+            h.query_by_label("customer_id").is_some(),
+            "columns start expanded inside their folder"
         );
         assert!(h.query_by_label("orders_pkey").is_none());
         let t = table(7, "shop");
         for group in Group::ALL {
             h.state_mut().0.expanded.insert(table_group_key(&t, group));
         }
-        h.state_mut().0.expanded.insert(columns_key(&t));
         h.run_steps(3);
         for label in [
             "customer_id",
@@ -585,7 +593,7 @@ mod tests {
             "{}:object:orders_customer_fkey",
             table_group_key(&t, Group::ForeignKeys)
         ));
-        h.state_mut().0.expanded.remove(&columns_key(&t));
+        h.state_mut().0.collapsed.insert(columns_key(&t));
         h.run_steps(2);
         assert!(
             h.query_by_label("customer_id").is_some(),

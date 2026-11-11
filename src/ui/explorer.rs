@@ -23,6 +23,8 @@ pub struct ExplorerState {
     pub filter: String,
     pub show_filter: bool,
     pub expanded: HashSet<String>,
+    /// Folders that start expanded and were collapsed by the user (a table's Columns).
+    pub collapsed: HashSet<String>,
     pub selected: Option<String>,
     /// Selected table (for the toolbar buttons).
     pub selected_table: Option<TableRef>,

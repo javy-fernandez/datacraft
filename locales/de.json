@@ -930,6 +930,7 @@
     "The view definition request timed out": "Zeitüberschreitung beim Abrufen der Ansichtsdefinition"
   },
   "modify_table": {
+    "Structure": "Struktur",
     "Keys": "Schlüssel",
     "Foreign Keys": "Fremdschlüssel",
     "No keys": "Keine Schlüssel",
