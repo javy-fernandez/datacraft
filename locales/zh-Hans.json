@@ -930,6 +930,15 @@
     "The view definition request timed out": "视图定义请求超时"
   },
   "modify_table": {
+    "Structure": "结构",
+    "Keys": "键",
+    "Foreign Keys": "外键",
+    "No keys": "没有键",
+    "No foreign keys": "没有外键",
+    "Open Referenced Table": "打开引用表",
+    "The table metadata is too large to display": "表元数据过大，无法显示",
+    "No indexes": "没有索引",
+    "Too many indexes to display": "索引过多，无法显示",
     "Modify Table…": "修改表…",
     "Modify Table": "修改表",
     "Loading table structure…": "正在加载表结构…",

@@ -70,6 +70,7 @@ mod views;
 mod table_export;
 mod table_shortcuts;
 mod table_grants;
+mod table_structure;
 mod safety;
 mod fk_nav;
 mod session_monitor;
@@ -694,11 +695,13 @@ impl DataCraftApp {
             }
             c.status = ConnStatus::Connecting;
             let cfg = c.cfg.clone();
+            self.explorer.forget_table_objects(id, None);
             self.worker.send(Request::Connect(cfg));
         }
     }
 
     fn disconnect(&mut self, id: ConnId) {
+        self.explorer.forget_table_objects(id, None);
         self.cancel_table_duplicate(id);
         self.cancel_startup_table(id);
         self.drop_transactions(id);
@@ -875,6 +878,7 @@ impl DataCraftApp {
                     }
                 }
                 Response::Disconnected(conn) => {
+                    self.explorer.forget_table_objects(conn, None);
                     self.reset_session_monitor(conn);
                     if let Some(c) = self.conn_mut(conn)
                         && c.status != ConnStatus::Connecting
@@ -887,6 +891,7 @@ impl DataCraftApp {
                 }
                 Response::Refreshed { conn, databases } => self.refreshed(conn, databases),
                 Response::DatabaseLoaded { conn, db, result } => {
+                    self.explorer.forget_table_objects(conn, Some(&db));
                     if let Some(c) = self.conn_mut(conn) {
                         c.loading.remove(&db);
                         match result {
@@ -931,6 +936,9 @@ impl DataCraftApp {
                 Response::ReferenceCounts { request_id, result } => self.reference_counts_received(request_id, result),
                 Response::ModelSaved { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
+                Response::TableObjects { conn, db, schema, table, group, request_id, result } => {
+                    self.explorer.receive_table_objects(&TableRef { conn, db, schema, table }, group, request_id, result);
+                }
                 Response::ObjectCatalog { conn, request_id, result } => self.object_browser.receive_catalog(conn, request_id, result),
                 Response::SchemaSearch { request_id, result } => self.object_browser.schema_search.receive(request_id, result),
                 Response::Sessions { conn, request_id, epoch, result } => self.session_list_received(conn, request_id, epoch, result),
@@ -1012,6 +1020,7 @@ impl DataCraftApp {
     /// New database list after a refresh: already loaded schemas are kept while they are
     /// requested again.
     fn refreshed(&mut self, conn: ConnId, mut databases: Vec<DatabaseInfo>) {
+        self.explorer.forget_table_objects(conn, None);
         let Some(c) = self.conn_mut(conn) else { return };
         let mut reload = Vec::new();
         for d in &mut databases {
@@ -1738,6 +1747,19 @@ impl DataCraftApp {
                 }
                 ExplorerAction::Delete(id) => self.confirm_delete = Some(id),
                 ExplorerAction::LoadDatabase(id, db) => self.load_database(id, db),
+                ExplorerAction::ShowTableObjects(t, group) => {
+                    self.show_explorer = true;
+                    self.explorer.filter.clear();
+                    self.explorer.selected = Some(explorer::table_group_key(&t, group));
+                    for key in [format!("c:{}", t.conn), explorer::db_key(t.conn, &t.db),
+                        format!("s:{}:{}:{}", t.conn, t.db, t.schema), format!("g:{}:{}:{}:t", t.conn, t.db, t.schema),
+                        explorer::table_key(&t), explorer::table_group_key(&t, group)] {
+                        self.explorer.expanded.insert(key);
+                    }
+                    self.explorer.selected_table = Some(t.clone());
+                    self.load_table_objects(t, group, false);
+                }
+                ExplorerAction::LoadTableObjects(t, group, refresh) => self.load_table_objects(t, group, refresh),
                 ExplorerAction::NewDatabase(id) => {
                     if self.refuse_read_only(id) {
                         continue;
@@ -1822,6 +1844,7 @@ impl DataCraftApp {
                     self.inspect_object(t, false);
                 }
                 ExplorerAction::OpenTable(t) => self.open_table(&t),
+                ExplorerAction::NavigateColumn { table, columns, open } => self.navigate_table_column(ctx, table, columns, open),
                 ExplorerAction::GenerateSelect(t) => self.generate(ctx, &t, Generate::Select),
                 ExplorerAction::GenerateInsert(t) => self.generate(ctx, &t, Generate::Insert),
                 ExplorerAction::GenerateDdl(t) => self.generate(ctx, &t, Generate::Ddl),
@@ -2091,6 +2114,12 @@ impl DataCraftApp {
         let schema = schema.or_else(|| schemas.contains(&default).then_some(default.clone())).or_else(|| schemas.first().cloned()).unwrap_or(default);
         self.ensure_db_loaded(conn, Some(&db));
         self.create = Some(CreateDialog::table(conn, driver, db, schema));
+    }
+
+    fn load_table_objects(&mut self, t: TableRef, group: crate::db::table_structure::Group, refresh: bool) {
+        if !self.conn(t.conn).is_some_and(|c| c.status == ConnStatus::Connected && group.supported(c.cfg.driver)) { return; }
+        let Some(request_id) = self.explorer.request_table_objects(&t, group, refresh) else { return };
+        self.worker.send(Request::TableObjects { conn: t.conn, db: t.db, schema: t.schema, table: t.table, group, request_id });
     }
 
     /// "Modify Table…": opens the dialog and asks the worker for the table's full structure.
@@ -4482,6 +4511,7 @@ fn apply_execution(
     {
         c.results[i].refresh(rs);
         c.result_tab = ResultTab::Result(i);
+        c.apply_pending_column();
         return;
     }
     let has_queries = results_in.iter().any(|r| !r.is_command());
@@ -4503,6 +4533,11 @@ fn apply_execution(
     } else {
         ResultTab::Result(c.results.len() - 1)
     };
+    if error.is_none() {
+        c.apply_pending_column();
+    } else if let Some(table) = c.table.as_mut() {
+        table.pending_column = None;
+    }
 }
 
 impl eframe::App for DataCraftApp {

@@ -930,6 +930,15 @@
     "The view definition request timed out": "La demande de définition de la vue a expiré"
   },
   "modify_table": {
+    "Structure": "Structure",
+    "Keys": "Clés",
+    "Foreign Keys": "Clés étrangères",
+    "No keys": "Aucune clé",
+    "No foreign keys": "Aucune clé étrangère",
+    "Open Referenced Table": "Ouvrir la table référencée",
+    "The table metadata is too large to display": "Les métadonnées de la table sont trop volumineuses pour être affichées",
+    "No indexes": "Aucun index",
+    "Too many indexes to display": "Trop d’index à afficher",
     "Modify Table…": "Modifier la table…",
     "Modify Table": "Modifier la table",
     "Loading table structure…": "Chargement de la structure de la table…",

@@ -930,6 +930,15 @@
     "The view definition request timed out": "Przekroczono czas oczekiwania na definicję widoku"
   },
   "modify_table": {
+    "Structure": "Struktura",
+    "Keys": "Klucze",
+    "Foreign Keys": "Klucze obce",
+    "No keys": "Brak kluczy",
+    "No foreign keys": "Brak kluczy obcych",
+    "Open Referenced Table": "Otwórz tabelę referencyjną",
+    "The table metadata is too large to display": "Metadane tabeli są zbyt duże do wyświetlenia",
+    "No indexes": "Brak indeksów",
+    "Too many indexes to display": "Zbyt wiele indeksów do wyświetlenia",
     "Modify Table…": "Modyfikuj tabelę…",
     "Modify Table": "Modyfikuj tabelę",
     "Loading table structure…": "Wczytywanie struktury tabeli…",

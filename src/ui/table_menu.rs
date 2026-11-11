@@ -55,6 +55,19 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         ui.close();
     }
     if sql {
+        let groups: Vec<_> = crate::db::table_structure::Group::ALL.into_iter().filter(|g| g.supported(cx.driver)).collect();
+        if !groups.is_empty() {
+            ui.add_enabled_ui(cx.connected && table, |ui| {
+                ui.menu_button(tr("Structure"), |ui| {
+                    for group in groups {
+                        if ui.button(group.label()).clicked() {
+                            if let Some(t) = tables.first() { actions.push(ExplorerAction::ShowTableObjects(t.clone(), group)); }
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        }
         button!(writable && table, "Modify Table…", &|t: &TableRef| ExplorerAction::ModifyTable(t.clone()));
         let grants = writable && table && crate::db::table_privileges::supported(cx.driver);
         button!(grants, "Set Privileges…", &|t: &TableRef| ExplorerAction::TablePrivileges(t.clone()));
@@ -200,6 +213,52 @@ mod tests {
 mod grants_tests {
     use super::*;
     use egui_kittest::kittest::{NodeT, Queryable};
+
+    #[test]
+    fn keys_and_foreign_keys_menus_open_the_matching_folder_on_read_only_tables() {
+        use crate::db::table_structure::Group;
+        let table = TableRef { conn: 7, db: "shop".into(), schema: "public".into(), table: "orders".into() };
+        for group in [Group::Keys, Group::ForeignKeys] {
+            let target = table.clone();
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 1100.0)).build_ui_state(
+                move |ui, actions: &mut Vec<ExplorerAction>| show(ui, std::slice::from_ref(&target), Some(ObjectKind::Table), TableContext { driver: Driver::Postgres, connected: true, read_only: true }, actions), Vec::new());
+            h.run_steps(2);
+            assert!(h.query_by_label(group.label()).is_none(), "structure folders live in a submenu");
+            h.get_by_label("Structure").click(); h.run_steps(2);
+            h.get_by_label(group.label()).click(); h.run_steps(2);
+            assert!(matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, g)] if t == &table && *g == group));
+        }
+    }
+
+    #[test]
+    fn indexes_menu_is_available_on_read_only_tables_and_targets_the_selected_table() {
+        let table = TableRef { conn: 7, db: "shop".into(), schema: "public".into(), table: "notes".into() };
+        for (driver, connected, read_only, kind, count, visible, enabled) in [
+            (Driver::Postgres, true, false, ObjectKind::Table, 1, true, true),
+            (Driver::Sqlite, true, true, ObjectKind::Table, 1, true, true),
+            (Driver::ClickHouse, true, true, ObjectKind::Table, 1, true, true),
+            (Driver::MsSql, false, false, ObjectKind::Table, 1, true, false),
+            (Driver::MySql, true, false, ObjectKind::View, 1, true, false),
+            (Driver::Oracle, true, false, ObjectKind::Table, 2, true, false),
+            (Driver::Snowflake, true, false, ObjectKind::Table, 1, false, false),
+            (Driver::Redis, true, false, ObjectKind::Table, 1, false, false),
+        ] {
+            let tables = vec![table.clone(); count];
+            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 1100.0)).build_ui_state(
+                move |ui, actions: &mut Vec<ExplorerAction>| show(ui, &tables, Some(kind), TableContext { driver, connected, read_only }, actions), Vec::new());
+            h.run_steps(2);
+            assert_eq!(h.query_by_label("Structure").is_some(), visible || driver == Driver::Snowflake);
+            if !visible { continue; }
+            let button = h.get_by_label("Structure");
+            assert_eq!(!button.accesskit_node().is_disabled(), enabled);
+            button.click(); h.run_steps(2);
+            assert_eq!(h.query_by_label("Indexes").is_some(), enabled);
+            if enabled {
+                h.get_by_label("Indexes").click(); h.run_steps(2);
+                assert!(matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, crate::db::table_structure::Group::Indexes)] if t == &table));
+            } else { assert!(h.state().is_empty()); }
+        }
+    }
 
     #[test]
     fn grants_menu_is_available_only_for_one_writable_server_table() {

@@ -1,4 +1,4 @@
-//! "Database Explorer" panel: tree of connections, databases, schemas, tables and columns
+//! "Database Explorer" panel: tree of connections, databases, schemas, tables, columns and indexes
 //! (Islands style).
 
 use crate::app::{ConnState, ConnStatus};
@@ -12,6 +12,9 @@ use crate::worker::ConnId;
 use egui::{FontId, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use std::collections::HashSet;
 
+mod table_structure;
+use crate::db::table_structure::Group;
+
 #[derive(Default)]
 pub struct ExplorerState {
     pub backups: Vec<crate::db::backup::BackupRecord>,
@@ -20,11 +23,15 @@ pub struct ExplorerState {
     pub filter: String,
     pub show_filter: bool,
     pub expanded: HashSet<String>,
+    /// Folders that start expanded and were collapsed by the user (a table's Columns).
+    pub collapsed: HashSet<String>,
     pub selected: Option<String>,
     /// Selected table (for the toolbar buttons).
     pub selected_table: Option<TableRef>,
     /// true if the last click was inside the panel ("focused" selection in blue).
     pub focused: bool,
+    table_objects: std::collections::HashMap<(TableRef, Group), table_structure::MetadataNode>,
+    next_metadata_request: u64,
     /// Width of the tree rows in this frame (the visible one or that of the longest row).
     row_width: f32,
     /// Width needed by the longest row drawn in this frame (horizontal scroll).
@@ -91,6 +98,9 @@ pub enum ExplorerAction {
     TableShortcut(TableRef),
     /// "Modify Table…": columns, primary key, indexes and name.
     ModifyTable(TableRef),
+    /// Open a table metadata folder, or load (optionally refresh) its contents.
+    ShowTableObjects(TableRef, Group),
+    LoadTableObjects(TableRef, Group, bool),
     TablePrivileges(TableRef),
     /// Load a database's schema when it is expanded.
     LoadDatabase(ConnId, String),
@@ -98,6 +108,8 @@ pub enum ExplorerAction {
     BrowseRoutines(ObjectScope, RoutineKind),
     InspectObject(TableRef, ObjectKind),
     OpenTable(TableRef),
+    /// Focus the first matching column in a table editor; double-click may open it first.
+    NavigateColumn { table: TableRef, columns: Vec<String>, open: bool },
     GenerateSelect(TableRef),
     GenerateInsert(TableRef),
     GenerateDdl(TableRef),
@@ -1173,17 +1185,17 @@ fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
 
 #[allow(clippy::too_many_arguments)]
 fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, tref: TableRef, t: &TableInfo, depth: usize, table_context: crate::ui::table_menu::TableContext) {
-    let p = pal(ui);
     let tkey = table_key(&tref);
     let open = state.expanded.contains(&tkey);
     let icon = if t.kind == ObjectKind::Table { Ico::Table } else { Ico::View };
+    let has_structure = t.kind == ObjectKind::Table && Group::ALL.iter().any(|g| g.supported(table_context.driver));
     let row = tree_row(
         ui,
         state,
         RowSpec {
             key: &tkey,
             depth,
-            expandable: !t.columns.is_empty(),
+            expandable: !t.columns.is_empty() || has_structure,
             expanded: open,
             icon,
             label: &t.name,
@@ -1208,7 +1220,21 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
     if !open {
         return;
     }
-    for col in &t.columns {
+    if table_context.driver.is_nosql() {
+        column_rows(ui, state, actions, &tref, &tkey, &t.columns, depth + 1);
+    } else {
+        table_structure::columns(ui, state, actions, &tref, t, depth + 1);
+    }
+    if has_structure {
+        for group in Group::ALL.into_iter().filter(|g| g.supported(table_context.driver)) {
+            table_structure::show(ui, state, actions, &tref, group, depth + 1, table_context.connected);
+        }
+    }
+}
+
+fn column_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, table: &TableRef, tkey: &str, columns: &[crate::db::ColumnInfo], depth: usize) {
+    let p = pal(ui);
+    for col in columns {
         let ckey = format!("{tkey}:{}", col.name);
         let mut detail = col.data_type.to_lowercase();
         if !col.nullable {
@@ -1219,7 +1245,7 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
             state,
             RowSpec {
                 key: &ckey,
-                depth: depth + 1,
+                depth,
                 expandable: false,
                 expanded: false,
                 icon: if col.primary_key { Ico::Key } else { Ico::Column },
@@ -1230,6 +1256,10 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
                 label_color: None,
             },
         );
+        if row.resp.clicked() {
+            state.selected_table = Some(table.clone());
+            actions.push(ExplorerAction::NavigateColumn { table: table.clone(), columns: vec![col.name.clone()], open: row.resp.double_clicked() });
+        }
         row.resp.context_menu(|ui| {
             if ui.button(tr("Copy Name")).clicked() {
                 ui.ctx().copy_text(col.name.clone());
@@ -1237,6 +1267,15 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
             }
         });
     }
+}
+
+pub fn columns_key(table: &TableRef) -> String {
+    format!("cols:{}:{}:{}:{}", table.conn, table.db, table.schema, table.table)
+}
+
+/// Tree key of a table's keys, indexes or foreign keys folder.
+pub fn table_group_key(table: &TableRef, group: Group) -> String {
+    format!("{}:{}:{}:{}:{}", group.prefix(), table.conn, table.db, table.schema, table.table)
 }
 
 /// Tree key of a table (to expand or select it from outside).
