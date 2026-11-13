@@ -6,6 +6,7 @@ use egui::Color32;
 use egui::text::{LayoutJob, TextFormat};
 
 mod guard;
+pub mod navigation;
 pub use guard::{Danger, Dangerous, dangerous_statements};
 
 /// Script fragment with its byte range within the original text.

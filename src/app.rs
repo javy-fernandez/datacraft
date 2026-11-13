@@ -246,6 +246,8 @@ enum DemoEdit {
 #[derive(Serialize, Deserialize)]
 struct PersistedConsole {
     #[serde(default)]
+    editor_navigation: console::navigation::Saved,
+    #[serde(default)]
     routine_comment: Option<crate::ui::routine_dialog::RoutineComment>,
     #[serde(default)]
     routine: Option<(crate::db::routines::RoutineRef, String, bool)>,
@@ -549,6 +551,7 @@ impl DataCraftApp {
                 (Some(_), None) => {}
                 (None, _) => {
                     let mut c = Console::new(id, pc.title, pc.text, conn);
+                    c.navigation.saved = pc.editor_navigation;
                     c.db = pc.db.filter(|_| conn.is_some());
                     if let Some((reference, saved, transaction)) = pc.routine
                         && let Some(driver) = conn.and_then(|id| self.conn(id)).map(|c| c.cfg.driver)
@@ -3805,7 +3808,16 @@ impl DataCraftApp {
         for a in actions {
             match a {
                 ConsoleAction::Navigate(cmd) => self.navigation_command(ui.ctx(), cmd),
-
+                ConsoleAction::BookmarkAssigned(mnemonic) => {
+                    for (i, c) in self.consoles.iter_mut().enumerate() {
+                        if i != idx {
+                            c.navigation
+                                .saved
+                                .bookmarks
+                                .retain(|b| !b.mnemonic.eq_ignore_ascii_case(&mnemonic));
+                        }
+                    }
+                }
                 ConsoleAction::SaveRoutine => self.save_routine_tab(idx),
                 ConsoleAction::ApplyFilter => {
                     if let Some(id) = self.consoles.get(idx).map(|c| c.id) && self.guard(Discard::ApplyFilter(id)) { self.apply_filter_now(idx); }
@@ -4255,28 +4267,18 @@ impl DataCraftApp {
                             });
                         }
                     }
-                            ui.add_space(8.0);
-                            ui.label(RichText::new(tr("Navigation")).strong());
-                            ui.separator();
-                            for &(_, label, keys) in console::navigation::ACTIONS {
-                                if keys.is_empty() {
-                                    continue;
-                                }
-                                ui.horizontal(|ui| {
-                                    ui.label(tr(label));
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                RichText::new(crate::shortcuts::format(keys))
-                                                    .monospace()
-                                                    .color(p.muted),
-                                            );
-                                        },
-                                    );
-                                });
-                            }
-                            if cfg!(target_os = "macos") {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(tr("Navigation")).strong());
+                    ui.separator();
+                    for &(_,label,keys) in console::navigation::ACTIONS {
+                        if keys.is_empty(){continue;}
+                        ui.horizontal(|ui|{
+                            ui.label(tr(label));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(crate::shortcuts::format(keys)).monospace().color(p.muted));});
+                        });
+                    }
+                    ui.label(tr("Numbered bookmarks: Ctrl+Shift+0…9. On Windows/Linux, Ctrl+G also opens Go to Line when Find is closed."));
+                    if cfg!(target_os = "macos") {
                         ui.add_space(8.0);
                         ui.label(RichText::new("macOS").strong());
                         ui.separator();
@@ -4941,6 +4943,7 @@ impl eframe::App for DataCraftApp {
                 .consoles
                 .iter()
                 .map(|c| PersistedConsole {
+                    editor_navigation: c.navigation.saved.clone(),
                     routine_comment: c.routine.as_ref().map(|r| r.comment.clone()),
                     routine: c.routine.as_ref().map(|r| (r.reference.clone(), r.saved.clone(), r.transaction)),
                     title: c.title.clone(),
@@ -5069,7 +5072,8 @@ mod tests {
         assert!(h.query_by_label("Select a database in the explorer to browse its objects.").is_some());
         let app = h.state_mut();
         app.restore_tabs(vec![PersistedConsole {
-            routine_comment: None,
+                editor_navigation: Default::default(),
+                routine_comment: None,
             routine: None,
             title: "Saved query".into(), text: "SELECT 42;".into(), conn: None,
             table: None, table_view: Default::default(), db: None,

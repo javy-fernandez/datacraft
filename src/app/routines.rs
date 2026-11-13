@@ -190,6 +190,7 @@ impl DataCraftApp {
                 editor.dialog.definition_loaded(result);
                 if editor.dialog.error.is_none() {
                     c.text = editor.dialog.definition_text();
+                    c.navigation.sync_text(&c.text);
                     editor.transaction = editor.dialog.statements().transaction;
                     editor.saved.clone_from(&c.text);
                 }
@@ -525,6 +526,7 @@ mod tests {
         assert!(app.consoles[first].has_pending_edits(), "a reply must not mark newer text as saved");
         let editor = app.consoles[first].routine.as_ref().unwrap();
         let persisted = crate::app::PersistedConsole {
+            editor_navigation: Default::default(),
             routine_comment: Some(editor.comment.clone()),
             routine: Some((editor.reference.clone(), editor.saved.clone(), editor.transaction)),
             title: "first".into(), text: app.consoles[first].text.clone(), conn: Some(7),

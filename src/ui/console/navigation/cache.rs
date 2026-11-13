@@ -17,6 +17,8 @@ pub(crate) struct TextIndex {
     pub statements: Vec<sql::Statement>,
     pub statement_chars: Vec<Range<usize>>,
     pub statement_lines: HashMap<usize, usize>,
+    pub issues: Vec<source::Issue>,
+    pub problem_lines: HashMap<usize, usize>,
     pub structure: Vec<StructureEntry>,
 }
 
@@ -62,6 +64,13 @@ impl TextIndex {
                 }
             })
             .collect();
+        let issues = source::issues(text, driver);
+        let problem_lines = issues
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(i, p)| (line_chars.partition_point(|&s| s <= p.position), i))
+            .collect();
         Self {
             revision,
             driver,
@@ -71,6 +80,8 @@ impl TextIndex {
             statements,
             statement_chars,
             statement_lines,
+            issues,
+            problem_lines,
             structure,
         }
     }
@@ -220,8 +231,41 @@ impl State {
         }
     }
 
+    pub fn prepare_metadata(&mut self, text: &str, driver: Driver) {
+        self.ensure_index(text, driver);
+    }
+
+    pub fn cached_line_column(&self, character: usize) -> (usize, usize) {
+        self.index
+            .as_ref()
+            .expect("metadata index synchronized before use")
+            .line_column(character)
+    }
+
     pub(in crate::ui::console) fn line_count(&self) -> Option<usize> {
         self.index.as_ref().map(|i| i.line_chars.len())
+    }
+
+    pub(in crate::ui::console) fn bookmark_lines(
+        &mut self,
+    ) -> Arc<std::collections::HashSet<usize>> {
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        for bookmark in &self.saved.bookmarks {
+            bookmark.position.hash(&mut hash);
+        }
+        let key = (self.revision(), hash.finish());
+        if self.bookmark_key != Some(key) {
+            let index = self.index();
+            self.bookmark_lines = Arc::new(
+                self.saved
+                    .bookmarks
+                    .iter()
+                    .map(|b| index.line_column(b.position).0)
+                    .collect(),
+            );
+            self.bookmark_key = Some(key);
+        }
+        Arc::clone(&self.bookmark_lines)
     }
 
     pub(in crate::ui::console) fn queue_gutter(

@@ -1,11 +1,14 @@
-//! Stable-id recent tab switching.
+//! Stable-id tab switching, cross-editor caret history and database reference navigation.
 use super::*;
+use crate::sql::navigation as source;
 use console::navigation::Command;
+
 fn switcher_key(input: &mut egui::InputState, key: Key) -> bool {
     let mut found = false;
     input.events.retain(|e| if matches!(e,egui::Event::Key{key:k,pressed:true,modifiers:m,..} if *k==key && !m.alt && !m.mac_cmd){found=true;false}else{true});
     found
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Tab(u64),
@@ -13,7 +16,7 @@ enum Target {
     Explorer,
     Results,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Location {
     target: Target,
     position: usize,
@@ -24,17 +27,56 @@ struct Switcher {
     release_ctrl: bool,
     reveal_selection: bool,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Definition {
+    Table(TableRef, Option<String>),
+    Routine(crate::db::routines::RoutineRef),
+    Schema(ConnId, String, String),
+}
+
+impl Definition {
+    fn label(&self) -> String {
+        match self {
+            Self::Table(t, col) => format!(
+                "{}.{}.{}{}",
+                t.db,
+                t.schema,
+                t.table,
+                col.as_ref().map(|s| format!(".{s}")).unwrap_or_default()
+            ),
+            Self::Routine(r) => format!("{}.{}.{}({})", r.db, r.schema, r.name, r.signature),
+            Self::Schema(_, db, schema) => format!("{db}.{schema}"),
+        }
+    }
+}
+struct Definitions {
+    items: Vec<Definition>,
+    ddl: bool,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     pub(super) reveal_tab: Option<u64>,
     recent: Vec<Target>,
     switcher: Option<Switcher>,
+    trail: Vec<Location>,
+    at: usize,
+    edits: Vec<Location>,
+    edit_at: Option<usize>,
+    texts: HashMap<u64, u64>,
+    last_location: Option<Location>,
+    replaying: bool,
+    definitions: Option<Definitions>,
+    pending_reference: Option<(u64, usize, bool, String)>,
+    bookmarks: bool,
+    bookmark_sort_name: bool,
 }
 impl State {
     pub fn is_open(&self) -> bool {
-        self.switcher.is_some()
+        self.switcher.is_some() || self.definitions.is_some() || self.bookmarks
     }
 }
+
 impl DataCraftApp {
     fn navigation_location(&self) -> Option<Location> {
         if self.object_browser.active {
@@ -49,11 +91,31 @@ impl DataCraftApp {
             })
         }
     }
+
+    fn record_navigation_jump(&mut self, from: Location, to: Location) {
+        if from == to {
+            return;
+        }
+        if self.navigation.trail.is_empty() {
+            self.navigation.trail.push(from);
+            self.navigation.at = 0;
+        } else if self.navigation.trail[self.navigation.at].target == from.target {
+            self.navigation.trail[self.navigation.at] = from;
+        }
+        self.navigation.trail.truncate(self.navigation.at + 1);
+        self.navigation.trail.push(to);
+        if self.navigation.trail.len() > 300 {
+            self.navigation.trail.remove(0);
+        }
+        self.navigation.at = self.navigation.trail.len() - 1;
+    }
+
     pub(super) fn observe_navigation(&mut self) {
         let ids: HashSet<_> = self.consoles.iter().map(|c| c.id).collect();
         self.navigation
             .recent
-            .retain(|t| !matches!(t,Target::Tab(id) if !ids.contains(id)));
+            .retain(|t| !matches!(t, Target::Tab(id) if !ids.contains(id)));
+        self.navigation.texts.retain(|id, _| ids.contains(id));
         if self
             .navigation
             .reveal_tab
@@ -61,16 +123,72 @@ impl DataCraftApp {
         {
             self.navigation.reveal_tab = None;
         }
-        if let Some(loc) = self.navigation_location()
-            && self.navigation.recent.first() != Some(&loc.target)
-        {
-            if let Target::Tab(id) = loc.target {
-                self.navigation.reveal_tab = Some(id);
+        let current = self.navigation_location();
+        let jump = if !self.object_browser.active {
+            self.consoles
+                .get_mut(self.active)
+                .and_then(|c| c.navigation.jump.take())
+        } else {
+            None
+        };
+        if let Some(loc) = current {
+            if self.navigation.trail.is_empty() {
+                self.navigation.trail.push(loc);
+                self.navigation.at = 0;
             }
-            self.navigation.recent.retain(|t| *t != loc.target);
-            self.navigation.recent.insert(0, loc.target);
+            if !self.navigation.replaying {
+                if let Some((from, to)) = jump {
+                    self.record_navigation_jump(
+                        Location {
+                            target: loc.target,
+                            position: from,
+                        },
+                        Location {
+                            target: loc.target,
+                            position: to,
+                        },
+                    );
+                } else if let Some(previous) = self
+                    .navigation
+                    .last_location
+                    .filter(|p| p.target != loc.target)
+                {
+                    self.record_navigation_jump(previous, loc);
+                }
+            }
+            if self.navigation.recent.first() != Some(&loc.target) {
+                if let Target::Tab(id) = loc.target {
+                    self.navigation.reveal_tab = Some(id);
+                }
+                self.navigation.recent.retain(|t| *t != loc.target);
+                self.navigation.recent.insert(0, loc.target);
+            }
+            self.navigation.last_location = Some(loc);
+        }
+        // The console updates its revision on edits. Inactive SQL is never
+        // scanned merely because the caret blinks in another editor.
+        for c in &self.consoles {
+            if self
+                .navigation
+                .texts
+                .insert(c.id, c.navigation.revision())
+                .is_some_and(|old| old != c.navigation.revision())
+            {
+                let loc = Location {
+                    target: Target::Tab(c.id),
+                    position: c.cursor.map_or(0, |(_, b)| b),
+                };
+                if self.navigation.edits.last() != Some(&loc) {
+                    self.navigation.edits.push(loc);
+                }
+                if self.navigation.edits.len() > 100 {
+                    self.navigation.edits.remove(0);
+                }
+                self.navigation.edit_at = None;
+            }
         }
     }
+
     fn activate_navigation(
         &mut self,
         ctx: &egui::Context,
@@ -78,6 +196,7 @@ impl DataCraftApp {
         position: Option<usize>,
     ) {
         self.observe_navigation();
+        let before = self.navigation_location();
         // A late popup choice may target an editor absent from this frame's accessibility
         // tree. That editor requests focus when it is next drawn.
         ctx.memory_mut(|m| {
@@ -138,7 +257,15 @@ impl DataCraftApp {
                 });
             }
         }
+        let after = self.navigation_location();
+        if !self.navigation.replaying
+            && let (Some(from), Some(to)) = (before, after)
+        {
+            self.record_navigation_jump(from, to);
+        }
+        self.navigation.last_location = after;
     }
+
     fn open_switcher(&mut self, reverse: bool, release_ctrl: bool) {
         self.observe_navigation();
         let mut items = self.navigation.recent.clone();
@@ -163,6 +290,7 @@ impl DataCraftApp {
             reveal_selection: true,
         });
     }
+
     fn finish_switcher(&mut self, ctx: &egui::Context, choose: bool) {
         let Some(switcher) = self.navigation.switcher.take() else {
             return;
@@ -175,12 +303,27 @@ impl DataCraftApp {
             self.activate_navigation(ctx, loc.target, Some(loc.position));
         }
     }
+
     pub(super) fn navigation_shortcuts(&mut self, ctx: &egui::Context) -> bool {
         // A native focus change can swallow the modifier's key-up event. Cancel rather
         // than leaving the editor disabled or choosing a tab while the app is inactive.
         if self.navigation.switcher.is_some() && !ctx.input(|i| i.focused) {
             self.finish_switcher(ctx, false);
             return true;
+        }
+        if !self.modal_open()
+            && !self.object_browser.active
+            && let Some(c) = self
+                .consoles
+                .get(self.active)
+                .filter(|c| c.table.is_none() && ctx.memory(|m| m.has_focus(c.editor_id())))
+        {
+            if let Some(command) = ctx
+                .input_mut(|i| console::navigation::take_binding(i, &c.navigation.saved.bindings))
+            {
+                self.navigation_command(ctx, command);
+                return true;
+            }
         }
         // Ctrl+Tab is Control on every platform, including macOS. Ignore extra Alt/Command.
         let cycle = ctx.input_mut(|i| {
@@ -240,12 +383,161 @@ impl DataCraftApp {
             }
             return true;
         }
+        let mut command = None;
+        ctx.input_mut(|i| {
+            for (key, cmd) in [
+                (Key::ArrowLeft, Command::Back),
+                (Key::ArrowRight, Command::Forward),
+            ] {
+                if console::take_key(i, Modifiers::COMMAND | Modifiers::ALT, key) {
+                    command = Some(cmd);
+                }
+            }
+            if console::take_key(i, Modifiers::COMMAND | Modifiers::SHIFT, Key::Backspace) {
+                command = Some(Command::LastEdit);
+            }
+            if console::take_key(
+                i,
+                if cfg!(target_os = "macos") {
+                    Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT
+                } else {
+                    Modifiers::SHIFT
+                },
+                if cfg!(target_os = "macos") {
+                    Key::K
+                } else {
+                    Key::F11
+                },
+            ) {
+                command = Some(Command::Bookmarks);
+            }
+        });
+        if let Some(cmd) = command {
+            self.navigation_command(ctx, cmd);
+            return true;
+        }
+        // Numbered bookmarks use physical Control to leave Command+0 zoom intact on macOS.
+        let keys = [
+            Key::Num0,
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+        ];
+        let mut bookmark = None;
+        for (n, key) in keys.into_iter().enumerate() {
+            let digit = n.to_string();
+            if let Some((id, p)) = self.consoles.iter().find_map(|c| {
+                c.navigation
+                    .saved
+                    .bookmarks
+                    .iter()
+                    .find(|b| b.mnemonic == digit)
+                    .map(|b| (c.id, b.position))
+            }) {
+                let pressed=ctx.input_mut(|i| {
+                    let mut yes=false; i.events.retain(|e| { if matches!(e,egui::Event::Key{key:k,pressed:true,modifiers:m,..} if *k==key && m.ctrl && !m.alt && m.shift && !m.mac_cmd) {yes=true;false} else {true} }); yes
+                });
+                if pressed {
+                    bookmark = Some((id, p));
+                }
+            }
+        }
+        if let Some((id, p)) = bookmark {
+            self.activate_navigation(ctx, Target::Tab(id), Some(p));
+            return true;
+        }
+        if self.explorer.focused
+            && !ctx.memory(|m| {
+                self.consoles
+                    .get(self.active)
+                    .is_some_and(|c| m.has_focus(c.editor_id()))
+            })
+            && ctx.input_mut(|i| console::take_key(i, Modifiers::COMMAND, Key::B))
+        {
+            if let Some(t) = self.explorer.selected_table.clone() {
+                self.generate(ctx, &t, Generate::Ddl);
+            } else if let Some(r) = self
+                .conns
+                .iter()
+                .flat_map(|c| {
+                    c.routines.iter().flat_map(move |(db, list)| {
+                        list.items
+                            .iter()
+                            .flatten()
+                            .map(move |r| crate::db::routines::RoutineRef::new(c.cfg.id, db, r))
+                    })
+                })
+                .find(|r| self.explorer.selected.as_deref() == Some(&explorer::routine_key(r)))
+            {
+                self.request_routine_ddl(r);
+            }
+            return true;
+        }
         false
     }
+
     pub(super) fn navigation_command(&mut self, ctx: &egui::Context, cmd: Command) {
+        self.observe_navigation();
         match cmd {
             Command::Switcher => self.open_switcher(false, false),
-            Command::Structure => {
+            Command::Bookmarks => self.navigation.bookmarks = true,
+            Command::Back | Command::Forward => {
+                let forward = cmd == Command::Forward;
+                let mut at = self.navigation.at;
+                loop {
+                    if forward {
+                        if at + 1 >= self.navigation.trail.len() {
+                            break;
+                        }
+                        at += 1;
+                    } else {
+                        if at == 0 {
+                            break;
+                        }
+                        at -= 1;
+                    }
+                    let loc = self.navigation.trail[at];
+                    if matches!(loc.target,Target::Tab(id) if !self.consoles.iter().any(|c| c.id==id))
+                    {
+                        continue;
+                    }
+                    self.navigation.at = at;
+                    self.navigation.replaying = true;
+                    self.activate_navigation(ctx, loc.target, Some(loc.position));
+                    self.navigation.replaying = false;
+                    break;
+                }
+            }
+            Command::LastEdit => {
+                let end = self
+                    .navigation
+                    .edit_at
+                    .unwrap_or(self.navigation.edits.len());
+                if let Some((at,loc))=self.navigation.edits[..end].iter().enumerate().rev().find(|(_,l)| Some(**l)!=self.navigation_location() && matches!(l.target,Target::Tab(id) if self.consoles.iter().any(|c| c.id==id))).map(|(i,l)|(i,*l)) {
+                    self.navigation.edit_at=Some(at); self.activate_navigation(ctx,loc.target,Some(loc.position));
+                }
+            }
+            Command::Explorer | Command::Declaration => {
+                if let Some(c) = self
+                    .consoles
+                    .get(self.active)
+                    .filter(|_| !self.object_browser.active)
+                {
+                    self.navigate_reference(
+                        ctx,
+                        c.id,
+                        c.cursor.map_or(0, |(_, b)| b),
+                        cmd == Command::Declaration,
+                    );
+                }
+            }
+            _ => {
                 if let Some(c) = self
                     .consoles
                     .get_mut(self.active)
@@ -255,9 +547,400 @@ impl DataCraftApp {
                 }
             }
         }
-        ctx.request_repaint();
     }
+
+    fn navigate_reference(&mut self, ctx: &egui::Context, tab: u64, position: usize, ddl: bool) {
+        let Some(c) = self.consoles.iter().find(|c| c.id == tab) else {
+            return;
+        };
+        let driver = c
+            .conn
+            .and_then(|id| self.conn(id))
+            .map_or(Driver::Postgres, |c| c.cfg.driver);
+        let Some(r) = source::reference_at(&c.text, position, driver) else {
+            self.error(tr("Place the caret on a database object name"));
+            return;
+        };
+        let stmt = sql::statement_at(&c.text, crate::ui::char_to_byte(&c.text, position), driver);
+        let stmt_start = stmt
+            .as_ref()
+            .map_or(0, |s| source::character(&c.text, s.start));
+        let uses = source::table_uses(stmt.as_ref().map_or(&c.text, |s| s.text.as_str()), driver);
+        if ddl {
+            let alias = uses
+                .iter()
+                .find(|u| {
+                    r.component == 0
+                        && r.range.start != stmt_start + u.declaration
+                        && u.alias
+                            .as_ref()
+                            .is_some_and(|a| a.matches(&r.parts[0].name))
+                })
+                .map(|u| stmt_start + u.declaration);
+            let referenced = if r.parts.len() > 1 {
+                &r.parts[0]
+            } else {
+                r.parts.last().unwrap()
+            };
+            let local = alias.or_else(|| {
+                source::cte_declarations(stmt.as_ref().map_or(&c.text, |s| s.text.as_str()), driver)
+                    .into_iter()
+                    .find(|(name, _)| name.matches(&referenced.name))
+                    .map(|(_, p)| stmt_start + p)
+            });
+            if let Some(p) = local {
+                self.activate_navigation(ctx, Target::Tab(tab), Some(p));
+                return;
+            }
+        }
+        let Some(conn) = c.conn.and_then(|id| self.conn(id)) else {
+            self.error(tr("Attach a connection to navigate database references"));
+            return;
+        };
+        let Some(db) = conn.resolve_db(c.db.as_deref()).map(str::to_string) else {
+            self.error(tr("Connect to load database definitions"));
+            return;
+        };
+        let Some(schemas) = conn.schemas(Some(&db)) else {
+            let id = conn.cfg.id;
+            if conn.status == ConnStatus::Connected {
+                self.navigation.pending_reference = Some((tab, position, ddl, c.text.clone()));
+                self.load_database(id, db);
+            } else {
+                self.error(tr("Connect to load database definitions"));
+            }
+            return;
+        };
+        let mut items = Vec::new();
+        let parts = &r.parts;
+        let last = parts.last().unwrap();
+        debug_assert!(r.range.start <= position && position <= r.range.end);
+        let matches_table = |names: &[source::Identifier], schema: &str, table: &str| {
+            names.last().is_some_and(|n| n.matches(table))
+                && (names.len() < 2 || names[names.len() - 2].matches(schema))
+                && (names.len() < 3 || names[names.len() - 3].matches(&db))
+        };
+        if items.is_empty() {
+            for schema in schemas {
+                if r.component == 0 && parts.len() > 1 && parts[0].matches(&schema.name) && !ddl {
+                    items.push(Definition::Schema(
+                        conn.cfg.id,
+                        db.clone(),
+                        schema.name.clone(),
+                    ));
+                    continue;
+                }
+                for table in &schema.tables {
+                    let target = TableRef {
+                        conn: conn.cfg.id,
+                        db: db.clone(),
+                        schema: schema.name.clone(),
+                        table: table.name.clone(),
+                    };
+                    if matches_table(parts, &schema.name, &table.name) {
+                        items.push(Definition::Table(target.clone(), None));
+                    }
+                    for col in &table.columns {
+                        if !last.matches(&col.name) {
+                            continue;
+                        }
+                        let binding = uses.iter().any(|u| {
+                            matches_table(&u.parts, &schema.name, &table.name)
+                                && (parts.len() == 1
+                                    || u.alias
+                                        .as_ref()
+                                        .is_some_and(|a| a.matches(&parts[parts.len() - 2].name))
+                                    || matches_table(
+                                        &parts[..parts.len() - 1],
+                                        &schema.name,
+                                        &table.name,
+                                    ))
+                        });
+                        if binding
+                            || (parts.len() > 1
+                                && matches_table(
+                                    &parts[..parts.len() - 1],
+                                    &schema.name,
+                                    &table.name,
+                                ))
+                        {
+                            let column = (r.component + 1 == parts.len()).then(|| col.name.clone());
+                            items.push(Definition::Table(target.clone(), column));
+                        }
+                    }
+                }
+            }
+            if let Some(list) = conn.routines.get(&db).and_then(|r| r.items.as_ref()) {
+                for routine in list {
+                    if last.matches(&routine.name)
+                        && (parts.len() < 2 || parts[parts.len() - 2].matches(&routine.schema))
+                    {
+                        items.push(Definition::Routine(crate::db::routines::RoutineRef::new(
+                            conn.cfg.id,
+                            &db,
+                            routine,
+                        )));
+                    }
+                }
+            }
+        }
+        let mut unique = Vec::new();
+        for item in items {
+            if !unique.contains(&item) {
+                unique.push(item);
+            }
+        }
+        match unique.len() {
+            0 => self.error(tr(
+                "No matching object in loaded metadata. Refresh the database and try again.",
+            )),
+            1 => self.open_definition(ctx, unique.remove(0), ddl),
+            _ => self.navigation.definitions = Some(Definitions { items: unique, ddl }),
+        }
+    }
+
+    fn open_definition(&mut self, ctx: &egui::Context, definition: Definition, ddl: bool) {
+        match definition {
+            Definition::Table(t, col) => {
+                if ddl {
+                    self.generate(ctx, &t, Generate::Ddl);
+                    return;
+                }
+                self.show_explorer = true;
+                self.explorer.filter.clear();
+                self.explorer.focused = true;
+                for key in [
+                    format!("c:{}", t.conn),
+                    explorer::db_key(t.conn, &t.db),
+                    format!("s:{}:{}:{}", t.conn, t.db, t.schema),
+                ] {
+                    self.explorer.expanded.insert(key);
+                }
+                let kind = self
+                    .table_info(t.conn, Some(&t.db), &t.schema, &t.table)
+                    .map(|x| x.kind);
+                self.explorer.expanded.insert(format!(
+                    "g:{}:{}:{}:{}",
+                    t.conn,
+                    t.db,
+                    t.schema,
+                    if kind == Some(crate::db::ObjectKind::View) {
+                        "v"
+                    } else {
+                        "t"
+                    }
+                ));
+                let key = explorer::table_key(&t);
+                self.explorer.selected_table = Some(t.clone());
+                let selected = if let Some(col) = col {
+                    self.explorer.expanded.insert(key.clone());
+                    self.explorer.collapsed.remove(&explorer::columns_key(&t));
+                    format!("{key}:{col}")
+                } else {
+                    key
+                };
+                self.explorer.selected = Some(selected.clone());
+                self.explorer.reveal = Some(selected);
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
+            Definition::Routine(r) => {
+                if ddl {
+                    self.request_routine_ddl(r);
+                    return;
+                }
+                self.show_explorer = true;
+                self.explorer.filter.clear();
+                for key in [
+                    format!("c:{}", r.conn),
+                    explorer::db_key(r.conn, &r.db),
+                    format!("s:{}:{}:{}", r.conn, r.db, r.schema),
+                    format!(
+                        "g:{}:{}:{}:{}",
+                        r.conn,
+                        r.db,
+                        r.schema,
+                        if r.kind == crate::db::routines::RoutineKind::Function {
+                            "f"
+                        } else {
+                            "p"
+                        }
+                    ),
+                ] {
+                    self.explorer.expanded.insert(key);
+                }
+                let key = explorer::routine_key(&r);
+                self.explorer.selected = Some(key.clone());
+                self.explorer.reveal = Some(key);
+                self.explorer.selected_table = None;
+            }
+            Definition::Schema(conn, db, schema) => {
+                self.show_explorer = true;
+                self.explorer.filter.clear();
+                self.explorer.expanded.insert(format!("c:{conn}"));
+                self.explorer.expanded.insert(explorer::db_key(conn, &db));
+                let key = format!("s:{conn}:{db}:{schema}");
+                self.explorer.selected = Some(key.clone());
+                self.explorer.reveal = Some(key);
+            }
+        }
+    }
+
     pub(super) fn navigation_ui(&mut self, ctx: &egui::Context) {
+        if self.navigation.bookmarks {
+            let drivers: HashMap<_, _> = self
+                .conns
+                .iter()
+                .map(|c| (c.cfg.id, c.cfg.driver))
+                .collect();
+            for c in self
+                .consoles
+                .iter_mut()
+                .filter(|c| !c.navigation.saved.bookmarks.is_empty())
+            {
+                let driver = c
+                    .conn
+                    .and_then(|id| drivers.get(&id))
+                    .copied()
+                    .unwrap_or(Driver::Postgres);
+                c.navigation.prepare_metadata(&c.text, driver);
+            }
+
+            let mut rows: Vec<_> = self
+                .consoles
+                .iter()
+                .flat_map(|c| {
+                    c.navigation
+                        .saved
+                        .bookmarks
+                        .iter()
+                        .enumerate()
+                        .map(move |(i, b)| {
+                            (
+                                c.id,
+                                i,
+                                c.title.clone(),
+                                b.clone(),
+                                c.navigation.cached_line_column(b.position),
+                            )
+                        })
+                })
+                .collect();
+            if self.navigation.bookmark_sort_name {
+                rows.sort_by(|a, b| a.3.description.cmp(&b.3.description));
+            } else {
+                rows.sort_by(|a, b| a.2.cmp(&b.2).then(a.4.cmp(&b.4)));
+            }
+            let mut open = true;
+            let mut jump = None;
+            let mut remove = None;
+            let mut typing = false;
+            egui::Window::new(tr("Bookmarks"))
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(620.0)
+                .anchor(egui::Align2::CENTER_TOP, vec2(0.0, 85.0))
+                .show(ctx, |ui| {
+                    ui.checkbox(
+                        &mut self.navigation.bookmark_sort_name,
+                        tr("Sort by description"),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(360.0)
+                        .show(ui, |ui| {
+                            for (id, index, title, bookmark, (line, col)) in &rows {
+                                ui.push_id((*id, bookmark.position), |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button(format!("{title}  {line}:{col}")).clicked() {
+                                            jump = Some((*id, bookmark.position));
+                                        }
+                                        if let Some(c) =
+                                            self.consoles.iter_mut().find(|c| c.id == *id)
+                                            && let Some(b) =
+                                                c.navigation.saved.bookmarks.get_mut(*index)
+                                        {
+                                            let r = ui.add(
+                                                egui::TextEdit::singleline(&mut b.description)
+                                                    .hint_text(tr("Description"))
+                                                    .desired_width(180.0),
+                                            );
+                                            typing |= r.has_focus();
+                                            ui.label(if b.mnemonic.is_empty() {
+                                                "—"
+                                            } else {
+                                                &b.mnemonic
+                                            });
+                                        }
+                                        if ui.button(tr("Delete")).clicked() {
+                                            remove = Some((*id, *index));
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    if rows.is_empty() {
+                        ui.label(tr(
+                            "No bookmarks. Use Toggle bookmark in an editor to add one.",
+                        ));
+                    }
+                });
+            if !typing {
+                let text = ctx.input(|i| {
+                    i.events.iter().find_map(|e| {
+                        if let egui::Event::Text(s) = e {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+                if let Some(s) = text
+                    && let Some((id, _, _, b, _)) = rows.iter().find(|(_, _, _, b, _)| {
+                        !b.mnemonic.is_empty() && b.mnemonic.eq_ignore_ascii_case(&s)
+                    })
+                {
+                    jump = Some((*id, b.position));
+                }
+            }
+            if let Some((id, index)) = remove
+                && let Some(c) = self.consoles.iter_mut().find(|c| c.id == id)
+            {
+                c.navigation.saved.bookmarks.remove(index);
+            }
+            if !open || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                self.navigation.bookmarks = false;
+            }
+            if let Some((id, p)) = jump {
+                self.navigation.bookmarks = false;
+                self.activate_navigation(ctx, Target::Tab(id), Some(p));
+            }
+        }
+        if let Some((tab, p, ddl, text)) = self.navigation.pending_reference.take() {
+            let ready = self.consoles.iter().find(|c| c.id == tab).and_then(|c| {
+                c.conn
+                    .and_then(|id| self.conn(id))
+                    .map(|conn| (conn, c.db.as_deref()))
+            });
+            let loaded = ready.is_some_and(|(conn, db)| conn.schemas(db).is_some());
+            let loading = ready
+                .is_some_and(|(conn, db)| conn.loading.contains(conn.resolve_db(db).unwrap_or("")));
+            if loaded {
+                if self.consoles.get(self.active).is_some_and(|c| {
+                    c.id == tab && c.text == text && c.cursor.map_or(0, |(_, b)| b) == p
+                }) {
+                    self.navigate_reference(ctx, tab, p, ddl);
+                }
+            } else if loading {
+                self.navigation.pending_reference = Some((tab, p, ddl, text));
+            } else {
+                self.error(tr(
+                    "Could not load database definitions. Refresh the database and try again.",
+                ));
+            }
+        }
         if let Some(s) = &mut self.navigation.switcher {
             let rows: Vec<_> = s
                 .items
@@ -296,6 +979,31 @@ impl DataCraftApp {
                 self.finish_switcher(ctx, false);
             }
         }
+        if let Some(d) = &self.navigation.definitions {
+            let rows = d.items.clone();
+            let ddl = d.ddl;
+            let mut pick = None;
+            let mut open = true;
+            egui::Window::new(tr("Choose database definition"))
+                .open(&mut open)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(tr("Several objects match. Choose the exact definition."));
+                    for item in rows {
+                        if ui.button(item.label()).clicked() {
+                            pick = Some(item);
+                        }
+                    }
+                });
+            if !open || ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                self.navigation.definitions = None;
+            }
+            if let Some(item) = pick {
+                self.navigation.definitions = None;
+                self.open_definition(ctx, item, ddl);
+            }
+        }
     }
 }
 
@@ -303,38 +1011,7 @@ impl DataCraftApp {
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
-    fn metadata_app(text: &str) -> DataCraftApp {
-        let mut app = crate::app::tests::tabs_app();
-        let mut cfg = ConnectionConfig::new(7, Driver::Postgres);
-        cfg.database = "shop".into();
-        let mut conn = ConnState::new(cfg);
-        conn.databases = vec![DatabaseInfo {
-            name: "shop".into(),
-            current: true,
-            schemas: Some(vec![SchemaInfo {
-                name: "public".into(),
-                tables: vec![TableInfo {
-                    name: "users".into(),
-                    kind: crate::db::ObjectKind::Table,
-                    columns: vec![ColumnInfo {
-                        name: "id".into(),
-                        data_type: "integer".into(),
-                        nullable: false,
-                        primary_key: true,
-                    }],
-                }],
-            }]),
-        }];
-        app.conns.push(conn);
-        app.active = 0;
-        app.object_browser.active = false;
-        app.consoles[0].conn = Some(7);
-        app.consoles[0].db = Some("shop".into());
-        app.consoles[0].text = text.into();
-        let text = app.consoles[0].text.clone();
-        app.consoles[0].navigation.sync_text(&text);
-        app
-    }
+
     fn dirty_scope_app() -> DataCraftApp {
         let mut app = metadata_app("SELECT 1;\nSELECT 2;\nSELECT 3;");
         app.conns[0].status = ConnStatus::Connected;
@@ -365,30 +1042,7 @@ mod tests {
         app.consoles[0].results.push(view);
         app
     }
-    fn harness(app: DataCraftApp) -> egui_kittest::Harness<'static, DataCraftApp> {
-        let dark = app.dark;
-        let mut first = true;
-        let mut frame = eframe::Frame::_new_kittest();
-        let mut h = egui_kittest::Harness::builder()
-            .with_size(vec2(1280.0, 860.0))
-            .build_ui_state(
-                move |ui, app: &mut DataCraftApp| {
-                    if std::mem::take(&mut first) {
-                        theme::install_fonts(ui.ctx());
-                        theme::apply(ui.ctx(), dark);
-                        return;
-                    }
-                    app.handle_responses();
-                    let bounds = ui.ctx().content_rect();
-                    let mut root = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
-                    root.set_clip_rect(bounds);
-                    eframe::App::ui(app, &mut root, &mut frame);
-                },
-                app,
-            );
-        h.run_steps(3);
-        h
-    }
+
     #[test]
     fn discard_confirmation_preserves_gutter_and_structure_execution_scopes() {
         for structure in [false, true] {
@@ -416,6 +1070,7 @@ mod tests {
             assert!(!h.state().consoles[0].has_pending_edits());
         }
     }
+
     #[test]
     fn confirmed_scope_execution_rechecks_source_and_remaining_guards() {
         for mode in 0..4 {
@@ -455,6 +1110,210 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn opening_bookmarks_does_not_analyze_unrelated_cold_editors() {
+        let mut app = metadata_app("SELECT 1;");
+        app.consoles[1]
+            .navigation
+            .saved
+            .bookmarks
+            .push(console::navigation::Bookmark {
+                position: 0,
+                mnemonic: "A".into(),
+                description: String::new(),
+            });
+        let ctx = egui::Context::default();
+        app.consoles[2].append_text(&ctx, &"SELECT 123;\n".repeat(10_000));
+        let mut h = harness(app);
+        assert_eq!(h.state().consoles[2].navigation.index_builds, 0);
+        h.state_mut().navigation.bookmarks = true;
+        h.run_steps(3);
+        assert_eq!(h.state().consoles[2].navigation.index_builds, 0);
+        assert_eq!(h.state().consoles[1].navigation.index_builds, 1);
+    }
+
+    #[test]
+    fn bookmark_zero_does_not_replace_zoom_reset() {
+        let mut app = metadata_app("SELECT 1;");
+        app.zoom = 1.5;
+        app.consoles[1]
+            .navigation
+            .saved
+            .bookmarks
+            .push(console::navigation::Bookmark {
+                position: 0,
+                mnemonic: "0".into(),
+                description: String::new(),
+            });
+        let mut h = harness(app);
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Num0);
+        h.run_steps(2);
+        assert_eq!(h.state().active, 0);
+        assert_eq!(h.state().zoom, 1.0);
+    }
+
+    #[test]
+    fn ddl_uses_a_new_console_for_other_sources_or_table_editors() {
+        for target in 0..3 {
+            let mut app = metadata_app("SELECT 1;");
+            match target {
+                0 => app.consoles[0].db = Some("other".into()),
+                1 => app.consoles[0].conn = None,
+                _ => {
+                    app.consoles[0] = Console::new_table(
+                        1,
+                        7,
+                        Some("shop".into()),
+                        "public".into(),
+                        "users".into(),
+                    )
+                }
+            }
+            let count = app.consoles.len();
+            let table = TableRef {
+                conn: 7,
+                db: "shop".into(),
+                schema: "public".into(),
+                table: "users".into(),
+            };
+            app.generate(&egui::Context::default(), &table, Generate::Ddl);
+            assert_eq!(app.consoles.len(), count + 1);
+            assert_eq!(app.active, count);
+        }
+    }
+
+    #[test]
+    fn inactive_programmatic_edits_are_observed_without_scanning_other_sql() {
+        let mut app = metadata_app("SELECT 1;");
+        let ctx = egui::Context::default();
+        app.observe_navigation();
+        app.consoles[2].append_text(&ctx, "-- inactive edit");
+        let expected = app.consoles[2].cursor.map(|(_, b)| b).unwrap();
+        app.observe_navigation();
+        assert_eq!(app.navigation.edits.last().unwrap().target, Target::Tab(3));
+        app.navigation_command(&ctx, Command::LastEdit);
+        assert_eq!(app.active, 2);
+        assert_eq!(app.consoles[2].cursor, Some((expected, expected)));
+    }
+
+    fn metadata_app(text: &str) -> DataCraftApp {
+        let mut app = crate::app::tests::tabs_app();
+        let mut cfg = ConnectionConfig::new(7, Driver::Postgres);
+        cfg.database = "shop".into();
+        let mut conn = ConnState::new(cfg);
+        conn.databases = vec![DatabaseInfo {
+            name: "shop".into(),
+            current: true,
+            schemas: Some(vec![SchemaInfo {
+                name: "public".into(),
+                tables: vec![TableInfo {
+                    name: "users".into(),
+                    kind: crate::db::ObjectKind::Table,
+                    columns: vec![ColumnInfo {
+                        name: "id".into(),
+                        data_type: "integer".into(),
+                        nullable: false,
+                        primary_key: true,
+                    }],
+                }],
+            }]),
+        }];
+        app.conns.push(conn);
+        app.active = 0;
+        app.object_browser.active = false;
+        app.consoles[0].conn = Some(7);
+        app.consoles[0].db = Some("shop".into());
+        app.consoles[0].text = text.into();
+        let text = app.consoles[0].text.clone();
+        app.consoles[0].navigation.sync_text(&text);
+        app
+    }
+
+    fn harness(app: DataCraftApp) -> egui_kittest::Harness<'static, DataCraftApp> {
+        let dark = app.dark;
+        let mut first = true;
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(1280.0, 860.0))
+            .build_ui_state(
+                move |ui, app: &mut DataCraftApp| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        theme::apply(ui.ctx(), dark);
+                        return;
+                    }
+                    app.handle_responses();
+                    let bounds = ui.ctx().content_rect();
+                    let mut root = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
+                    root.set_clip_rect(bounds);
+                    eframe::App::ui(app, &mut root, &mut frame);
+                },
+                app,
+            );
+        h.run_steps(3);
+        h
+    }
+
+    #[test]
+    fn cross_tab_history_preserves_carets_and_skips_closed_tabs() {
+        let mut app = metadata_app("SELECT 123;");
+        let ctx = egui::Context::default();
+        app.consoles[0].cursor = Some((3, 3));
+        app.observe_navigation();
+        app.active = 1;
+        app.consoles[1].text = "SELECT 456;".into();
+        app.consoles[1].cursor = Some((7, 7));
+        app.observe_navigation();
+        app.navigation_command(&ctx, Command::Back);
+        app.observe_navigation();
+        assert_eq!(app.active, 0);
+        assert_eq!(app.consoles[0].cursor, Some((3, 3)));
+        app.navigation_command(&ctx, Command::Forward);
+        assert_eq!(app.active, 1);
+        assert_eq!(app.consoles[1].cursor, Some((7, 7)));
+        app.consoles.remove(0);
+        app.active = 0;
+        app.navigation_command(&ctx, Command::Back);
+        assert_eq!(app.consoles[app.active].id, 2);
+    }
+
+    #[test]
+    fn caret_history_records_jumps_and_last_edit_crosses_tabs() {
+        let mut app = metadata_app("SELECT 12345678901234567890;");
+        let ctx = egui::Context::default();
+        app.consoles[0].cursor = Some((0, 0));
+        app.observe_navigation();
+        app.consoles[0].navigate_to(&ctx, 5, None);
+        app.observe_navigation();
+        app.consoles[0].navigate_to(&ctx, 10, None);
+        app.observe_navigation();
+        let jumps = app.navigation.trail.len();
+        for pos in 11..16 {
+            app.consoles[0].cursor = Some((pos, pos));
+            app.consoles[0].navigation.caret = Some(pos);
+            app.observe_navigation();
+        }
+        assert_eq!(app.navigation.trail.len(), jumps);
+        app.navigation_command(&ctx, Command::Back);
+        assert_eq!(app.consoles[0].cursor, Some((5, 5)));
+        app.navigation_command(&ctx, Command::Forward);
+        assert_eq!(app.consoles[0].cursor, Some((10, 10)));
+        app.navigation_command(&ctx, Command::Back);
+        app.consoles[0].navigate_to(&ctx, 20, None);
+        app.observe_navigation();
+        app.navigation_command(&ctx, Command::Forward);
+        assert_eq!(app.consoles[0].cursor, Some((20, 20)));
+        app.consoles[0].append_text(&ctx, "-- edit");
+        let edited = app.consoles[0].cursor.map(|(_, b)| (b, b));
+        app.observe_navigation();
+        app.active = 1;
+        app.observe_navigation();
+        app.navigation_command(&ctx, Command::LastEdit);
+        assert_eq!(app.active, 0);
+        assert_eq!(app.consoles[0].cursor, edited);
+    }
+
     #[test]
     fn control_tab_activates_a_large_varied_script_without_executing_it() {
         let mut app = metadata_app("SELECT 1;");
@@ -479,6 +1338,7 @@ mod tests {
         h.run_steps(1);
         assert_eq!(h.state().active, 1);
     }
+
     #[test]
     fn control_tab_preserves_cached_table_data_without_loading_or_query_execution() {
         let mut app = metadata_app("SELECT 1;");
@@ -529,6 +1389,7 @@ mod tests {
             assert!(h.query_by_label("Loading…").is_none());
         }
     }
+
     #[test]
     fn switcher_with_many_tabs_stops_repainting_when_idle() {
         let mut app = metadata_app("SELECT 1;");
@@ -592,6 +1453,7 @@ mod tests {
             "switcher keys must not reach the SQL editors"
         );
     }
+
     #[test]
     fn switcher_dismisses_on_focus_loss_even_without_control_release() {
         let mut h = harness(metadata_app("SELECT 1;"));
@@ -615,6 +1477,7 @@ mod tests {
         );
         assert_eq!(h.state().active, 0, "focus loss must not choose a tab");
     }
+
     #[test]
     fn fast_control_tab_release_does_not_leave_an_open_switcher() {
         let mut h = harness(metadata_app("SELECT 1;"));
@@ -643,6 +1506,7 @@ mod tests {
         );
         assert_eq!(h.state().active, 1);
     }
+
     #[test]
     fn menu_switcher_close_button_restores_typing_in_the_original_editor() {
         let mut h = harness(metadata_app("SELECT 1;"));
@@ -660,6 +1524,7 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().consoles[0].text.starts_with("-- recovered\n"));
     }
+
     #[test]
     fn switcher_uses_recent_stable_ids_and_commits_only_on_control_release() {
         let mut app = metadata_app("SELECT 1;");
@@ -719,6 +1584,89 @@ mod tests {
         h.run_steps(2);
         assert!(h.state().navigation.switcher.is_none());
     }
+
+    #[test]
+    fn qualified_alias_column_reveals_exact_explorer_node_without_opening_a_table() {
+        let mut app = metadata_app("SELECT u.id FROM public.users AS u;");
+        let ctx = egui::Context::default();
+        let before = app.consoles.len();
+        app.navigate_reference(&ctx, 1, 10, false);
+        assert_eq!(
+            app.explorer.selected.as_deref(),
+            Some("t:7:shop:public:users:id")
+        );
+        assert!(app.explorer.expanded.contains("g:7:shop:public:t"));
+        assert_eq!(app.consoles.len(), before);
+        app.navigate_reference(&ctx, 1, 7, false);
+        assert_eq!(
+            app.explorer.selected.as_deref(),
+            Some("t:7:shop:public:users")
+        );
+    }
+
+    #[test]
+    fn ambiguous_names_require_a_choice_and_quoted_names_are_case_sensitive() {
+        let mut app = metadata_app("SELECT * FROM users;");
+        let mut schema = app.conns[0].databases[0].schemas.as_ref().unwrap()[0].clone();
+        schema.name = "archive".into();
+        app.conns[0].databases[0]
+            .schemas
+            .as_mut()
+            .unwrap()
+            .push(schema);
+        let ctx = egui::Context::default();
+        app.navigate_reference(&ctx, 1, 15, false);
+        assert_eq!(app.navigation.definitions.as_ref().unwrap().items.len(), 2);
+        app.navigation.definitions = None;
+        app.consoles[0].text = "SELECT * FROM \"Users\";".into();
+        app.navigate_reference(&ctx, 1, 16, false);
+        assert!(app.navigation.definitions.is_none());
+        assert!(app.status_msg.as_ref().unwrap().1);
+    }
+
+    #[test]
+    fn ddl_reuses_a_matching_editor_and_local_ctes_navigate_locally() {
+        let mut app = metadata_app("SELECT * FROM public.users;");
+        let ctx = egui::Context::default();
+        let original = app.consoles[0].text.clone();
+        app.navigate_reference(&ctx, 1, 23, true);
+        assert!(app.consoles[0].text.starts_with(&original));
+        assert!(
+            app.consoles[app.active]
+                .text
+                .to_ascii_uppercase()
+                .contains("CREATE TABLE")
+        );
+        assert_eq!(app.active, 0);
+        app.active = 0;
+        app.consoles[0].text = "WITH totals AS (SELECT 1) SELECT * FROM totals;".into();
+        app.navigate_reference(&ctx, 1, 42, true);
+        assert_eq!(app.active, 0);
+        assert_eq!(app.consoles[0].cursor, Some((5, 5)));
+    }
+
+    #[test]
+    fn bookmarks_from_other_tabs_are_visible_and_jump_to_their_own_editor() {
+        let mut app = metadata_app("SELECT 1;");
+        app.consoles[1].text = "SELECT 222;".into();
+        app.consoles[1]
+            .navigation
+            .saved
+            .bookmarks
+            .push(console::navigation::Bookmark {
+                position: 7,
+                mnemonic: "A".into(),
+                description: "Other query".into(),
+            });
+        app.navigation.bookmarks = true;
+        let mut h = harness(app);
+        assert!(h.query_by_label("Query 2  1:8").is_some());
+        h.get_by_label("Query 2  1:8").click();
+        h.run_steps(2);
+        assert_eq!(h.state().active, 1);
+        assert_eq!(h.state().consoles[1].cursor, Some((7, 7)));
+    }
+
     #[test]
     fn run_immediately_executes_only_the_outlined_query_through_the_real_sqlite_worker() {
         let path =
@@ -762,6 +1710,7 @@ mod tests {
         drop(h);
         std::fs::remove_file(path).unwrap();
     }
+
     #[test]
     fn immediate_scope_execution_preserves_the_existing_read_only_guard() {
         let mut app = metadata_app("INSERT INTO users VALUES(2); SELECT 1;");
@@ -779,5 +1728,29 @@ mod tests {
                 .iter()
                 .any(|e| e.is_error && e.message.contains("Read-only connection"))
         );
+    }
+
+    #[test]
+    fn numbered_bookmark_uses_ctrl_shift_and_local_ctes_work_without_a_connection() {
+        let mut app = metadata_app("WITH totals AS (SELECT 1) SELECT * FROM totals;");
+        let ctx = egui::Context::default();
+        app.consoles[0].conn = None;
+        app.navigate_reference(&ctx, 1, 42, true);
+        assert_eq!(app.consoles[0].cursor, Some((5, 5)));
+        app.consoles[1].text = "SELECT 22;".into();
+        app.consoles[1]
+            .navigation
+            .saved
+            .bookmarks
+            .push(console::navigation::Bookmark {
+                position: 7,
+                mnemonic: "3".into(),
+                description: String::new(),
+            });
+        let mut h = harness(app);
+        h.key_press_modifiers(Modifiers::CTRL | Modifiers::SHIFT, Key::Num3);
+        h.run_steps(2);
+        assert_eq!(h.state().active, 1);
+        assert_eq!(h.state().consoles[1].cursor, Some((7, 7)));
     }
 }

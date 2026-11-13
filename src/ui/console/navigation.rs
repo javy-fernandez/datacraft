@@ -1,13 +1,88 @@
-//! Cached execution previews and File Structure selection.
+//! SQL editor navigation and execution previews. UI choices always retain source ranges.
 use super::*;
+use crate::sql::navigation as source;
 use std::ops::Range;
+
 mod cache;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Command {
+    Back,
+    Forward,
+    LastEdit,
+    Top,
+    Bottom,
+    FindWord,
+    Context,
+    MatchingBrace,
+    WordForward,
+    WordBackward,
+    ParagraphForward,
+    ParagraphBackward,
+    ParagraphForwardSelect,
+    ParagraphBackwardSelect,
+    GoToLine,
     Structure,
+    ToggleBookmark,
+    MnemonicBookmark,
+    Bookmarks,
+    NextIssue,
+    PreviousIssue,
+    Explorer,
+    Declaration,
     Switcher,
+    Actions,
+    Settings,
 }
+
 pub const ACTIONS: &[(Command, &str, &str)] = &[
+    (Command::Back, "Back", "⌥⌘Left"),
+    (Command::Forward, "Forward", "⌥⌘Right"),
+    (Command::LastEdit, "Last edit location", "⇧⌘Backspace"),
+    (Command::Top, "Move caret to top", "⌘Page Up"),
+    (Command::Bottom, "Move caret to bottom", "⌘Page Down"),
+    (
+        Command::FindWord,
+        "Next occurrence of word at caret",
+        if cfg!(target_os = "macos") {
+            "⌥⌘G"
+        } else {
+            "Ctrl+F3"
+        },
+    ),
+    (
+        Command::Context,
+        "Context information",
+        if cfg!(target_os = "macos") {
+            "⌥⌘I"
+        } else {
+            "Alt+Q"
+        },
+    ),
+    (Command::MatchingBrace, "Matching brace", "⇧⌘M"),
+    (Command::WordForward, "Move caret to next word", ""),
+    (Command::WordBackward, "Move caret to previous word", ""),
+    (
+        Command::ParagraphForward,
+        "Move caret forward a paragraph",
+        "",
+    ),
+    (
+        Command::ParagraphBackward,
+        "Move caret backward a paragraph",
+        "",
+    ),
+    (
+        Command::ParagraphForwardSelect,
+        "Move caret forward a paragraph with selection",
+        "",
+    ),
+    (
+        Command::ParagraphBackwardSelect,
+        "Move caret backward a paragraph with selection",
+        "",
+    ),
+    (Command::GoToLine, "Go to Line/Column…", "⌘L"),
     (
         Command::Structure,
         "File Structure…",
@@ -17,8 +92,50 @@ pub const ACTIONS: &[(Command, &str, &str)] = &[
             "Ctrl+F12 / Alt+7"
         },
     ),
+    (
+        Command::ToggleBookmark,
+        "Toggle bookmark",
+        if cfg!(target_os = "macos") {
+            "⌥⇧⌘B"
+        } else {
+            "F11"
+        },
+    ),
+    (
+        Command::MnemonicBookmark,
+        "Bookmark with mnemonic…",
+        if cfg!(target_os = "macos") {
+            "⌥⇧⌘M"
+        } else {
+            "⌘F11"
+        },
+    ),
+    (
+        Command::Bookmarks,
+        "Bookmarks…",
+        if cfg!(target_os = "macos") {
+            "⌥⇧⌘K"
+        } else {
+            "⇧F11"
+        },
+    ),
+    (Command::NextIssue, "Next highlighted issue", "F2"),
+    (Command::PreviousIssue, "Previous highlighted issue", "⇧F2"),
+    (
+        Command::Explorer,
+        "Select in Database Explorer",
+        if cfg!(target_os = "macos") {
+            "⌥⌘B"
+        } else {
+            "⌥⇧B"
+        },
+    ),
+    (Command::Declaration, "Go to DDL / Declaration", "⌘B"),
     (Command::Switcher, "Recent tabs / Switcher", "Ctrl+Tab"),
+    (Command::Actions, "Find navigation action…", "⇧⌘A"),
+    (Command::Settings, "Editor navigation settings…", ""),
 ];
+
 pub(super) fn menu(ui: &mut Ui, cmds: &mut Vec<EditCmd>) {
     for &(cmd, label, key) in ACTIONS {
         if ui
@@ -30,24 +147,129 @@ pub(super) fn menu(ui: &mut Ui, cmds: &mut Vec<EditCmd>) {
         }
     }
 }
-#[derive(Clone)]
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Bookmark {
+    pub position: usize,
+    pub mnemonic: String,
+    pub description: String,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Saved {
+    pub bookmarks: Vec<Bookmark>,
     pub line_numbers: bool,
+    pub word_end: bool,
+    pub stop_at_line_break: bool,
+    pub bindings: Vec<Binding>,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Binding {
+    pub command: Command,
+    pub shortcut: egui::KeyboardShortcut,
+}
+
+pub fn shortcut_allowed(shortcut: &egui::KeyboardShortcut, mac: bool) -> bool {
+    let m = shortcut.modifiers;
+    let key = shortcut.logical_key;
+    if !(m.command || m.ctrl || m.mac_cmd) {
+        return false;
+    }
+    if mac && (key == Key::F11 || (key == Key::F3 && m.ctrl)) {
+        return false;
+    }
+    if key == Key::Tab || (mac && key == Key::Space) {
+        return false;
+    }
+    let command = m.command || m.mac_cmd || (!mac && m.ctrl);
+    if command
+        && matches!(
+            key,
+            Key::A
+                | Key::C
+                | Key::X
+                | Key::V
+                | Key::Z
+                | Key::Y
+                | Key::F
+                | Key::R
+                | Key::L
+                | Key::B
+                | Key::D
+                | Key::S
+                | Key::Q
+                | Key::W
+                | Key::N
+                | Key::Enter
+                | Key::Equals
+                | Key::Minus
+                | Key::Plus
+                | Key::Num0
+                | Key::Slash
+                | Key::Backspace
+        )
+    {
+        return false;
+    }
+    true
+}
+
+pub fn take_binding(input: &mut egui::InputState, bindings: &[Binding]) -> Option<Command> {
+    // Native layouts can emit Key and Text together (Option on macOS, AltGr
+    // elsewhere). Preserve that input instead of firing a navigation action.
+    if input.events.iter().any(|e| matches!(e, Event::Text(_))) {
+        return None;
+    }
+    let mut command = None;
+    input.events.retain(|e| {
+        if let Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } = e
+            && let Some(b) = bindings.iter().find(|b| {
+                shortcut_allowed(&b.shortcut, cfg!(target_os = "macos"))
+                    && b.shortcut.logical_key == *key
+                    && modifiers.matches_exact(b.shortcut.modifiers)
+            })
+        {
+            command = Some(b.command);
+            return false;
+        }
+        true
+    });
+    command
 }
 impl Default for Saved {
     fn default() -> Self {
-        Self { line_numbers: true }
+        Self {
+            bookmarks: Vec::new(),
+            line_numbers: true,
+            word_end: true,
+            stop_at_line_break: true,
+            bindings: Vec::new(),
+        }
     }
 }
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Popup {
+    Line,
     Structure,
+    Mnemonic,
+    Context,
+    Actions,
+    Settings,
 }
+
 pub(super) struct GutterRun {
     revision: u64,
     source: (Option<ConnId>, Option<String>, Driver),
     range: Range<usize>,
 }
+
 #[derive(Default)]
 pub struct State {
     pub caret: Option<usize>,
@@ -63,6 +285,7 @@ pub struct State {
     focus: bool,
     snapshot: Option<u64>,
     source: Option<(Option<ConnId>, Option<String>, Driver)>,
+    previous: Option<String>,
     revision: Option<u64>,
     index: Option<Arc<cache::TextIndex>>,
     scope_key: Option<(Option<(usize, usize)>, bool, Vec<usize>)>,
@@ -72,6 +295,10 @@ pub struct State {
     outline_cache: Option<cache::OutlineCache>,
     filter_key: Option<(u64, Driver, String)>,
     visible: Arc<Vec<usize>>,
+    bookmark_key: Option<(u64, u64)>,
+    bookmark_lines: Arc<std::collections::HashSet<usize>>,
+    pub jump: Option<(usize, usize)>,
+    suppress_jump: bool,
     #[cfg(test)]
     pub(crate) index_builds: usize,
     #[cfg(test)]
@@ -80,8 +307,11 @@ pub struct State {
     filter_builds: usize,
     #[cfg(test)]
     outline_builds: usize,
+    pub highest_priority: bool,
     pub(super) gutter_run: Option<GutterRun>,
+    recording: Option<Command>,
 }
+
 impl State {
     pub fn is_open(&self) -> bool {
         self.popup.is_some()
@@ -95,7 +325,14 @@ impl State {
         self.focus = true;
         self.snapshot = None;
         self.source = None;
+        self.recording = None;
     }
+    pub fn problems(&mut self, text: &str, driver: Driver) -> &[source::Issue] {
+        self.sync_text(text);
+        self.ensure_index(text, driver);
+        &self.index.as_ref().unwrap().issues
+    }
+
     pub(super) fn execution_ranges(
         &self,
         text: &str,
@@ -130,16 +367,49 @@ impl State {
             .map(|i| vec![index.statements[i].start..index.statements[i].end])
             .unwrap_or_default()
     }
+
     pub(crate) fn sync_text(&mut self, text: &str) {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         text.hash(&mut hash);
         self.sync_changed_text(text, hash.finish());
     }
+
     fn sync_changed_text(&mut self, text: &str, revision: u64) {
-        let _ = text;
         if self.revision == Some(revision) {
             return;
         }
+        if let Some(old) = self
+            .previous
+            .as_ref()
+            .filter(|_| !self.saved.bookmarks.is_empty())
+        {
+            let before: Vec<_> = old.chars().collect();
+            let after: Vec<_> = text.chars().collect();
+            let prefix = before
+                .iter()
+                .zip(&after)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let suffix = before[prefix..]
+                .iter()
+                .rev()
+                .zip(after[prefix..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let end = before.len() - suffix;
+            for bookmark in &mut self.saved.bookmarks {
+                if bookmark.position >= end {
+                    bookmark.position = bookmark
+                        .position
+                        .saturating_add(after.len())
+                        .saturating_sub(before.len())
+                        .min(after.len());
+                } else if bookmark.position > prefix {
+                    bookmark.position = prefix;
+                }
+            }
+        }
+        self.previous = Some(text.to_owned());
         self.revision = Some(revision);
         self.index = None;
         self.scope_key = None;
@@ -151,6 +421,9 @@ impl State {
         }
     }
 }
+
+/// An unfilled, continuous box around the executed character range. On multiple visual
+/// rows its first/last edges follow the endpoints, including soft-wrapped editor rows.
 fn outline_chars(
     galley: &egui::Galley,
     ranges: &[Range<usize>],
@@ -236,14 +509,25 @@ fn outline_chars(
         })
         .collect()
 }
+
 impl Console {
     pub fn navigate_to(&mut self, ctx: &egui::Context, position: usize, select_to: Option<usize>) {
+        let from = self
+            .navigation
+            .caret
+            .or(self.cursor.map(|(_, b)| b))
+            .unwrap_or(0);
         let n = self.text.chars().count();
         let position = position.min(n);
         self.set_cursor(ctx, select_to.unwrap_or(position).min(n), position);
+        if from != position && !self.navigation.suppress_jump {
+            let origin = self.navigation.jump.map_or(from, |(origin, _)| origin);
+            self.navigation.jump = Some((origin, position));
+        }
         self.scroll_to = Some(position);
         ctx.memory_mut(|m| m.request_focus(self.editor_id()));
     }
+
     pub fn open_structure(&mut self, driver: Driver) {
         self.navigation.sync_text(&self.text);
         self.navigation.ensure_index(&self.text, driver);
@@ -260,26 +544,115 @@ impl Console {
         self.navigation.selected = vec![self.navigation.highlight];
         self.completion = None;
     }
+
     pub(super) fn navigation_keys(&mut self, ui: &Ui, cmds: &mut Vec<EditCmd>) {
-        if self.navigation.is_open() || !ui.memory(|m| m.has_focus(self.editor_id())) {
+        if self.navigation.is_open() {
             return;
         }
+        if !ui.memory(|m| m.has_focus(self.editor_id())) {
+            return;
+        }
+        if let Some(command) = ui.input_mut(|i| take_binding(i, &self.navigation.saved.bindings)) {
+            cmds.push(EditCmd::Navigate(command));
+            return;
+        }
+        let c = Modifiers::COMMAND;
+        let s = Modifiers::SHIFT;
+        let a = Modifiers::ALT;
+        let bindings = [
+            (c, Key::L, Command::GoToLine),
+            (c, Key::F12, Command::Structure),
+            (
+                if cfg!(target_os = "macos") { c | a } else { a },
+                Key::Num7,
+                Command::Structure,
+            ),
+            (
+                if cfg!(target_os = "macos") {
+                    c | a | s
+                } else {
+                    s
+                },
+                if cfg!(target_os = "macos") {
+                    Key::K
+                } else {
+                    Key::F11
+                },
+                Command::Bookmarks,
+            ),
+            (
+                if cfg!(target_os = "macos") {
+                    c | a | s
+                } else {
+                    c
+                },
+                if cfg!(target_os = "macos") {
+                    Key::M
+                } else {
+                    Key::F11
+                },
+                Command::MnemonicBookmark,
+            ),
+            (
+                if cfg!(target_os = "macos") {
+                    c | a | s
+                } else {
+                    Modifiers::NONE
+                },
+                if cfg!(target_os = "macos") {
+                    Key::B
+                } else {
+                    Key::F11
+                },
+                Command::ToggleBookmark,
+            ),
+            (s, Key::F2, Command::PreviousIssue),
+            (Modifiers::NONE, Key::F2, Command::NextIssue),
+            (
+                if cfg!(target_os = "macos") { c | a } else { a },
+                if cfg!(target_os = "macos") {
+                    Key::I
+                } else {
+                    Key::Q
+                },
+                Command::Context,
+            ),
+            (c | s, Key::M, Command::MatchingBrace),
+            (c, Key::PageUp, Command::Top),
+            (c, Key::PageDown, Command::Bottom),
+            (c | s, Key::A, Command::Actions),
+            (
+                if cfg!(target_os = "macos") {
+                    c | a
+                } else {
+                    a | s
+                },
+                Key::B,
+                Command::Explorer,
+            ),
+            (c, Key::B, Command::Declaration),
+            (
+                if cfg!(target_os = "macos") { a } else { c },
+                Key::ArrowRight,
+                Command::WordForward,
+            ),
+            (
+                if cfg!(target_os = "macos") { a } else { c },
+                Key::ArrowLeft,
+                Command::WordBackward,
+            ),
+        ];
         ui.input_mut(|i| {
-            if take_key(i, Modifiers::COMMAND, Key::F12)
-                || take_key(
-                    i,
-                    if cfg!(target_os = "macos") {
-                        Modifiers::COMMAND | Modifiers::ALT
-                    } else {
-                        Modifiers::ALT
-                    },
-                    Key::Num7,
-                )
-            {
-                cmds.push(EditCmd::Navigate(Command::Structure));
+            for (mods, key, cmd) in bindings { if take_key(i, mods, key) { cmds.push(EditCmd::Navigate(cmd)); } }
+            let mut find_word = if cfg!(target_os = "macos") { take_key(i, c | a, Key::G) } else { false };
+            if !cfg!(target_os = "macos") {
+                i.events.retain(|e| if matches!(e, Event::Key{key:Key::F3,pressed:true,modifiers:m,..} if m.ctrl && !m.alt && !m.shift && !m.mac_cmd){find_word=true;false}else{true});
             }
+            if find_word {cmds.push(EditCmd::Navigate(Command::FindWord));}
+            if !cfg!(target_os="macos") && self.find.is_none() && take_key(i, c, Key::G) { cmds.push(EditCmd::Navigate(Command::GoToLine)); }
         });
     }
+
     pub fn navigation_command(
         &mut self,
         ctx: &egui::Context,
@@ -287,20 +660,179 @@ impl Console {
         cmd: Command,
         actions: &mut Vec<ConsoleAction>,
     ) {
+        use Command::*;
         if let Some(editor) = &mut self.routine
             && editor.page != crate::ui::routine_dialog::RoutinePage::Definition
-            && cmd == Command::Structure
+            && !matches!(cmd, Back | Forward | LastEdit | Switcher | Bookmarks)
         {
             editor.page = crate::ui::routine_dialog::RoutinePage::Definition;
             self.navigation.pending.push(cmd);
             ctx.request_repaint();
             return;
         }
+        self.navigation.sync_text(&self.text);
+        self.navigation.ensure_index(&self.text, driver);
+        let suppressed = self.navigation.suppress_jump;
+        self.navigation.suppress_jump |= matches!(
+            cmd,
+            WordForward
+                | WordBackward
+                | ParagraphForward
+                | ParagraphBackward
+                | ParagraphForwardSelect
+                | ParagraphBackwardSelect
+        );
+        let pos = self
+            .navigation
+            .caret
+            .or(self.cursor.map(|(_, b)| b))
+            .unwrap_or(0);
         match cmd {
-            Command::Structure => self.open_structure(driver),
-            Command::Switcher => actions.push(ConsoleAction::Navigate(cmd)),
+            Back | Forward | LastEdit | Explorer | Declaration | Switcher => {
+                actions.push(ConsoleAction::Navigate(cmd))
+            }
+            Top => self.navigate_to(ctx, 0, None),
+            Bottom => self.navigate_to(ctx, self.text.chars().count(), None),
+            ParagraphForward
+            | ParagraphBackward
+            | ParagraphForwardSelect
+            | ParagraphBackwardSelect => {
+                let p = source::paragraph(
+                    &self.text,
+                    pos,
+                    matches!(cmd, ParagraphForward | ParagraphForwardSelect),
+                );
+                let anchor = matches!(cmd, ParagraphForwardSelect | ParagraphBackwardSelect)
+                    .then_some(self.navigation.anchor.unwrap_or(pos));
+                self.navigate_to(ctx, p, anchor);
+            }
+            WordForward | WordBackward => {
+                let chars: Vec<_> = self.text.chars().collect();
+                let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+                let mut p = pos.min(chars.len());
+                let mut line_stop = false;
+                if cmd == WordForward {
+                    if self.navigation.saved.word_end {
+                        while p < chars.len() && !ident(chars[p]) {
+                            if chars[p] == '\n' && self.navigation.saved.stop_at_line_break {
+                                p += 1;
+                                line_stop = true;
+                                break;
+                            }
+                            p += 1;
+                        }
+                    }
+                    while !line_stop && p < chars.len() && ident(chars[p]) {
+                        p += 1;
+                    }
+                    if !self.navigation.saved.word_end {
+                        while p < chars.len() && !ident(chars[p]) {
+                            if chars[p] == '\n' && self.navigation.saved.stop_at_line_break {
+                                p += 1;
+                                break;
+                            }
+                            p += 1;
+                        }
+                    }
+                } else {
+                    while p > 0 && !ident(chars[p - 1]) {
+                        p -= 1;
+                        if chars[p] == '\n' && self.navigation.saved.stop_at_line_break {
+                            line_stop = true;
+                            break;
+                        }
+                    }
+                    while !line_stop && p > 0 && ident(chars[p - 1]) {
+                        p -= 1;
+                    }
+                }
+                self.navigate_to(ctx, p, None);
+            }
+            MatchingBrace => {
+                if let Some(p) = source::matching_brace(&self.text, pos, driver) {
+                    self.navigate_to(ctx, p, None);
+                }
+            }
+            FindWord => {
+                if let Some(r) = source::reference_at(&self.text, pos, driver) {
+                    self.open_find(false);
+                    if let Some(f) = &mut self.find {
+                        f.query = r.parts[r.component].name.clone();
+                        f.focus = false;
+                        f.whole_word = true;
+                    }
+                    if let Some((a, b)) = self
+                        .find_matches()
+                        .into_iter()
+                        .find(|&(a, b)| a <= pos && pos <= b)
+                    {
+                        self.set_cursor(ctx, a, b);
+                    }
+                    self.find_step(ctx, true);
+                }
+            }
+            GoToLine => self.navigation.open(Popup::Line),
+            Structure => self.open_structure(driver),
+            ToggleBookmark | MnemonicBookmark => {
+                let line = source::line_column(&self.text, pos).0;
+                let existing = self
+                    .navigation
+                    .saved
+                    .bookmarks
+                    .iter()
+                    .position(|b| source::line_column(&self.text, b.position).0 == line);
+                if cmd == ToggleBookmark {
+                    if let Some(i) = existing {
+                        self.navigation.saved.bookmarks.remove(i);
+                    } else {
+                        self.navigation.saved.bookmarks.push(Bookmark {
+                            position: pos,
+                            ..Default::default()
+                        });
+                    }
+                } else {
+                    self.navigation.open(Popup::Mnemonic);
+                }
+            }
+            Bookmarks => actions.push(ConsoleAction::Navigate(cmd)),
+            NextIssue | PreviousIssue => {
+                let highest = self.navigation.highest_priority;
+                let problems = self.navigation.problems(&self.text, driver);
+                let errors_only = highest && problems.iter().any(|p| p.error);
+                let problems: Vec<_> = problems
+                    .iter()
+                    .filter(|p| !errors_only || p.error)
+                    .collect();
+                let next = if cmd == NextIssue {
+                    problems
+                        .iter()
+                        .find(|p| p.position > pos)
+                        .or(problems.first())
+                } else {
+                    problems
+                        .iter()
+                        .rev()
+                        .find(|p| p.position < pos)
+                        .or(problems.last())
+                };
+                let next = next.map(|p| p.position);
+                if let Some(position) = next {
+                    self.navigate_to(ctx, position, None);
+                }
+            }
+            Context => self.navigation.open(Popup::Context),
+            Actions => self.navigation.open(Popup::Actions),
+            Settings => self.navigation.open(Popup::Settings),
         }
+        if cmd == FindWord {
+            let to = self.cursor.map_or(pos, |(_, b)| b);
+            if to != pos {
+                self.navigation.jump = Some((pos, to));
+            }
+        }
+        self.navigation.suppress_jump = suppressed;
     }
+
     pub(super) fn navigation_ui(
         &mut self,
         ui: &Ui,
@@ -328,12 +860,74 @@ impl Console {
             self.navigation.popup = None;
             self.navigation.source = None;
         }
-        if self.navigation.popup.is_none() {
+        let Some(popup) = self.navigation.popup else {
             return;
-        }
+        };
         self.completion = None;
-        let (mut open, mut close, mut navigate, mut execute, mut all) =
-            (true, false, None, false, false);
+        let title = match popup {
+            Popup::Line => "Go to Line/Column",
+            Popup::Structure => "File Structure",
+            Popup::Mnemonic => "Bookmark with mnemonic",
+            Popup::Context => "Context information",
+            Popup::Actions => "Find navigation action",
+            Popup::Settings => "Editor navigation settings",
+        };
+        let mut open = true;
+        let mut close = false;
+        let mut command = None;
+        let mut navigate = None;
+        let mut execute = false;
+        let mut all = false;
+        let mut submit = false;
+        // Consume before the editor can interpret popup navigation as SQL edits.
+        let recording = self.navigation.recording.take();
+        if let Some(command) = recording {
+            let key = ctx.input_mut(|i| {
+                let mut key = None;
+                i.events.retain(|e| {
+                    if let Event::Key {
+                        key: k,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } = e
+                    {
+                        key = Some((*k, *modifiers));
+                        false
+                    } else {
+                        true
+                    }
+                });
+                key
+            });
+            if let Some((key, modifiers)) = key {
+                if key == Key::Escape {
+                    self.navigation.error = None;
+                }
+                if key != Key::Escape {
+                    let shortcut = egui::KeyboardShortcut::new(modifiers, key);
+                    if shortcut_allowed(&shortcut, cfg!(target_os = "macos"))
+                        && !ctx.input(|i| i.events.iter().any(|e| matches!(e, Event::Text(_))))
+                    {
+                        self.navigation
+                            .saved
+                            .bindings
+                            .retain(|b| b.command != command && b.shortcut != shortcut);
+                        self.navigation
+                            .saved
+                            .bindings
+                            .push(Binding { command, shortcut });
+                        self.navigation.error = None;
+                    } else {
+                        self.navigation.recording = Some(command);
+                        self.navigation.error =
+                            Some("Use Ctrl or Command; this shortcut is reserved or types text.");
+                    }
+                }
+            } else {
+                self.navigation.recording = Some(command);
+            }
+        }
         let (up, down, enter, esc) = ctx.input_mut(|i| {
             (
                 i.consume_key(Modifiers::NONE, Key::ArrowUp),
@@ -342,11 +936,17 @@ impl Console {
                 i.consume_key(Modifiers::NONE, Key::Escape),
             )
         });
-        egui::Window::new(tr("File Structure")).id(egui::Id::new(("editor_navigation",self.id))).open(&mut open).collapsible(false).resizable(true).default_width(540.0).anchor(egui::Align2::CENTER_TOP,vec2(0.0,85.0)).show(ctx,|ui|{
-   let r=ui.add(egui::TextEdit::singleline(&mut self.navigation.input).hint_text(tr("Type to filter")).desired_width(f32::INFINITY));
-   if self.navigation.focus {r.request_focus();self.navigation.focus=false;}
-   if r.changed(){self.navigation.highlight=usize::MAX;self.navigation.selected.clear();}
-
+        egui::Window::new(tr(title)).id(egui::Id::new(("editor_navigation", self.id))).open(&mut open).collapsible(false).resizable(true).default_width(540.0).anchor(egui::Align2::CENTER_TOP, vec2(0.0, 85.0)).show(ctx, |ui| {
+            if matches!(popup, Popup::Line | Popup::Structure | Popup::Actions | Popup::Mnemonic) {
+                let hint = match popup { Popup::Line => "line:column", Popup::Mnemonic => "One letter or digit", _ => "Type to filter" };
+                let r = ui.add(egui::TextEdit::singleline(&mut self.navigation.input).hint_text(tr(hint)).desired_width(f32::INFINITY));
+                if self.navigation.focus { r.request_focus(); self.navigation.focus = false; }
+                if r.changed() && popup != Popup::Mnemonic { self.navigation.highlight = usize::MAX; self.navigation.selected.clear(); }
+            }
+            match popup {
+                Popup::Line => { submit = enter || ui.button(tr("Go")).clicked(); }
+                Popup::Mnemonic => { submit = enter || ui.button(tr("Save bookmark")).clicked(); }
+                Popup::Structure => {
                     let index = self.navigation.index();
                     let ss = &index.statements;
                     let visible = self.navigation.filtered_statements();
@@ -378,9 +978,78 @@ impl Console {
                         all = ui.add_enabled(!self.is_busy() && !ss.is_empty(), egui::Button::new(tr("Run all statements"))).clicked();
                     });
                     if ss.is_empty() { ui.label(tr("No executable statements")); }
-
-   close|=ui.button(tr("Cancel / Close")).clicked();
-  });
+                }
+                Popup::Actions => {
+                    let rows: Vec<_> = ACTIONS.iter().enumerate().filter(|(_,(_,label,_))| label.to_lowercase().contains(&self.navigation.input.to_lowercase())).map(|(i,_)| i).collect();
+                    if let Some(i) = move_choice(&rows, self.navigation.highlight, up, down) { self.navigation.highlight = i; }
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        for &i in &rows { let (cmd,label,key) = ACTIONS[i]; if ui.selectable_label(self.navigation.highlight == i, format!("{}    {}", tr(label), crate::shortcuts::format(key))).clicked() { command = Some(cmd); } }
+                    });
+                    if enter { command = rows.iter().find(|&&i| i == self.navigation.highlight).or(rows.first()).map(|&i| ACTIONS[i].0); }
+                }
+                Popup::Context => {
+                    let index = self.navigation.index();
+                    if let Some(i) = index.statement_at(&self.text, self.cursor.map_or(0, |(_,b)| b)) { ui.monospace(&index.statements[i].text); }
+                    else { ui.label(tr("No statement at the caret")); }
+                }
+                Popup::Settings => {
+                    ui.checkbox(&mut self.navigation.saved.line_numbers, tr("Show line numbers"));
+                    ui.checkbox(&mut self.navigation.saved.word_end, tr("Next word stops at the end of the word"));
+                    ui.checkbox(&mut self.navigation.saved.stop_at_line_break, tr("Stop word movement at line breaks"));
+                    ui.checkbox(&mut self.navigation.highest_priority, tr("Problems with highest priority only"));
+                    ui.separator();ui.label(tr("Keyboard shortcuts"));
+                    if self.navigation.recording.is_some(){ui.label(tr("Press a key combination. Esc cancels recording."));}
+                    egui::ScrollArea::vertical().max_height(250.0).show(ui,|ui|{
+                        for &(command,label,default) in ACTIONS{
+                            ui.push_id(format!("{command:?}"),|ui|{ui.horizontal(|ui|{
+                                ui.label(tr(label));
+                                let binding=self.navigation.saved.bindings.iter().find(|b|b.command==command);
+                                ui.monospace(binding.map(|b|ui.ctx().format_shortcut(&b.shortcut)).unwrap_or_else(||crate::shortcuts::format(default)));
+                                if ui.button(tr("Record shortcut")).clicked(){self.navigation.recording=Some(command);}
+                                if ui.button(tr("Reset")).clicked(){self.navigation.saved.bindings.retain(|b|b.command!=command);}
+                            });});
+                        }
+                    });
+                }
+            }
+            if let Some(error) = &self.navigation.error { ui.colored_label(pal(ui).error, tr(*error)); }
+            close |= ui.button(tr("Cancel / Close")).clicked();
+        });
+        if submit {
+            if popup == Popup::Line {
+                match source::position(&self.text, &self.navigation.input) {
+                    Ok(p) => navigate = Some(p),
+                    Err(e) => self.navigation.error = Some(e),
+                }
+            } else {
+                let s = self.navigation.input.trim();
+                if s.chars().count() == 1 && s.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    let position = self.cursor.map_or(0, |(_, b)| b);
+                    let line = source::line_column(&self.text, position).0;
+                    let description = self
+                        .navigation
+                        .saved
+                        .bookmarks
+                        .iter()
+                        .find(|b| source::line_column(&self.text, b.position).0 == line)
+                        .map(|b| b.description.clone())
+                        .unwrap_or_default();
+                    self.navigation.saved.bookmarks.retain(|b| {
+                        !b.mnemonic.eq_ignore_ascii_case(s)
+                            && source::line_column(&self.text, b.position).0 != line
+                    });
+                    self.navigation.saved.bookmarks.push(Bookmark {
+                        position,
+                        mnemonic: s.to_ascii_uppercase(),
+                        description,
+                    });
+                    actions.push(ConsoleAction::BookmarkAssigned(s.to_ascii_uppercase()));
+                    close = true;
+                } else {
+                    self.navigation.error = Some("Choose one letter or digit");
+                }
+            }
+        }
         if (execute || all) && !self.is_busy() {
             let statements = self.prepare_run(cx.driver, all);
             actions.push(ConsoleAction::RunStatements(statements));
@@ -390,14 +1059,18 @@ impl Console {
             self.navigate_to(ctx, p, None);
             close = true;
         }
-        if close || esc || !open {
+        if close || esc || !open || command.is_some() {
             self.navigation.popup = None;
             self.navigation.snapshot = None;
             self.navigation.source = None;
             ctx.memory_mut(|m| m.request_focus(self.editor_id()));
         }
+        if let Some(cmd) = command {
+            self.navigation_command(ctx, cx.driver, cmd, actions);
+        }
     }
 }
+
 fn move_choice(rows: &[usize], current: usize, up: bool, down: bool) -> Option<usize> {
     if rows.is_empty() {
         return None;
@@ -413,10 +1086,269 @@ fn move_choice(rows: &[usize], current: usize, up: bool, down: bool) -> Option<u
         }],
     )
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn many_selected_scopes_reuse_geometry_and_only_paint_visible_rows() {
+        let text: String = (0..5000).map(|i| format!("SELECT {i};\n")).collect();
+        let ctx = egui::Context::default();
+        let mut galley = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            galley = Some(ctx.fonts_mut(|f| {
+                f.layout_no_wrap(text.clone(), FontId::monospace(14.0), egui::Color32::WHITE)
+            }));
+        });
+        output.textures_delta.clear();
+        let galley = galley.unwrap();
+        let mut state = State::new(&text);
+        state.ensure_index(&text, Driver::Postgres);
+        state.open(Popup::Structure);
+        state.selected = (0..5000).collect();
+        state.update_scope(&text, Some((0, 0)), Driver::Postgres);
+        let clip = Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 100.0));
+        for origin in [egui::Pos2::ZERO, pos2(0.0, -7000.0)] {
+            let shapes = state.outlines(&galley, origin, egui::Color32::GREEN, clip);
+            assert!(!shapes.is_empty() && shapes.len() < 16);
+            assert!(
+                shapes
+                    .iter()
+                    .all(|s| s.visual_bounding_rect().intersects(clip))
+            );
+        }
+        assert_eq!(
+            state.outline_builds, 1,
+            "scrolling must reuse scope geometry"
+        );
+    }
+
+    #[test]
+    fn recordings_require_command_modifiers_and_preserve_reserved_keys() {
+        for mac in [false, true] {
+            for mods in [
+                Modifiers::NONE,
+                Modifiers::SHIFT,
+                Modifiers::ALT,
+                Modifiers::ALT | Modifiers::SHIFT,
+            ] {
+                assert!(!shortcut_allowed(
+                    &egui::KeyboardShortcut::new(mods, Key::J),
+                    mac
+                ));
+            }
+            assert!(shortcut_allowed(
+                &egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::J),
+                mac
+            ));
+            assert!(!shortcut_allowed(
+                &egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0),
+                mac
+            ));
+            assert!(!shortcut_allowed(
+                &egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::C),
+                mac
+            ));
+        }
+        assert!(!shortcut_allowed(
+            &egui::KeyboardShortcut::new(Modifiers::CTRL, Key::F3),
+            true
+        ));
+        assert!(!shortcut_allowed(
+            &egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::F11),
+            true
+        ));
+    }
+
+    #[test]
+    fn unfocused_editor_leaves_grid_navigation_keys_available() {
+        struct Keys {
+            console: Console,
+            commands: Vec<EditCmd>,
+            remaining: Vec<Key>,
+        }
+        let mut h = egui_kittest::Harness::builder().build_ui_state(
+            |ui, state: &mut Keys| {
+                state.console.navigation_keys(ui, &mut state.commands);
+                state.remaining.extend(ui.input(|i| {
+                    i.events
+                        .iter()
+                        .filter_map(|e| {
+                            if let Event::Key {
+                                key, pressed: true, ..
+                            } = e
+                            {
+                                Some(*key)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                }));
+            },
+            Keys {
+                console: Console::new(1, "keys".into(), "SELECT (1;".into(), None),
+                commands: Vec::new(),
+                remaining: Vec::new(),
+            },
+        );
+        for (key, mods) in [
+            (Key::F2, Modifiers::NONE),
+            (Key::PageUp, Modifiers::COMMAND),
+            (Key::PageDown, Modifiers::COMMAND),
+            (
+                Key::ArrowRight,
+                if cfg!(target_os = "macos") {
+                    Modifiers::ALT
+                } else {
+                    Modifiers::CTRL
+                },
+            ),
+        ] {
+            h.key_press_modifiers(mods, key);
+            h.run_steps(2);
+            assert!(h.state().commands.is_empty());
+            assert!(h.state().remaining.contains(&key));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn option_character_events_type_without_firing_defaults_or_saved_bindings() {
+        for (key, mods, character, command) in [
+            (Key::Num7, Modifiers::ALT, "÷", Command::Structure),
+            (Key::Q, Modifiers::ALT, "œ", Command::Context),
+            (
+                Key::B,
+                Modifiers::ALT | Modifiers::SHIFT,
+                "ı",
+                Command::Explorer,
+            ),
+        ] {
+            let mut h = harness("SELECT 1;", false);
+            let ctx = h.ctx.clone();
+            h.state_mut().console.navigate_to(&ctx, 9, None);
+            h.state_mut()
+                .console
+                .navigation
+                .saved
+                .bindings
+                .push(Binding {
+                    command,
+                    shortcut: egui::KeyboardShortcut::new(mods, key),
+                });
+            h.run_steps(2);
+            h.input_mut().events.extend([
+                Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: mods,
+                },
+                Event::Text(character.into()),
+            ]);
+            h.run_steps(2);
+            assert_eq!(h.state().console.text, format!("SELECT 1;{character}"));
+            assert!(!h.state().console.navigation.is_open());
+            assert!(h.state().ran.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_recording_and_persisted_plain_keys_do_not_capture_typing() {
+        let mut h = harness("SELECT 1;", false);
+        h.state_mut()
+            .console
+            .navigation
+            .pending
+            .push(Command::Settings);
+        h.run_steps(2);
+        h.state_mut().console.navigation.recording = Some(Command::GoToLine);
+        h.key_press(Key::J);
+        h.run_steps(2);
+        assert!(h.state().console.navigation.saved.bindings.is_empty());
+        assert_eq!(
+            h.state().console.navigation.recording,
+            Some(Command::GoToLine)
+        );
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().console.navigation.recording.is_none());
+        h.state_mut().console.navigation.popup = None;
+        h.state_mut()
+            .console
+            .navigation
+            .saved
+            .bindings
+            .push(Binding {
+                command: Command::Structure,
+                shortcut: egui::KeyboardShortcut::new(Modifiers::NONE, Key::J),
+            });
+        let ctx = h.ctx.clone();
+        h.state_mut().console.navigate_to(&ctx, 9, None);
+        h.run_steps(2);
+        h.input_mut().events.extend([
+            Event::Key {
+                key: Key::J,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+            Event::Text("j".into()),
+        ]);
+        h.run_steps(2);
+        assert_eq!(h.state().console.text, "SELECT 1;j");
+        assert!(!h.state().console.navigation.is_open());
+    }
+
+    #[test]
+    fn text_analysis_and_structure_filter_are_cached_across_idle_frames() {
+        let script: String = (0..1000).map(|i| format!("SELECT {i};\n")).collect();
+        let mut h = harness(&script, false);
+        h.run_steps(3);
+        let initial = h.state().console.navigation.index_builds;
+        let scopes = h.state().console.navigation.scope_builds;
+        let outlines = h.state().console.navigation.outline_builds;
+        h.run_steps(5);
+        assert_eq!(h.state().console.navigation.index_builds, initial);
+        assert_eq!(h.state().console.navigation.scope_builds, scopes);
+        assert_eq!(h.state().console.navigation.outline_builds, outlines);
+        let ctx = h.ctx.clone();
+        h.state_mut().console.navigate_to(&ctx, 12, None);
+        h.run_steps(2);
+        assert_eq!(h.state().console.navigation.index_builds, initial);
+        assert!(h.state().console.navigation.scope_builds > scopes);
+        h.state_mut().console.open_structure(Driver::Postgres);
+        h.run_steps(3);
+        let filters = h.state().console.navigation.filter_builds;
+        h.run_steps(5);
+        assert_eq!(h.state().console.navigation.index_builds, initial);
+        assert_eq!(h.state().console.navigation.filter_builds, filters);
+        h.state_mut().console.navigation.input = "SELECT 999".into();
+        h.run_steps(3);
+        assert_eq!(h.state().console.navigation.filter_builds, filters + 1);
+        assert_eq!(h.state().console.navigation.visible.as_ref(), &vec![999]);
+    }
+
+    #[test]
+    fn a_dialect_change_rebuilds_the_index_without_rebasing_text() {
+        let text = "CREATE TRIGGER t AFTER INSERT ON a BEGIN UPDATE a SET x=1; END; SELECT 2;";
+        let mut state = State::new(text);
+        let revision = state.revision();
+        state.sync_revision(text, Driver::Postgres, revision);
+        assert_eq!(state.index().statements.len(), 3);
+        let builds = state.index_builds;
+        state.sync_revision(text, Driver::Sqlite, revision);
+        assert_eq!(state.index().statements.len(), 2);
+        assert_eq!(state.index_builds, builds + 1);
+        state.sync_revision(text, Driver::Sqlite, revision);
+        assert_eq!(state.index_builds, builds + 1);
+    }
+
     struct Fixture {
         console: Console,
         ran: Vec<Vec<String>>,
@@ -467,80 +1399,7 @@ mod tests {
         h.run_steps(3);
         h
     }
-    #[test]
-    fn many_selected_scopes_reuse_geometry_and_only_paint_visible_rows() {
-        let text: String = (0..5000).map(|i| format!("SELECT {i};\n")).collect();
-        let ctx = egui::Context::default();
-        let mut galley = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
-            galley = Some(ctx.fonts_mut(|f| {
-                f.layout_no_wrap(text.clone(), FontId::monospace(14.0), egui::Color32::WHITE)
-            }));
-        });
-        output.textures_delta.clear();
-        let galley = galley.unwrap();
-        let mut state = State::new(&text);
-        state.ensure_index(&text, Driver::Postgres);
-        state.open(Popup::Structure);
-        state.selected = (0..5000).collect();
-        state.update_scope(&text, Some((0, 0)), Driver::Postgres);
-        let clip = Rect::from_min_size(egui::Pos2::ZERO, vec2(1000.0, 100.0));
-        for origin in [egui::Pos2::ZERO, pos2(0.0, -7000.0)] {
-            let shapes = state.outlines(&galley, origin, egui::Color32::GREEN, clip);
-            assert!(!shapes.is_empty() && shapes.len() < 16);
-            assert!(
-                shapes
-                    .iter()
-                    .all(|s| s.visual_bounding_rect().intersects(clip))
-            );
-        }
-        assert_eq!(
-            state.outline_builds, 1,
-            "scrolling must reuse scope geometry"
-        );
-    }
-    #[test]
-    fn text_analysis_and_structure_filter_are_cached_across_idle_frames() {
-        let script: String = (0..1000).map(|i| format!("SELECT {i};\n")).collect();
-        let mut h = harness(&script, false);
-        h.run_steps(3);
-        let initial = h.state().console.navigation.index_builds;
-        let scopes = h.state().console.navigation.scope_builds;
-        let outlines = h.state().console.navigation.outline_builds;
-        h.run_steps(5);
-        assert_eq!(h.state().console.navigation.index_builds, initial);
-        assert_eq!(h.state().console.navigation.scope_builds, scopes);
-        assert_eq!(h.state().console.navigation.outline_builds, outlines);
-        let ctx = h.ctx.clone();
-        h.state_mut().console.navigate_to(&ctx, 12, None);
-        h.run_steps(2);
-        assert_eq!(h.state().console.navigation.index_builds, initial);
-        assert!(h.state().console.navigation.scope_builds > scopes);
-        h.state_mut().console.open_structure(Driver::Postgres);
-        h.run_steps(3);
-        let filters = h.state().console.navigation.filter_builds;
-        h.run_steps(5);
-        assert_eq!(h.state().console.navigation.index_builds, initial);
-        assert_eq!(h.state().console.navigation.filter_builds, filters);
-        h.state_mut().console.navigation.input = "SELECT 999".into();
-        h.run_steps(3);
-        assert_eq!(h.state().console.navigation.filter_builds, filters + 1);
-        assert_eq!(h.state().console.navigation.visible.as_ref(), &vec![999]);
-    }
-    #[test]
-    fn a_dialect_change_rebuilds_the_index_without_rebasing_text() {
-        let text = "CREATE TRIGGER t AFTER INSERT ON a BEGIN UPDATE a SET x=1; END; SELECT 2;";
-        let mut state = State::new(text);
-        let revision = state.revision();
-        state.sync_revision(text, Driver::Postgres, revision);
-        assert_eq!(state.index().statements.len(), 3);
-        let builds = state.index_builds;
-        state.sync_revision(text, Driver::Sqlite, revision);
-        assert_eq!(state.index().statements.len(), 2);
-        assert_eq!(state.index_builds, builds + 1);
-        state.sync_revision(text, Driver::Sqlite, revision);
-        assert_eq!(state.index_builds, builds + 1);
-    }
+
     #[test]
     fn structure_arrows_preview_and_execute_only_the_selected_statement_without_editing_sql() {
         let text = "SELECT 'سلام';\n\nSELECT 2;\nSELECT 3;";
@@ -559,6 +1418,7 @@ mod tests {
         assert_eq!(h.state().console.text, text);
         assert!(!h.state().console.navigation.is_open());
     }
+
     #[test]
     fn structure_cancel_and_source_changes_never_execute() {
         let mut h = harness("SELECT 1; SELECT 2;", true);
@@ -572,6 +1432,7 @@ mod tests {
         assert!(!h.state().console.navigation.is_open());
         assert!(h.state().ran.is_empty());
     }
+
     #[test]
     fn gutter_button_executes_its_own_statement() {
         let mut h = harness("SELECT 1;\n\nSELECT 'سلام';", false);
@@ -579,6 +1440,7 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().ran, vec![vec!["SELECT 'سلام'".to_string()]]);
     }
+
     #[test]
     fn execution_duration_is_visible_beside_sql_and_disappears_when_that_sql_changes() {
         let mut h = harness("SELECT 1;\nSELECT 'سلام';", false);
@@ -604,6 +1466,7 @@ mod tests {
         h.run_steps(2);
         assert!(h.query_by_label("12 ms").is_none());
     }
+
     #[test]
     fn long_script_only_builds_execution_time_labels_for_visible_lines() {
         fn labels(shape: &egui::Shape) -> usize {
@@ -643,6 +1506,7 @@ mod tests {
             "timing labels must remain visible after scrolling"
         );
     }
+
     #[test]
     fn long_script_only_builds_gutter_controls_for_visible_lines() {
         fn run_icons(shape: &egui::Shape) -> usize {
@@ -666,6 +1530,7 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().ran, vec![vec!["SELECT 1".to_string()]]);
     }
+
     #[test]
     fn backspace_before_a_trailing_newline_rebuilds_gutter_offsets() {
         let text = format!("{}  \n", "SELECT 1;".repeat(6));
@@ -680,6 +1545,7 @@ mod tests {
         assert!(h.state().console.text.ends_with('\n'));
         assert!(h.state().ran.is_empty());
     }
+
     #[test]
     fn execution_scope_preserves_syntax_colors_and_has_an_unfilled_outline() {
         fn visit<'a>(
@@ -741,6 +1607,7 @@ mod tests {
             );
         }
     }
+
     #[test]
     fn unicode_insertions_do_not_reuse_offsets_inside_a_multibyte_character() {
         let mut h = harness("a\né\n", false);
@@ -752,6 +1619,7 @@ mod tests {
         assert_eq!(h.state().console.text, "éa\né\n");
         assert!(h.state().ran.is_empty());
     }
+
     #[test]
     fn gutter_statement_targets_update_in_the_same_frame_as_paste() {
         let mut h = harness("SELECT 2;", false);
@@ -767,6 +1635,7 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().ran, vec![vec!["SELECT 2".to_owned()]]);
     }
+
     #[test]
     fn mixed_unicode_edits_undo_and_redo_keep_source_ranges_valid() {
         let mut h = harness("SELECT 'سلام';\r\nSELECT 'é';\n", false);
@@ -804,6 +1673,7 @@ mod tests {
             assert!(h.state().ran.is_empty());
         }
     }
+
     #[test]
     fn multiple_statement_scopes_have_separate_boxes_and_skip_unselected_sql() {
         fn collect<'a>(shape: &'a egui::Shape, out: &mut Vec<&'a egui::epaint::PathShape>) {
@@ -839,6 +1709,124 @@ mod tests {
             "The box must not include the unselected middle statement"
         );
     }
+
+    #[test]
+    fn navigation_from_a_routine_preview_restores_the_definition_before_focusing_it() {
+        use crate::db::routines::{RoutineKind, RoutineRef};
+        use crate::ui::routine_dialog::{RoutineDialog, RoutineEditor, RoutinePage};
+        let mut h = harness("CREATE PROCEDURE p AS SELECT 1;", false);
+        h.state_mut().console.routine = Some(RoutineEditor {
+            comment: Default::default(),
+            reference: RoutineRef {
+                conn: 7,
+                db: "shop".into(),
+                schema: "public".into(),
+                name: "p".into(),
+                kind: RoutineKind::Procedure,
+                signature: String::new(),
+            },
+            dialog: RoutineDialog::new_routine(
+                7,
+                Driver::Postgres,
+                "shop".into(),
+                "public".into(),
+                RoutineKind::Procedure,
+            ),
+            saved: String::new(),
+            submitted: None,
+            transaction: false,
+            page: RoutinePage::Preview,
+            word_wrap: false,
+            outline: false,
+            snippets: false,
+        });
+        h.state_mut()
+            .console
+            .navigation
+            .pending
+            .push(Command::GoToLine);
+        h.run_steps(3);
+        assert!(matches!(
+            h.state().console.routine.as_ref().unwrap().page,
+            RoutinePage::Definition
+        ));
+        assert!(h.state().console.navigation.is_open());
+    }
+
+    #[test]
+    fn assigned_shortcut_persists_and_selects_a_paragraph_without_inserting_text() {
+        let mut h = harness("one\n\ntwo\n\nthree", false);
+        let ctx = h.ctx.clone();
+        h.state_mut()
+            .console
+            .navigation
+            .saved
+            .bindings
+            .push(Binding {
+                command: Command::ParagraphForwardSelect,
+                shortcut: egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::J),
+            });
+        h.state_mut().console.navigate_to(&ctx, 0, None);
+        h.run_steps(2);
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::J);
+        h.run_steps(2);
+        assert_eq!(h.state().console.selection(), Some("one\n\n"));
+        assert_eq!(h.state().console.text, "one\n\ntwo\n\nthree");
+        let saved: Saved = serde_json::from_str(
+            &serde_json::to_string(&h.state().console.navigation.saved).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.bindings[0].command, Command::ParagraphForwardSelect);
+    }
+
+    #[test]
+    fn shortcut_recording_consumes_keys_and_escape_cancels_only_recording() {
+        let mut h = harness("SELECT 1;", false);
+        h.state_mut()
+            .console
+            .navigation
+            .pending
+            .push(Command::Settings);
+        h.run_steps(2);
+        h.state_mut().console.navigation.recording = Some(Command::ParagraphForward);
+        h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::J);
+        h.run_steps(2);
+        assert_eq!(
+            h.state().console.navigation.saved.bindings[0].shortcut,
+            egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::J)
+        );
+        h.state_mut().console.navigation.recording = Some(Command::ParagraphBackward);
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().console.navigation.recording.is_none());
+        assert!(h.state().console.navigation.is_open());
+        assert_eq!(h.state().console.text, "SELECT 1;");
+    }
+
+    #[test]
+    fn word_navigation_stops_at_line_breaks_and_word_search_skips_substrings() {
+        let mut c = Console::new(1, "test".into(), "id order_id id\nnext".into(), None);
+        let ctx = egui::Context::default();
+        c.navigate_to(&ctx, 0, None);
+        c.navigation_command(&ctx, Driver::Postgres, Command::FindWord, &mut Vec::new());
+        assert_eq!(c.cursor, Some((12, 14)));
+        c.navigate_to(&ctx, 14, None);
+        c.navigation_command(
+            &ctx,
+            Driver::Postgres,
+            Command::WordForward,
+            &mut Vec::new(),
+        );
+        assert_eq!(c.cursor, Some((15, 15)));
+        c.navigation_command(
+            &ctx,
+            Driver::Postgres,
+            Command::WordBackward,
+            &mut Vec::new(),
+        );
+        assert_eq!(c.cursor, Some((14, 14)));
+    }
+
     #[test]
     fn structure_filter_enter_navigates_to_the_visible_statement() {
         let mut h = harness("SELECT 1;\nSELECT 99;", false);
@@ -855,6 +1843,7 @@ mod tests {
         assert_eq!(h.state().console.cursor, Some((10, 10)));
         assert!(h.state().ran.is_empty());
     }
+
     #[test]
     fn multiple_statements_execute_in_source_order_and_run_all_includes_every_statement() {
         let mut h = harness("SELECT 1; SELECT 2; SELECT 3;", true);
@@ -874,6 +1863,81 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().ran[1], vec!["SELECT 1", "SELECT 2", "SELECT 3"]);
     }
+
+    #[test]
+    fn bookmark_follows_insertions_and_persists_with_editor_settings() {
+        let mut h = harness("SELECT 1;\nSELECT 2;", false);
+        h.state_mut()
+            .console
+            .navigation
+            .saved
+            .bookmarks
+            .push(Bookmark {
+                position: 10,
+                mnemonic: "2".into(),
+                description: "Second query".into(),
+            });
+        h.state_mut().console.text.insert_str(0, "-- سلام\n");
+        h.run_steps(2);
+        let saved = &h.state().console.navigation.saved;
+        assert_eq!(saved.bookmarks[0].position, 18);
+        let restored: Saved = serde_json::from_str(&serde_json::to_string(saved).unwrap()).unwrap();
+        assert_eq!(restored.bookmarks[0].description, "Second query");
+        assert_eq!(restored.bookmarks[0].mnemonic, "2");
+        assert!(restored.line_numbers);
+        assert!(serde_json::from_str::<Saved>("{}").unwrap().line_numbers);
+    }
+
+    #[test]
+    fn paragraph_selection_can_extend_backwards_repeatedly() {
+        let mut c = Console::new(1, "test".into(), "one\n\ntwo\n\nthree".into(), None);
+        let ctx = egui::Context::default();
+        c.navigate_to(&ctx, 15, None);
+        c.navigation_command(
+            &ctx,
+            Driver::Postgres,
+            Command::ParagraphBackwardSelect,
+            &mut Vec::new(),
+        );
+        assert_eq!(c.selection(), Some("three"));
+        c.navigation_command(
+            &ctx,
+            Driver::Postgres,
+            Command::ParagraphBackwardSelect,
+            &mut Vec::new(),
+        );
+        assert_eq!(c.selection(), Some("two\n\nthree"));
+    }
+
+    #[test]
+    fn go_to_line_rejects_invalid_numbers_and_uses_unicode_columns() {
+        let mut h = harness("SELECT 'سلام';\nSELECT 2;", false);
+        h.state_mut()
+            .console
+            .navigation
+            .pending
+            .push(Command::GoToLine);
+        h.run_steps(3);
+        h.input_mut().events.push(Event::Text("2:8".into()));
+        h.run_steps(2);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert_eq!(h.state().console.line_col(), (2, 8));
+        assert_eq!(h.state().console.text, "SELECT 'سلام';\nSELECT 2;");
+    }
+
+    #[test]
+    fn next_issue_wraps_and_highest_priority_skips_warnings() {
+        let mut c = Console::new(1, "test".into(), "SELECT 1;  \nSELECT (2;".into(), None);
+        let ctx = egui::Context::default();
+        c.navigate_to(&ctx, 0, None);
+        c.navigation.highest_priority = true;
+        c.navigation_command(&ctx, Driver::Postgres, Command::NextIssue, &mut Vec::new());
+        assert_eq!(c.cursor, Some((19, 19)));
+        c.navigation_command(&ctx, Driver::Postgres, Command::NextIssue, &mut Vec::new());
+        assert_eq!(c.cursor, Some((19, 19)));
+    }
+
     #[test]
     fn sqlite_trigger_is_one_executable_statement() {
         let text = "CREATE TRIGGER audit AFTER INSERT ON notes BEGIN\n INSERT INTO log VALUES ('a;');\n UPDATE log SET n = 2;\nEND;\nSELECT 42;";

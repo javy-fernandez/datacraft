@@ -156,6 +156,7 @@ struct FindState {
     replace: String,
     show_replace: bool,
     case_sensitive: bool,
+    whole_word: bool,
     /// Give the search field the focus on the next frame.
     focus: bool,
 }
@@ -232,6 +233,7 @@ pub enum PageMove { First, Previous, Next, Last, Number(usize), Size(usize) }
 /// Actions the console asks the app to perform.
 pub enum ConsoleAction {
     Navigate(navigation::Command),
+    BookmarkAssigned(String),
     SaveRoutine,
     ApplyFilter,
     Page(PageMove),
@@ -646,6 +648,7 @@ impl Console {
             replace: repl,
             show_replace: replace || shown,
             case_sensitive,
+            whole_word: false,
             focus: true,
         });
     }
@@ -867,7 +870,7 @@ impl Console {
     /// Matches (char ranges) of the find bar's search text.
     fn find_matches(&self) -> Vec<(usize, usize)> {
         match &self.find {
-            Some(f) => find_matches(&self.text, &f.query, f.case_sensitive),
+            Some(f) => search_matches(&self.text, &f.query, f.case_sensitive, f.whole_word),
             None => Vec::new(),
         }
     }
@@ -971,6 +974,14 @@ impl Console {
                 .clicked()
             {
                 f.case_sensitive = !f.case_sensitive;
+                changed = true;
+            }
+            if ui
+                .add(egui::Button::selectable(f.whole_word, "W"))
+                .on_hover_text(tr("Whole words"))
+                .clicked()
+            {
+                f.whole_word = !f.whole_word;
                 changed = true;
             }
             ui.add_space(6.0);
@@ -1820,7 +1831,7 @@ impl Console {
         let driver = cx.driver;
         let font_size = cx.font_size;
         // Find bar matches are painted with a background (the selected one stronger).
-        let search = self.find.as_ref().filter(|f| !f.query.is_empty()).map(|f| (f.query.clone(), f.case_sensitive));
+        let search = self.find.as_ref().filter(|f| !f.query.is_empty()).map(|f| (f.query.clone(), f.case_sensitive, f.whole_word));
         let selected = self.cursor;
         let hl_cache = &mut self.hl_cache;
         let text_revision = std::cell::Cell::new(self.navigation.revision());
@@ -1843,9 +1854,9 @@ impl Console {
                 _ => {
                     let mut job = sql::highlight_for(text, driver, dark, FontId::monospace(font_size));
                     job.wrap.max_width = f32::INFINITY;
-                    if let Some((q, case)) = &search {
+                    if let Some((q, case, whole)) = &search {
                         let (other, current) = match_colors(dark);
-                        let ranges: Vec<_> = find_matches(text, q, *case)
+                        let ranges: Vec<_> = search_matches(text, q, *case, *whole)
                             .into_iter()
                             .map(|m| {
                                 let color = if Some(m) == selected { current } else { other };
@@ -1873,6 +1884,7 @@ impl Console {
             30.0
         };
         let mut gutter_run = None;
+        let mut issue_jump = None;
 
         let mut typed_dot = false;
         let mut typed_letter = false;
@@ -1919,6 +1931,8 @@ impl Console {
                         let index = self.navigation.index();
                         let caret = output.cursor_range.map(|r| r.primary.index.0).or(self.cursor.map(|(_,b)| b)).unwrap_or(0);
                         let caret_line = index.line_column(caret).0;
+                        let bookmark_lines = self.navigation.bookmark_lines();
+                        let problem_lines = &index.problem_lines;
                         let statement_lines = &index.statement_lines;
 
                         let mut line = 1;
@@ -1955,8 +1969,20 @@ impl Console {
                                     ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "▶", FontId::proportional(11.0), green);
                                     if response.clicked() && !busy { gutter_run = Some(idx); }
                                 }
-
-
+                                if bookmark_lines.contains(&line) {
+                                    ui.painter().text(pos2(gutter_rect.left() + 24.0, y), egui::Align2::LEFT_TOP, "◆", font.clone(), pal.accent);
+                                }
+                                if let Some(&problem_index) = problem_lines.get(&line) {
+                                    let problem = &index.issues[problem_index];
+                                    let r = Rect::from_min_size(pos2(gutter_rect.right() - 3.0, y), vec2(4.0, row.height()));
+                                    ui.painter().rect_filled(r, 0.0, if problem.error { pal.error } else { pal.accent });
+                                    let marker=ui.interact(r.expand(3.0), editor_id.with(("problem", line)), Sense::click()).on_hover_text(tr(problem.message));
+                                    if marker.clicked(){issue_jump=Some(problem.position);}
+                                    marker.context_menu(|ui|{
+                                        ui.radio_value(&mut self.navigation.highest_priority,false,tr("All problems"));
+                                        ui.radio_value(&mut self.navigation.highest_priority,true,tr("Problems with highest priority"));
+                                    });
+                                }
                                 line += 1;
                             }
                             start_of_line = row.ends_with_newline;
@@ -1994,6 +2020,13 @@ impl Console {
                             ui.menu_button(tr("Navigate"), |ui| navigation::menu(ui, cmds));
                             editor_menu(ui, busy, crate::db::plan::explain_statement("x", driver, true).is_some(), cmds);
                         });
+                        if output.response.clicked() && ui.input(|i| i.modifiers.command) {
+                            if let Some(pointer) = output.response.interact_pointer_pos() {
+                                let caret = output.galley.cursor_from_pos(pointer - output.galley_pos);
+                                new_cursor = Some((caret.index.0, caret.index.0, caret));
+                                cmds.push(EditCmd::Navigate(navigation::Command::Declaration));
+                            }
+                        }
                     });
                 });
         });
@@ -2004,6 +2037,9 @@ impl Console {
         if let Some(idx) = gutter_run {
             self.navigation
                 .queue_gutter(idx, self.conn, &self.db, driver);
+        }
+        if let Some(position) = issue_jump {
+            self.navigate_to(ui.ctx(), position, None);
         }
         if typed_dot && let Some((_, c)) = self.cursor {
             self.open_completion(c, cx, false);
@@ -2287,6 +2323,21 @@ fn find_matches(text: &str, needle: &str, case_sensitive: bool) -> Vec<(usize, u
         }
     }
     out
+}
+
+fn search_matches(text: &str, needle: &str, case: bool, whole: bool) -> Vec<(usize, usize)> {
+    let matches = find_matches(text, needle, case);
+    if !whole {
+        return matches;
+    }
+    let chars: Vec<_> = text.chars().collect();
+    matches
+        .into_iter()
+        .filter(|&(a, b)| {
+            (a == 0 || !is_ident_char(chars[a - 1]))
+                && (b == chars.len() || !is_ident_char(chars[b]))
+        })
+        .collect()
 }
 
 /// `text` with the (sorted, non-overlapping) char ranges replaced by `with`.
