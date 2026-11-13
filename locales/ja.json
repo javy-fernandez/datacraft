@@ -1783,7 +1783,22 @@
     "reverse FK": "逆方向 FK",
     "inferred": "推定"
   },
-  "query_execution": {
-    "Execution time, including data retrieval": "データ取得を含む実行時間"
+  "editor_navigation": {
+    "Cancel / Close": "キャンセル / 閉じる",
+    "Execute selected statements": "選択したステートメントを実行",
+    "Execution time, including data retrieval": "データ取得を含む実行時間",
+    "Execute this statement": "このステートメントを実行",
+    "File Structure": "ファイル構造",
+    "File Structure…": "ファイル構造…",
+    "Go to statement": "ステートメントへ移動",
+    "Hold Ctrl, choose with Tab or arrows, release Ctrl to switch. Esc cancels.": "Ctrl を押しながら Tab または矢印で選択し、Ctrl を離して切り替えます。Esc でキャンセル。",
+    "Navigate": "移動",
+    "Navigation": "ナビゲーション",
+    "No executable statements": "実行可能なステートメントがありません",
+    "Recent tabs / Switcher": "最近のタブ / 切り替え",
+    "Run all statements": "すべてのステートメントを実行",
+    "Type to filter": "入力して絞り込み",
+    "Execute statement {n}": "ステートメント {n} を実行",
+    "Selected statements are outlined in the editor. Ctrl/Command-click selects several.": "選択したステートメントはエディター内で枠で囲まれます。Ctrl/Command を押しながらクリックすると複数選択できます。"
   }
 }

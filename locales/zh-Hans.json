@@ -1783,7 +1783,22 @@
     "reverse FK": "反向外键",
     "inferred": "推断"
   },
-  "query_execution": {
-    "Execution time, including data retrieval": "执行时间（包括数据检索）"
+  "editor_navigation": {
+    "Cancel / Close": "取消 / 关闭",
+    "Execute selected statements": "执行选中的语句",
+    "Execution time, including data retrieval": "执行时间（包括数据检索）",
+    "Execute this statement": "执行此语句",
+    "File Structure": "文件结构",
+    "File Structure…": "文件结构…",
+    "Go to statement": "转到语句",
+    "Hold Ctrl, choose with Tab or arrows, release Ctrl to switch. Esc cancels.": "按住 Ctrl，用 Tab 或方向键选择，松开 Ctrl 切换。Esc 取消。",
+    "Navigate": "导航",
+    "Navigation": "导航",
+    "No executable statements": "没有可执行的语句",
+    "Recent tabs / Switcher": "最近标签页 / 切换器",
+    "Run all statements": "运行所有语句",
+    "Type to filter": "输入以筛选",
+    "Execute statement {n}": "执行语句 {n}",
+    "Selected statements are outlined in the editor. Ctrl/Command-click selects several.": "选中的语句在编辑器中以边框标出。按住 Ctrl/Command 单击可多选。"
   }
 }

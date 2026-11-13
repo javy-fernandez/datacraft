@@ -73,6 +73,23 @@ eframe = { version = "0.36", default-features = false, features = ["wayland", "x
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
+# Large highlighted editors create many OpenType shaping runs. Keep that pipeline
+# optimized in debug builds too, so cold tab activation doesn't stall the UI thread.
+[profile.dev.package.epaint]
+opt-level = 3
+
+[profile.dev.package.harfrust]
+opt-level = 3
+
+[profile.dev.package.read-fonts]
+opt-level = 3
+
+[profile.dev.package.skrifa]
+opt-level = 3
+
+[profile.dev.package.font-types]
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

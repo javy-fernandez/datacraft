@@ -84,6 +84,8 @@ pub struct Palette {
     pub gutter_fg_caret: Color32,
     pub caret_row: Color32,
     pub editor_selection: Color32,
+    /// DataGrip Islands editor scheme's CONSOLE_RANGE_TO_EXECUTE: unfilled BOXED effect.
+    pub execution_scope_border: Color32,
     // --- states ---
     pub error: Color32,
     pub ok: Color32,
@@ -140,6 +142,7 @@ pub const LIGHT: Palette = Palette {
     gutter_fg_caret: hex(0x767A8A),
     caret_row: hex(0xF5F8FE),
     editor_selection: hex(0xA6D2FF),
+    execution_scope_border: hex(0xBAA8FF),
     error: hex(0xC54E58),
     ok: hex(0x338555),
     warn: hex(0xA56906),
@@ -190,6 +193,7 @@ pub const DARK: Palette = Palette {
     gutter_fg_caret: hex(0xA1A3AB),
     caret_row: hex(0x26282E),
     editor_selection: hex(0x214283),
+    execution_scope_border: hex(0x3D7A49),
     error: hex(0xF57E84),
     ok: hex(0x6DB083),
     warn: hex(0xD59637),

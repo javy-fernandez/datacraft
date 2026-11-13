@@ -1,7 +1,9 @@
-# SQL execution timing
+# Editor execution and tab switching
 
-Run statement and Command/Ctrl+Enter execute the statement at the caret or the selected text. Run all statements executes the whole script. Execution continues through the pending-edit, read-only, transaction, and dangerous-statement guards.
+The statement at the caret is outlined. A selection outlines its execution range. Gutter Run buttons execute their statement through the existing read-only, pending-edit, transaction and dangerous-statement guards. Per-query durations remain next to unchanged SQL.
 
-After a query finishes, its duration (for example, `12 ms` or `1.25 s`) appears beside its first line. This includes execution and data retrieval, excluding connection setup. SQL Server batches show one duration for the batch; SQLite scripts show individual statement durations returned by the driver.
+Open File Structure with Cmd/Ctrl+F12 (also Cmd+Option+7 on macOS or Alt+7 elsewhere). Filter and select statements, then execute selected statements or all statements.
 
-Labels follow unchanged SQL when lines move. They disappear when an edit changes the SQL or its statement boundaries, when its connection/database changes, or when the query is rerun. Timings last for the current session and are never inserted into the SQL.
+Hold Ctrl and press Tab to preview recent tabs. Use Tab, Shift+Tab or arrows to choose; release Ctrl to switch. Esc cancels.
+
+Editor analysis and outline geometry are cached by text revision, caret and layout.

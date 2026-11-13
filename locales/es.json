@@ -1783,7 +1783,22 @@
     "reverse FK": "FK inversa",
     "inferred": "deducida"
   },
-  "query_execution": {
-    "Execution time, including data retrieval": "Tiempo de ejecución, incluida la recuperación de datos"
+  "editor_navigation": {
+    "Cancel / Close": "Cancelar / Cerrar",
+    "Execute selected statements": "Ejecutar sentencias seleccionadas",
+    "Execution time, including data retrieval": "Tiempo de ejecución, incluida la recuperación de datos",
+    "Execute this statement": "Ejecutar esta sentencia",
+    "File Structure": "Estructura del archivo",
+    "File Structure…": "Estructura del archivo…",
+    "Go to statement": "Ir a la sentencia",
+    "Hold Ctrl, choose with Tab or arrows, release Ctrl to switch. Esc cancels.": "Mantén Ctrl, elige con Tab o las flechas y suelta Ctrl para cambiar. Esc cancela.",
+    "Navigate": "Navegar",
+    "Navigation": "Navegación",
+    "No executable statements": "No hay sentencias ejecutables",
+    "Recent tabs / Switcher": "Pestañas recientes / Selector",
+    "Run all statements": "Ejecutar todas las sentencias",
+    "Type to filter": "Escribe para filtrar",
+    "Execute statement {n}": "Ejecutar sentencia {n}",
+    "Selected statements are outlined in the editor. Ctrl/Command-click selects several.": "Las sentencias seleccionadas se enmarcan en el editor. Ctrl/Command-clic selecciona varias."
   }
 }

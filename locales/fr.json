@@ -1783,7 +1783,22 @@
     "reverse FK": "FK inverse",
     "inferred": "déduite"
   },
-  "query_execution": {
-    "Execution time, including data retrieval": "Temps d’exécution, récupération des données comprise"
+  "editor_navigation": {
+    "Cancel / Close": "Annuler / Fermer",
+    "Execute selected statements": "Exécuter les instructions sélectionnées",
+    "Execution time, including data retrieval": "Temps d’exécution, récupération des données comprise",
+    "Execute this statement": "Exécuter cette instruction",
+    "File Structure": "Structure du fichier",
+    "File Structure…": "Structure du fichier…",
+    "Go to statement": "Aller à l’instruction",
+    "Hold Ctrl, choose with Tab or arrows, release Ctrl to switch. Esc cancels.": "Maintenez Ctrl, choisissez avec Tab ou les flèches, relâchez Ctrl pour basculer. Échap annule.",
+    "Navigate": "Naviguer",
+    "Navigation": "Navigation",
+    "No executable statements": "Aucune instruction exécutable",
+    "Recent tabs / Switcher": "Onglets récents / Sélecteur",
+    "Run all statements": "Exécuter toutes les instructions",
+    "Type to filter": "Saisissez pour filtrer",
+    "Execute statement {n}": "Exécuter l’instruction {n}",
+    "Selected statements are outlined in the editor. Ctrl/Command-click selects several.": "Les instructions sélectionnées sont encadrées dans l’éditeur. Ctrl/Commande-clic en sélectionne plusieurs."
   }
 }

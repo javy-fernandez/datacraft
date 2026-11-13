@@ -1783,7 +1783,22 @@
     "reverse FK": "umgekehrter FK",
     "inferred": "abgeleitet"
   },
-  "query_execution": {
-    "Execution time, including data retrieval": "Ausführungszeit einschließlich Datenabruf"
+  "editor_navigation": {
+    "Cancel / Close": "Abbrechen / Schließen",
+    "Execute selected statements": "Ausgewählte Anweisungen ausführen",
+    "Execution time, including data retrieval": "Ausführungszeit einschließlich Datenabruf",
+    "Execute this statement": "Diese Anweisung ausführen",
+    "File Structure": "Dateistruktur",
+    "File Structure…": "Dateistruktur…",
+    "Go to statement": "Zur Anweisung wechseln",
+    "Hold Ctrl, choose with Tab or arrows, release Ctrl to switch. Esc cancels.": "Strg halten, mit Tab oder Pfeilen wählen und Strg zum Wechseln loslassen. Esc bricht ab.",
+    "Navigate": "Navigieren",
+    "Navigation": "Navigation",
+    "No executable statements": "Keine ausführbaren Anweisungen",
+    "Recent tabs / Switcher": "Letzte Tabs / Umschalter",
+    "Run all statements": "Alle Anweisungen ausführen",
+    "Type to filter": "Zum Filtern eingeben",
+    "Execute statement {n}": "Anweisung {n} ausführen",
+    "Selected statements are outlined in the editor. Ctrl/Command-click selects several.": "Ausgewählte Anweisungen werden im Editor umrahmt. Strg/Befehl-Klick wählt mehrere aus."
   }
 }

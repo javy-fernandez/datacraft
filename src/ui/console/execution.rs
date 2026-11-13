@@ -41,7 +41,6 @@ pub(super) struct State {
     driver: Option<Driver>,
     timings: Vec<Timing>,
     revision: Option<u64>,
-    line_starts: Vec<usize>,
     #[cfg(test)]
     text_syncs: usize,
 }
@@ -141,12 +140,6 @@ impl State {
         }
     }
 
-    pub(super) fn line_at(&self, caret: usize) -> usize {
-        self.line_starts
-            .partition_point(|&start| start <= caret)
-            .max(1)
-    }
-
     pub(super) fn sync(&mut self, text: &str, conn: Option<ConnId>, db: &Option<String>) {
         #[cfg(test)]
         {
@@ -172,13 +165,6 @@ impl State {
         if self.previous != text {
             self.previous = text.into();
             self.revision = None;
-            self.line_starts.clear();
-            self.line_starts.push(0);
-            self.line_starts.extend(
-                text.chars()
-                    .enumerate()
-                    .filter_map(|(i, ch)| (ch == '\n').then_some(i + 1)),
-            );
         }
     }
 
@@ -393,16 +379,12 @@ impl State {
 impl Console {
     /// Preserve the existing Run All, nonblank selection, and caret statement scopes.
     pub fn prepare_run(&mut self, driver: Driver, all: bool) -> Vec<String> {
+        self.navigation.sync_text(&self.text);
         let ranges = if all {
             vec![0..self.text.len()]
-        } else if self.selection().is_some() {
-            let (a, b) = self.cursor.unwrap();
-            vec![char_to_byte(&self.text, a)..char_to_byte(&self.text, b)]
         } else {
-            sql::statement_at(&self.text, self.cursor_byte(), driver)
-                .into_iter()
-                .map(|s| s.start..s.end)
-                .collect()
+            self.navigation
+                .execution_ranges(&self.text, self.cursor, driver)
         };
         self.prepare_ranges(driver, ranges)
     }
@@ -472,11 +454,11 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().text.len(), 56);
         assert!(h.state().text.ends_with('\n'));
-        assert_eq!(h.state().execution.line_starts, vec![0, 56]);
+        assert_eq!(h.state().navigation.index().line_chars, vec![0, 56]);
         h.key_press(Key::ArrowDown);
         h.run_steps(2);
         assert_eq!(h.state().line_col().0, 2);
-        assert_eq!(h.state().execution.line_at(56), 2);
+        assert_eq!(h.state().navigation.index().line_column(56).0, 2);
     }
 
     #[test]
@@ -499,7 +481,7 @@ mod tests {
         h.key_press(Key::Enter);
         h.run_steps(2);
         assert_eq!(h.state().execution.text_syncs, syncs + 1);
-        assert_eq!(h.state().execution.line_starts.len(), 3);
+        assert_eq!(h.state().navigation.index().line_chars.len(), 3);
         h.state_mut().conn = Some(7);
         h.run_steps(2);
         assert_eq!(h.state().execution.text_syncs, syncs + 1);
