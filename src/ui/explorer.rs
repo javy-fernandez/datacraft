@@ -26,6 +26,8 @@ pub struct ExplorerState {
     /// Folders that start expanded and were collapsed by the user (a table's Columns).
     pub collapsed: HashSet<String>,
     pub selected: Option<String>,
+    /// Scroll a selected reference into view once its parent folders are expanded.
+    pub reveal: Option<String>,
     /// Selected table (for the toolbar buttons).
     pub selected_table: Option<TableRef>,
     /// true if the last click was inside the panel ("focused" selection in blue).
@@ -163,6 +165,9 @@ fn tree_row(ui: &mut Ui, state: &mut ExplorerState, spec: RowSpec<'_>) -> RowOut
     state.widest_row = state.widest_row.max(needed);
     let width = state.row_width.max(needed);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
+    if state.reveal.as_deref() == Some(spec.key) {
+        ui.scroll_to_rect(rect, Some(egui::Align::Center)); state.reveal = None;
+    }
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, state.selected.as_deref() == Some(spec.key), spec.label));
     if !ui.is_rect_visible(rect) {
         let mut toggled = false;

@@ -15,6 +15,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod execution;
+pub mod navigation;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResultTab {
     Output,
@@ -56,7 +59,8 @@ pub fn remap_index(i: usize, removed: &[usize]) -> Option<usize> {
 /// Active tab after removing `removed`: if the active one was closed, the one taking its place
 /// (or the last one); with no results, Output.
 pub fn tab_after_close(tab: ResultTab, removed: &[usize], remaining: usize) -> ResultTab {
-    let ResultTab::Result(i) = tab else { return tab };
+    let ResultTab::Result(i) = tab else { return tab;
+    };
     if remaining == 0 {
         return ResultTab::Output;
     }
@@ -97,6 +101,8 @@ struct Completion {
 }
 
 pub struct Console {
+    pub navigation: navigation::State,
+    execution: execution::State,
     pub routine: Option<crate::ui::routine_dialog::RoutineEditor>,
     pub id: u64,
     pub title: String,
@@ -150,6 +156,7 @@ struct FindState {
     replace: String,
     show_replace: bool,
     case_sensitive: bool,
+    whole_word: bool,
     /// Give the search field the focus on the next frame.
     focus: bool,
 }
@@ -163,6 +170,7 @@ struct HistoryState {
 /// Editor commands (shortcuts, toolbar and context menu).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EditCmd {
+    Navigate(navigation::Command),
     Format,
     ToggleComment,
     Duplicate,
@@ -224,6 +232,8 @@ pub enum PageMove { First, Previous, Next, Last, Number(usize), Size(usize) }
 
 /// Actions the console asks the app to perform.
 pub enum ConsoleAction {
+    Navigate(navigation::Command),
+    BookmarkAssigned(String),
     SaveRoutine,
     ApplyFilter,
     Page(PageMove),
@@ -286,6 +296,8 @@ pub struct ConsoleCtx<'a> {
 impl Console {
     pub fn new(id: u64, title: String, text: String, conn: Option<ConnId>) -> Self {
         Self {
+            navigation: navigation::State::new(&text),
+            execution: Default::default(),
             routine: None,
             id,
             title,
@@ -360,8 +372,10 @@ impl Console {
     }
 
     pub fn focus_table_column(&mut self, columns: &[String]) -> bool {
-        let Some(index) = self.edit_view_index() else { return false };
-        let Some(column) = columns.iter().find(|column| self.results[index].rs.columns.contains(column)) else { return false };
+        let Some(index) = self.edit_view_index() else { return false;
+        };
+        let Some(column) = columns.iter().find(|column| self.results[index].rs.columns.contains(column)) else { return false;
+        };
         if !self.results[index].focus_column(column) { return false; }
         self.result_tab = ResultTab::Result(index);
         true
@@ -455,9 +469,14 @@ impl Console {
     fn set_cursor(&mut self, ctx: &egui::Context, a: usize, b: usize) {
         let id = self.editor_id();
         let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
-        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
         state.store(ctx, id);
         self.cursor = Some((a.min(b), a.max(b)));
+        self.navigation.sync_text(&self.text);
+        self.navigation.caret = Some(b);
+        self.navigation.anchor = Some(a);
     }
 
     /// Toolbar + editor of a console (inside the editor island).
@@ -479,10 +498,16 @@ impl Console {
         if let Some(stmt) = self.history_popup(ui) {
             self.insert_text(&ctx, &stmt);
         }
+        self.navigation_ui(ui, cx, &mut actions);
         actions
     }
 
     pub fn show_routine(&mut self, ui: &mut Ui, cx: &ConsoleCtx<'_>) -> Vec<ConsoleAction> {
+        if !self.navigation.pending.is_empty()
+            && let Some(editor) = &mut self.routine
+        {
+            editor.page = crate::ui::routine_dialog::RoutinePage::Definition;
+        }
         use crate::ui::routine_dialog::RoutinePage;
         let mut actions = Vec::new();
         let busy = self.is_busy() || self.routine.as_ref().is_some_and(|r| r.saved.is_empty());
@@ -601,7 +626,10 @@ impl Console {
             }
         }
         let ctx = ui.ctx().clone();
-        for cmd in cmds { self.apply_cmd(&ctx, cx, cmd, &mut actions); }
+        for cmd in cmds {
+            self.apply_cmd(&ctx, cx, cmd, &mut actions);
+        }
+        self.navigation_ui(ui, cx, &mut actions);
         actions
     }
 
@@ -624,6 +652,7 @@ impl Console {
             replace: repl,
             show_replace: replace || shown,
             case_sensitive,
+            whole_word: false,
             focus: true,
         });
     }
@@ -718,6 +747,7 @@ impl Console {
 
     fn apply_cmd(&mut self, ctx: &egui::Context, cx: &ConsoleCtx<'_>, cmd: EditCmd, actions: &mut Vec<ConsoleAction>) {
         match cmd {
+            EditCmd::Navigate(cmd) => self.navigation_command(ctx, cx.driver, cmd, actions),
             EditCmd::Format => self.reformat(ctx, cx),
             // KQL's comments are `//`.
             EditCmd::ToggleComment => self.edit_lines(ctx, if cx.driver == Driver::Kusto { toggle_slash_comment } else { toggle_line_comment }),
@@ -732,9 +762,13 @@ impl Console {
                     let Some(stmt) = stmt else { return };
                     // PostgreSQL, MySQL and MariaDB give a plan the results show as a tree.
                     match crate::db::plan::explain_statement(&stmt.text, cx.driver, cmd == EditCmd::ExplainAnalyze) {
-                        Some(explain) if cmd == EditCmd::ExplainAnalyze => actions.push(ConsoleAction::ExplainAnalyze { statement: stmt.text, explain }),
+                        Some(explain) if cmd == EditCmd::ExplainAnalyze => {
+                            actions.push(ConsoleAction::ExplainAnalyze { statement: stmt.text, explain })
+                        }
                         Some(explain) => actions.push(ConsoleAction::RunStatements(vec![explain])),
-                        None if cmd == EditCmd::Explain => actions.push(ConsoleAction::RunStatements(sql::explain_statements(&stmt.text, cx.driver))),
+                        None if cmd == EditCmd::Explain => {
+                            actions.push(ConsoleAction::RunStatements(sql::explain_statements(&stmt.text, cx.driver)))
+                        }
                         None => {}
                     }
                 }
@@ -794,7 +828,9 @@ impl Console {
             .unwrap_or(&[])
             .iter()
             .flat_map(|s| s.tables.iter())
-            .flat_map(|t| std::iter::once(t.name.to_lowercase()).chain(t.columns.iter().map(|c| c.name.to_lowercase())))
+            .flat_map(|t| {
+                std::iter::once(t.name.to_lowercase()).chain(t.columns.iter().map(|c| c.name.to_lowercase()))
+            })
             .collect();
         let is_ident = |w: &str| names.contains(w);
         let formatted = sql::format_sql(core, cx.driver, indent, &is_ident);
@@ -838,7 +874,7 @@ impl Console {
     /// Matches (char ranges) of the find bar's search text.
     fn find_matches(&self) -> Vec<(usize, usize)> {
         match &self.find {
-            Some(f) => find_matches(&self.text, &f.query, f.case_sensitive),
+            Some(f) => search_matches(&self.text, &f.query, f.case_sensitive, f.whole_word),
             None => Vec::new(),
         }
     }
@@ -861,7 +897,8 @@ impl Console {
 
     /// Replaces the selected match and moves to the next one (or just finds the next one).
     fn replace_one(&mut self, ctx: &egui::Context) {
-        let Some(repl) = self.find.as_ref().map(|f| f.replace.clone()) else { return };
+        let Some(repl) = self.find.as_ref().map(|f| f.replace.clone()) else { return;
+        };
         let matches = self.find_matches();
         if let Some((a, b)) = self.cursor
             && matches.contains(&(a, b))
@@ -875,7 +912,8 @@ impl Console {
     }
 
     fn replace_all(&mut self, ctx: &egui::Context) {
-        let Some(repl) = self.find.as_ref().map(|f| f.replace.clone()) else { return };
+        let Some(repl) = self.find.as_ref().map(|f| f.replace.clone()) else { return;
+        };
         let matches = self.find_matches();
         if matches.is_empty() {
             return;
@@ -940,6 +978,14 @@ impl Console {
                 .clicked()
             {
                 f.case_sensitive = !f.case_sensitive;
+                changed = true;
+            }
+            if ui
+                .add(egui::Button::selectable(f.whole_word, "W"))
+                .on_hover_text(tr("Whole words"))
+                .clicked()
+            {
+                f.whole_word = !f.whole_word;
                 changed = true;
             }
             ui.add_space(6.0);
@@ -1085,7 +1131,9 @@ impl Console {
         hline(ui);
         if cx.driver.is_nosql() { self.filter_row(ui, cx.driver, &mut actions); hline(ui); }
         else if let Some(t) = &mut self.table && t.view.filter_sort {
-            if ui.add_enabled_ui(!self.running, |ui| t.filter_sort.show(ui, cx.driver, cx.columns.unwrap_or(&[]))).inner { actions.push(ConsoleAction::ApplyFilter); }
+            if ui.add_enabled_ui(!self.running, |ui| {
+                    t.filter_sort.show(ui, cx.driver, cx.columns.unwrap_or(&[]))
+                }).inner { actions.push(ConsoleAction::ApplyFilter); }
             hline(ui);
         }
         if let Some(e) = self.log.last().filter(|e| e.is_error && self.result_tab == ResultTab::Output) {
@@ -1297,7 +1345,8 @@ impl Console {
             if theme::icon_button(ui, Ico::Search, true, &crate::shortcuts::format(tr("Find and replace (⌘F)"))).clicked() {
                 cmds.push(EditCmd::Find);
             }
-            let unavailable = (!cx.driver.has_transactions()).then(|| tr("Manual transactions are not available for this engine"));
+                    ui.menu_button(tr("Navigate"), |ui| navigation::menu(ui, cmds));
+                    let unavailable = (!cx.driver.has_transactions()).then(|| tr("Manual transactions are not available for this engine"));
             self.tx_dropdown(ui, unavailable, actions);
             self.tx_controls(ui, actions);
             // Also stops a Commit / Roll Back that hangs (its session is closed).
@@ -1454,7 +1503,10 @@ impl Console {
                     if theme::icon_button(ui, Ico::ChevronRight, !busy && sql && full, tr("Next page")).clicked() { actions.push(ConsoleAction::Page(PageMove::Next)); }
                     let response = ui.add_enabled(!busy && sql, egui::TextEdit::singleline(&mut t.page_input).desired_width(40.0));
                     if response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
-                        match t.page_input.parse::<usize>() { Ok(n) if n > 0 => actions.push(ConsoleAction::Page(PageMove::Number(n))), _ => actions.push(ConsoleAction::Error(tr("Enter a positive page number").into())) }
+                        match t.page_input.parse::<usize>() { Ok(n) if n > 0 => {
+                                actions.push(ConsoleAction::Page(PageMove::Number(n)))
+                            }
+                            _ => actions.push(ConsoleAction::Error(tr("Enter a positive page number").into())) }
                     }
                     if theme::icon_button(ui, Ico::ChevronLeft, !busy && sql && t.offset > 0, tr("Previous page")).clicked() { actions.push(ConsoleAction::Page(PageMove::Previous)); }
                     if ui.add_enabled(!busy && sql && t.offset > 0, egui::Button::new("|‹")).on_hover_text(tr("First page")).clicked() { actions.push(ConsoleAction::Page(PageMove::First)); }
@@ -1501,8 +1553,7 @@ impl Console {
         });
         let connection = cx.connections.iter().find(|c| Some(c.id) == self.conn).map_or("", |c| c.name.as_str());
         let db = self.db.as_deref().unwrap_or("");
-        egui::ScrollArea::vertical().id_salt(("inspector_fields", self.id)).auto_shrink([false, false]).show(ui, |ui| {
-            match t.inspector_mode {
+        egui::ScrollArea::vertical().id_salt(("inspector_fields", self.id)).auto_shrink([false, false]).show(ui, |ui| match t.inspector_mode {
                 InspectorMode::Columns => {
                     let selected = self.results.last().and_then(|v| v.selected_cell().map(|(_, c, _)| &v.rs.columns[c]));
                     if let Some(name) = selected {
@@ -1534,7 +1585,6 @@ impl Console {
                     if let Some(Err(error)) = &t.info { ui.colored_label(ui.visuals().error_fg_color, error); }
                     inspector::table_fields(ui, t.info.as_ref().and_then(|r| r.as_ref().ok()));
                 }
-            }
         });
     }
 
@@ -1603,7 +1653,9 @@ impl Console {
                     .results
                     .get(i)
                     .filter(|r| r.edit.is_none() && !r.rs.is_command())
-                    .map(|r| r.readonly_reason.clone().unwrap_or_else(|| tr("Read-only result").into())),
+                    .map(|r| {
+                        r.readonly_reason.clone().unwrap_or_else(|| tr("Read-only result").into())
+                    }),
                 ResultTab::Output => None,
             };
             let tabs_w = (ui.available_width() - if lock.is_some() { 38.0 } else { 8.0 }).max(0.0);
@@ -1724,6 +1776,10 @@ impl Console {
     }
 
     fn editor(&mut self, ui: &mut Ui, cx: &ConsoleCtx<'_>, cmds: &mut Vec<EditCmd>) {
+        if let Some(position) = self.navigation.pending_location.take() {
+            self.navigate_to(ui.ctx(), position, None);
+        }
+        self.navigation_keys(ui, cmds);
         let pal = palette(cx.dark);
         let font = FontId::monospace(cx.font_size);
         let editor_id = self.editor_id();
@@ -1774,20 +1830,25 @@ impl Console {
             self.accept_completion(ui.ctx(), cx.driver);
         }
 
-        let caret_line = self.line_col().0;
         // Layouter caching the highlighted LayoutJob.
         let dark = cx.dark;
         let driver = cx.driver;
         let font_size = cx.font_size;
-        let hl_cache = &mut self.hl_cache;
         // Find bar matches are painted with a background (the selected one stronger).
-        let search = self.find.as_ref().filter(|f| !f.query.is_empty()).map(|f| (f.query.clone(), f.case_sensitive));
+        let search = self
+            .find
+            .as_ref()
+            .filter(|f| !f.query.is_empty())
+            .map(|f| (f.query.clone(), f.case_sensitive, f.whole_word));
         let selected = self.cursor;
+        let hl_cache = &mut self.hl_cache;
+        let text_revision = std::cell::Cell::new(self.navigation.revision());
         let word_wrap = self.routine.as_ref().is_some_and(|r| r.word_wrap);
         let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| -> Arc<egui::Galley> {
             let text = buf.as_str();
             let mut h = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut h);
+            text_revision.set(h.finish());
             dark.hash(&mut h);
             driver.hash(&mut h);
             font_size.to_bits().hash(&mut h);
@@ -1799,11 +1860,12 @@ impl Console {
             let mut job = match hl_cache {
                 Some((k, job)) if *k == key => job.clone(),
                 _ => {
-                    let mut job = sql::highlight_for(text, driver, dark, FontId::monospace(font_size));
+                    let mut job =
+                        sql::highlight_for(text, driver, dark, FontId::monospace(font_size));
                     job.wrap.max_width = f32::INFINITY;
-                    if let Some((q, case)) = &search {
+                    if let Some((q, case, whole)) = &search {
                         let (other, current) = match_colors(dark);
-                        let ranges: Vec<_> = find_matches(text, q, *case)
+                        let ranges: Vec<_> = search_matches(text, q, *case, *whole)
                             .into_iter()
                             .map(|m| {
                                 let color = if Some(m) == selected { current } else { other };
@@ -1821,9 +1883,18 @@ impl Console {
         };
 
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
-        let line_count = self.text.bytes().filter(|&b| b == b'\n').count() + 1;
+        let line_count = self
+            .navigation
+            .line_count()
+            .unwrap_or_else(|| self.text.bytes().filter(|&b| b == b'\n').count() + 1);
         let digits = line_count.to_string().len().max(2) as f32;
-        let gutter_w = digits * cx.font_size * 0.62 + 22.0;
+        let gutter_w = if self.navigation.saved.line_numbers {
+            digits * cx.font_size * 0.62 + 42.0
+        } else {
+            30.0
+        };
+        let mut gutter_run = None;
+        let mut issue_jump = None;
 
         let mut typed_dot = false;
         let mut typed_letter = false;
@@ -1854,14 +1925,37 @@ impl Console {
                             .desired_width(width)
                             .min_size(vec2(width, content_h))
                             .lock_focus(true)
+                            .interactive(!self.navigation.is_open())
                             .layouter(&mut layouter)
                             .show(ui);
+
+                        // TextEdit applies typing/deletion during show(): offsets must refer
+                        // to that updated text, including a trailing empty line.
+                        if let Some(range)=output.cursor_range {
+                            let r=range.as_sorted_char_range();
+                            self.cursor=Some((r.start.0,r.end.0));
+                        }
+                        self.navigation.sync_revision(&self.text, driver, text_revision.get());
+                        self.execution.sync_revision(&self.text, self.conn, &self.db, text_revision.get());
+                        self.navigation.update_scope(&self.text, self.cursor, driver);
+                        let index = self.navigation.index();
+                        let caret = output.cursor_range.map(|r| r.primary.index.0).or(self.cursor.map(|(_,b)| b)).unwrap_or(0);
+                        let caret_line = index.line_column(caret).0;
+                        let bookmark_lines = self.navigation.bookmark_lines();
+                        let problem_lines = &index.problem_lines;
+                        let statement_lines = &index.statement_lines;
 
                         let mut line = 1;
                         let mut start_of_line = true;
                         for row in &output.galley.rows {
+                            let y = output.galley_pos.y + row.pos.y;
+                            if y > ui.clip_rect().bottom() { break; }
                             if start_of_line {
-                                let y = output.galley_pos.y + row.pos.y;
+                                if y + row.height() < ui.clip_rect().top() {
+                                    line += 1;
+                                    start_of_line = row.ends_with_newline;
+                                    continue;
+                                }
                                 let on_caret = line == caret_line;
                                 if on_caret && focused {
                                     let r = Rect::from_min_max(
@@ -1870,21 +1964,49 @@ impl Console {
                                     );
                                     ui.painter().set(caret_bg, egui::Shape::rect_filled(r, 0.0, pal.caret_row));
                                 }
-                                ui.painter().text(
+                                if self.navigation.saved.line_numbers { ui.painter().text(
                                     egui::pos2(gutter_rect.right() - 4.0, y),
                                     egui::Align2::RIGHT_TOP,
                                     line.to_string(),
                                     font.clone(),
                                     if on_caret { pal.gutter_fg_caret } else { pal.gutter_fg },
-                                );
+                                ); }
+                                let green = egui::Color32::from_rgb(65, 160, 85);
+                                if let Some(&idx) = statement_lines.get(&line) {
+                                    let r = Rect::from_min_size(pos2(gutter_rect.left() + 5.0, y), vec2(17.0, row.height()));
+                                    let response = ui.interact(r, editor_id.with(("run_statement", idx)), Sense::click()).on_hover_text(tr("Execute this statement"));
+                                    response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,!busy,trf("Execute statement {n}",&[("n",&(idx+1))])));
+                                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "▶", FontId::proportional(11.0), green);
+                                    if response.clicked() && !busy { gutter_run = Some(idx); }
+                                }
+                                if bookmark_lines.contains(&line) {
+                                    ui.painter().text(pos2(gutter_rect.left() + 24.0, y), egui::Align2::LEFT_TOP, "◆", font.clone(), pal.accent);
+                                }
+                                if let Some(&problem_index) = problem_lines.get(&line) {
+                                    let problem = &index.issues[problem_index];
+                                    let r = Rect::from_min_size(pos2(gutter_rect.right() - 3.0, y), vec2(4.0, row.height()));
+                                    ui.painter().rect_filled(r, 0.0, if problem.error { pal.error } else { pal.accent });
+                                    let marker=ui.interact(r.expand(3.0), editor_id.with(("problem", line)), Sense::click()).on_hover_text(tr(problem.message));
+                                    if marker.clicked(){issue_jump=Some(problem.position);}
+                                    marker.context_menu(|ui|{
+                                        ui.radio_value(&mut self.navigation.saved.highest_priority,false,tr("All problems"));
+                                        ui.radio_value(&mut self.navigation.saved.highest_priority,true,tr("Problems with highest priority"));
+                                    });
+                                }
                                 line += 1;
                             }
                             start_of_line = row.ends_with_newline;
                         }
+                        let scope_clip = ui.clip_rect().intersect(output.text_clip_rect.expand(1.0));
+                        let scope_painter = ui.painter().with_clip_rect(scope_clip);
+                        scope_painter.extend(self.navigation.outlines(&output.galley, output.galley_pos, pal.execution_scope_border, scope_clip));
+                        self.execution.show(ui,&output.galley,output.galley_pos,font_size,pal.text_muted);
 
                         if let Some(range) = output.cursor_range {
                             let r = range.as_sorted_char_range();
                             new_cursor = Some((r.start.0, r.end.0, range.primary));
+                            self.navigation.caret = Some(range.primary.index.0);
+                            self.navigation.anchor = Some(range.secondary.index.0);
                         }
                         if output.response.changed() {
                             typed_dot = ui.input(|i| {
@@ -1904,13 +2026,30 @@ impl Console {
                             let r = output.galley.pos_from_cursor(CCursor::new(c)).translate(output.galley_pos.to_vec2());
                             ui.scroll_to_rect(r.expand2(vec2(40.0, row_h)), Some(egui::Align::Center));
                         }
-                        output.response.context_menu(|ui| editor_menu(ui, busy, crate::db::plan::explain_statement("x", driver, true).is_some(), cmds));
+                        output.response.context_menu(|ui| {
+                            ui.menu_button(tr("Navigate"), |ui| navigation::menu(ui, cmds));
+                            editor_menu(ui, busy, crate::db::plan::explain_statement("x", driver, true).is_some(), cmds);
+                        });
+                        if output.response.clicked() && ui.input(|i| i.modifiers.command) {
+                            if let Some(pointer) = output.response.interact_pointer_pos() {
+                                let caret = output.galley.cursor_from_pos(pointer - output.galley_pos);
+                                new_cursor = Some((caret.index.0, caret.index.0, caret));
+                                cmds.push(EditCmd::Navigate(navigation::Command::Declaration));
+                            }
+                        }
                     });
                 });
         });
 
         if let Some((a, b, _)) = new_cursor {
             self.cursor = Some((a, b));
+        }
+        if let Some(idx) = gutter_run {
+            self.navigation
+                .queue_gutter(idx, self.conn, &self.db, driver);
+        }
+        if let Some(position) = issue_jump {
+            self.navigate_to(ui.ctx(), position, None);
         }
         if typed_dot && let Some((_, c)) = self.cursor {
             self.open_completion(c, cx, false);
@@ -1947,7 +2086,8 @@ impl Console {
     /// Draws the popup; returns true if an item was clicked.
     fn completion_popup(&mut self, ui: &Ui, anchor: egui::Pos2) -> bool {
         let pal = palette(ui.visuals().dark_mode);
-        let Some(comp) = self.completion.as_mut() else { return false };
+        let Some(comp) = self.completion.as_mut() else { return false;
+        };
         let mut clicked = false;
         egui::Area::new(egui::Id::new(("completion", self.id)))
             .order(egui::Order::Foreground)
@@ -2025,7 +2165,8 @@ impl Console {
             self.completion = None;
             return;
         };
-        let Some(comp) = self.completion.as_ref() else { return };
+        let Some(comp) = self.completion.as_ref() else { return;
+        };
         let chars: Vec<char> = self.text.chars().collect();
         let start = comp.start;
         if cursor < start || cursor > chars.len() || chars[start..cursor].iter().any(|c| !is_ident_char(*c)) {
@@ -2058,9 +2199,12 @@ impl Console {
     }
 
     fn accept_completion(&mut self, ctx: &egui::Context, driver: Driver) {
-        let Some(comp) = self.completion.take() else { return };
-        let Some(item) = comp.items.get(comp.selected) else { return };
-        let Some((_, cursor)) = self.cursor else { return };
+        let Some(comp) = self.completion.take() else { return;
+        };
+        let Some(item) = comp.items.get(comp.selected) else { return;
+        };
+        let Some((_, cursor)) = self.cursor else { return;
+        };
         let insert = match item.kind {
             ItemKind::Keyword => item.text.clone(),
             _ => {
@@ -2081,7 +2225,10 @@ impl Console {
 }
 
 /// Removes a key press with exactly these modifiers (⌘/Ctrl, ⌥, ⇧) from the frame's events.
-fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> bool {
+pub(crate) fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> bool {
+    if mods.alt && i.events.iter().any(|e| matches!(e, Event::Text(_))) {
+        return false;
+    }
     let before = i.events.len();
     i.events.retain(|e| {
         !matches!(e, Event::Key { key: k, pressed: true, modifiers: m, .. }
@@ -2172,7 +2319,10 @@ fn find_matches(text: &str, needle: &str, case_sensitive: bool) -> Vec<(usize, u
     if needle.is_empty() {
         return Vec::new();
     }
-    let fold = |c: char| if case_sensitive { c } else { c.to_lowercase().next().unwrap_or(c) };
+    let fold = |c: char| {
+        if case_sensitive { c } else { c.to_lowercase().next().unwrap_or(c)
+        }
+    };
     let hay: Vec<char> = text.chars().map(fold).collect();
     let pat: Vec<char> = needle.chars().map(fold).collect();
     let mut out = Vec::new();
@@ -2186,6 +2336,21 @@ fn find_matches(text: &str, needle: &str, case_sensitive: bool) -> Vec<(usize, u
         }
     }
     out
+}
+
+fn search_matches(text: &str, needle: &str, case: bool, whole: bool) -> Vec<(usize, usize)> {
+    let matches = find_matches(text, needle, case);
+    if !whole {
+        return matches;
+    }
+    let chars: Vec<_> = text.chars().collect();
+    matches
+        .into_iter()
+        .filter(|&(a, b)| {
+            (a == 0 || !is_ident_char(chars[a - 1]))
+                && (b == chars.len() || !is_ident_char(chars[b]))
+        })
+        .collect()
 }
 
 /// `text` with the (sorted, non-overlapping) char ranges replaced by `with`.
@@ -2511,7 +2676,9 @@ fn auto_trigger(text: &str, cursor: usize) -> bool {
         && match &scan.prev {
             Prev::Start => true,
             Prev::Punct(c) => !matches!(c, '.' | ')' | ']'),
-            Prev::Word(w) => !w.eq_ignore_ascii_case("AS") && sql::KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(w)),
+            Prev::Word(w) => {
+                !w.eq_ignore_ascii_case("AS") && sql::KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(w))
+            }
         }
 }
 
@@ -2524,7 +2691,10 @@ fn referenced_tables(text: &str, schemas: &[SchemaInfo]) -> std::collections::Ha
 
 fn build_items(prefix: &str, qualifier: Option<&str>, text: &str, schemas: &[SchemaInfo], context: SqlContext) -> Vec<CompletionItem> {
     let mut items: Vec<CompletionItem> = Vec::new();
-    let table_kind = |k: ObjectKind| if k == ObjectKind::Table { ItemKind::Table } else { ItemKind::View };
+    let table_kind = |k: ObjectKind| {
+        if k == ObjectKind::Table { ItemKind::Table } else { ItemKind::View
+        }
+    };
     let item = |text: &str, kind: ItemKind, detail: String, rank: u8| CompletionItem { text: text.to_string(), kind, detail, rank };
 
     if let Some(q) = qualifier {
@@ -2831,7 +3001,9 @@ mod tests {
         let columns: Vec<_> = [("id", "int"), ("customer", "varchar(120)"), ("status", "varchar(20)"), ("total", "decimal(10,2)"), ("created_at", "datetime"), ("note", "text")]
             .into_iter().map(|(name, ty)| ColumnInfo { name: name.into(), data_type: ty.into(), nullable: name == "note", primary_key: name == "id" }).collect();
         let mut console = Console::new_table(1, 1, Some("shop".into()), "shop".into(), "orders".into());
-        let rows = (1..=48).map(|id| vec![Some(id.to_string()), Some(format!("Customer {id:02}")), Some(if id % 3 == 0 { "pending" } else { "paid" }.into()), Some(format!("{}.00", id * 25)), Some("2026-10-23 12:00:00".into()), Some("Delivery instructions\nLeave at reception.".into())]).collect();
+        let rows = (1..=48).map(|id| {
+                vec![Some(id.to_string()), Some(format!("Customer {id:02}")), Some(if id % 3 == 0 { "pending" } else { "paid" }.into()), Some(format!("{}.00", id * 25)), Some("2026-10-23 12:00:00".into()), Some("Delivery instructions\nLeave at reception.".into())]
+            }).collect();
         let mut view = ResultView::new(crate::db::ResultSet { columns: columns.iter().map(|c| c.name.clone()).collect(), rows, ..Default::default() }, 42);
         view.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "shop".into(), table: "orders".into(), col_names: view.rs.columns.clone(), key_cols: vec![0], binary_cols: vec![false; 6], has_pk: true, insert_only: false }));
         view.begin_edit(0, 5); view.finish_inline_edit();

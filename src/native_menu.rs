@@ -29,6 +29,7 @@ use std::sync::mpsc::{Receiver, channel};
 /// Action chosen in the native menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
+    Navigate(crate::ui::console::navigation::Command),
     // DataCraft
     About,
     CheckUpdates,
@@ -111,7 +112,14 @@ impl MenuCommand {
     }
 
     fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.id() == id)
+        Self::ALL
+            .into_iter()
+            .chain(
+                crate::ui::console::navigation::ACTIONS
+                    .iter()
+                    .map(|(c, _, _)| Self::Navigate(*c)),
+            )
+            .find(|c| c.id() == id)
     }
 
     /// Edit commands that `poll` forwards to egui instead of returning them.
@@ -147,7 +155,7 @@ enum Entry {
 /// An entry and its label (a `tr("…")` call, re-evaluated on each relabel).
 struct Labeled {
     entry: Entry,
-    text: fn() -> &'static str,
+    text: Box<dyn Fn() -> &'static str>,
 }
 
 impl Labeled {
@@ -280,7 +288,12 @@ type Label = fn() -> &'static str;
 
 fn build() -> muda::Result<Built> {
     let labels = RefCell::new(Vec::new());
-    let keep = |entry: Entry, text: Label| labels.borrow_mut().push(Labeled { entry, text });
+    let keep = |entry: Entry, text: Label| {
+        labels.borrow_mut().push(Labeled {
+            entry,
+            text: Box::new(text),
+        })
+    };
 
     let cmd = Modifiers::META;
     let acc = |mods: Modifiers, code: Code| Some(Accelerator::new(mods, code));
@@ -401,8 +414,34 @@ fn build() -> muda::Result<Built> {
     #[cfg(target_os = "macos")]
     help_menu.set_as_help_menu_for_nsapp();
 
-    let menu = Menu::with_items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &run_menu, &window_menu, &help_menu])?;
-    Ok(Built { menu, theme_light, theme_dark, explorer, results, labels: labels.into_inner() })
+    let navigation_menu = submenu(|| tr("Navigate"), &[])?;
+    for &(command, label, _) in crate::ui::console::navigation::ACTIONS {
+        // Keys stay in egui so Control-release switching and editor focus work consistently.
+        let i = MenuItem::with_id(MenuCommand::Navigate(command).id(), tr(label), true, None);
+        navigation_menu.append(&i)?;
+        labels.borrow_mut().push(Labeled {
+            entry: Entry::Item(i),
+            text: Box::new(move || tr(label)),
+        });
+    }
+    let menu = Menu::with_items(&[
+        &app_menu,
+        &file_menu,
+        &edit_menu,
+        &view_menu,
+        &navigation_menu,
+        &run_menu,
+        &window_menu,
+        &help_menu,
+    ])?;
+    Ok(Built {
+        menu,
+        theme_light,
+        theme_dark,
+        explorer,
+        results,
+        labels: labels.into_inner(),
+    })
 }
 
 #[cfg(test)]
@@ -412,6 +451,10 @@ mod tests {
     #[test]
     fn ids_round_trip() {
         for c in MenuCommand::ALL {
+            assert_eq!(MenuCommand::from_id(&c.id()), Some(c));
+        }
+        for &(command, _, _) in crate::ui::console::navigation::ACTIONS {
+            let c = MenuCommand::Navigate(command);
             assert_eq!(MenuCommand::from_id(&c.id()), Some(c));
         }
         assert_eq!(MenuCommand::from_id("other"), None);

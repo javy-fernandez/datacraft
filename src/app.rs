@@ -62,6 +62,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+mod navigation;
 mod routines;
 mod schema_compare;
 mod table_model;
@@ -211,8 +212,17 @@ enum Discard {
     CloseTabs(u64, CloseResults),
     Reload(u64),
     Run(u64, bool),
+    RunStatements(u64),
     /// Close a console's result tabs.
     CloseResults(u64, CloseResults),
+}
+
+struct PendingRun {
+    console: u64,
+    statements: Vec<String>,
+    conn: Option<ConnId>,
+    db: Option<String>,
+    revision: u64,
 }
 
 /// "Preview pending changes" window.
@@ -235,6 +245,8 @@ enum DemoEdit {
 
 #[derive(Serialize, Deserialize)]
 struct PersistedConsole {
+    #[serde(default, serialize_with = "console::navigation::serialize_bookmarks")]
+    editor_navigation: console::navigation::Saved,
     #[serde(default)]
     routine_comment: Option<crate::ui::routine_dialog::RoutineComment>,
     #[serde(default)]
@@ -255,6 +267,7 @@ struct PersistedConsole {
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Persisted {
+    editor_settings: Option<console::navigation::Settings>,
     object_organizations: Vec<crate::ui::object_organization::Organization>,
     backups: Vec<crate::db::backup::BackupRecord>,
     restores: Vec<crate::db::restore::RestoreRecord>,
@@ -286,6 +299,7 @@ struct Persisted {
 impl Default for Persisted {
     fn default() -> Self {
         Self {
+            editor_settings: None,
             object_organizations: Vec::new(),
             backups: Vec::new(),
             restores: Vec::new(),
@@ -310,7 +324,20 @@ impl Default for Persisted {
     }
 }
 
+impl Persisted {
+    fn navigation_settings(&self) -> console::navigation::Settings {
+        self.editor_settings.clone().unwrap_or_else(|| {
+            self.consoles
+                .get(self.active)
+                .or(self.consoles.first())
+                .map(|c| console::navigation::Settings::from(&c.editor_navigation))
+                .unwrap_or_default()
+        })
+    }
+}
+
 pub struct DataCraftApp {
+    navigation: navigation::State,
     worker: Worker,
     conns: Vec<ConnState>,
     /// Editor tabs: consoles and data editors.
@@ -391,6 +418,7 @@ pub struct DataCraftApp {
     applied_zoom: Option<f32>,
     preview: Option<PreviewState>,
     confirm_discard: Option<Discard>,
+    pending_statement_run: Option<PendingRun>,
     /// Dangerous statements or a Production write waiting for confirmation.
     safety: safety::SafetyState,
     /// "Commit / Roll Back / Cancel" for open Manual transactions.
@@ -431,6 +459,7 @@ impl DataCraftApp {
 
         theme::install_fonts(&cc.egui_ctx);
         let mut app = Self {
+            navigation: navigation::State::new(persisted.navigation_settings()),
             worker: Worker::start(cc.egui_ctx.clone()),
             conns,
             consoles: Vec::new(),
@@ -496,6 +525,7 @@ impl DataCraftApp {
             applied_zoom: None,
             preview: None,
             confirm_discard: None,
+            pending_statement_run: None,
             safety: Default::default(),
             tx_prompt: None,
             quit_confirmed: false,
@@ -529,15 +559,25 @@ impl DataCraftApp {
             match (pc.table, conn) {
                 (Some((schema, table)), Some(conn)) => {
                     let mut console = Console::new_table(id, conn, pc.db, schema, table);
-                    if let Some(t) = &mut console.table { t.save_on_row_change = self.save_on_row_change; t.view = pc.table_view; }
+                    console
+                        .navigation
+                        .saved
+                        .apply_settings(&self.navigation.settings);
+                    if let Some(t) = &mut console.table {
+                        t.save_on_row_change = self.save_on_row_change;
+                        t.view = pc.table_view;
+                    }
                     self.consoles.push(console);
                 }
                 (Some(_), None) => {}
                 (None, _) => {
                     let mut c = Console::new(id, pc.title, pc.text, conn);
+                    c.navigation.saved = pc.editor_navigation;
+                    c.navigation.saved.apply_settings(&self.navigation.settings);
                     c.db = pc.db.filter(|_| conn.is_some());
                     if let Some((reference, saved, transaction)) = pc.routine
-                        && let Some(driver) = conn.and_then(|id| self.conn(id)).map(|c| c.cfg.driver)
+                        && let Some(driver) =
+                            conn.and_then(|id| self.conn(id)).map(|c| c.cfg.driver)
                     {
                         let spec = crate::db::routines::RoutineSpec { kind: reference.kind, schema: reference.schema.clone(), name: reference.name.clone(), ..Default::default() };
                         let mut dialog = crate::ui::routine_dialog::RoutineDialog::edit_routine(reference.conn, driver, reference.db.clone(), spec, 0);
@@ -615,7 +655,12 @@ impl DataCraftApp {
             self.console_counter += 1;
             format!("console_{}", self.console_counter)
         });
-        self.consoles.push(Console::new(id, title, text, conn));
+        let mut console = Console::new(id, title, text, conn);
+        console
+            .navigation
+            .saved
+            .apply_settings(&self.navigation.settings);
+        self.consoles.push(console);
         self.active = self.consoles.len() - 1;
         self.active
     }
@@ -724,7 +769,9 @@ impl DataCraftApp {
                 Response::TableExported { conn, request_id, result } => {
                     if let Some(path) = self.table_export_received(conn, request_id, result) { self.worker.send(Request::OpenTableReport { request_id, path }); }
                 }
-                Response::TableReportOpened { request_id, result } => self.table_report_opened(request_id, result),
+                Response::TableReportOpened { request_id, result } => {
+                    self.table_report_opened(request_id, result)
+                }
                 Response::Connected { conn, databases } => {
                     self.reset_session_monitor(conn);
                     // Stale response: the connection was disconnected, edited or deleted while connecting.
@@ -740,10 +787,16 @@ impl DataCraftApp {
                     let max_rows = self.max_rows;
                     for console in self.consoles.iter_mut().filter(|c| c.conn == Some(conn)) {
                         if let Some(statements) = console.pending.take() {
+                            console.execution_started(&statements);
+                            console.run_started = Some(Instant::now());
                             console.running = true;
                             let db = console.db.clone();
                             console.tx_released = false;
-                            let parameters = console.table.as_ref().and_then(|t| t.bound_filter.as_ref().filter(|b| b.display == t.where_clause && statements.len() == 1 && b.query.as_ref() == statements.first())).map(|b| b.parameters.clone()).unwrap_or_default();
+                            let parameters = console.table.as_ref().and_then(|t| {
+                                    t.bound_filter.as_ref().filter(|b| {
+                                        b.display == t.where_clause && statements.len() == 1 && b.query.as_ref() == statements.first()
+                                    })
+                                }).map(|b| b.parameters.clone()).unwrap_or_default();
                             self.worker.send(Request::Execute { conn, db, console: console.id, statements, max_rows, manual: console.manual_tx, parameters });
                         }
                     }
@@ -759,7 +812,9 @@ impl DataCraftApp {
                             let db = c.default_db()?.to_string();
                             c.schemas(None)?
                                 .iter()
-                                .find_map(|s| s.tables.first().map(|t| (db.clone(), s.name.clone(), t.name.clone())))
+                                .find_map(|s| {
+                                s.tables.first().map(|t| (db.clone(), s.name.clone(), t.name.clone()))
+                            })
                         });
                         if let Some((db, schema, table)) = first {
                             let tref = TableRef { conn, db, schema, table };
@@ -916,11 +971,14 @@ impl DataCraftApp {
                         self.load_object_catalog();
                     }
                 }
-                Response::Executed { console, results, error, elapsed } => {
+                Response::Executed { console, results,
+                    executions,
+                    error, elapsed } => {
                     let succeeded = error.is_none();
                     self.result_salt += 1;
                     let salt = self.result_salt;
                     if let Some(c) = self.console_by_id(console) {
+                        c.execution_finished(&results, &executions);
                         apply_execution(c, results, error, elapsed, salt);
                     }
                     self.navigation_finished(console, succeeded);
@@ -928,13 +986,25 @@ impl DataCraftApp {
                     self.attach_key_links(console);
                     self.apply_demo_edit(console);
                 }
-                Response::Transaction { console, tx, note } => self.transaction_reported(console, tx, note),
+                Response::Transaction { console, tx, note } => {
+                    self.transaction_reported(console, tx, note)
+                }
                 Response::TransactionEnded { console, commit, result, tx, elapsed } => self.transaction_ended(console, commit, result, tx, elapsed),
-                Response::TableShortcut { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
-                Response::TableModel { request_id, result } => self.table_model_received(request_id, result),
+                Response::TableShortcut { result } => match result { Ok(path) => {
+                        self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())]))
+                    }
+                    Err(error) => self.error(error) },
+                Response::TableModel { request_id, result } => {
+                    self.table_model_received(request_id, result)
+                }
                 Response::ForeignKeys { conn, db, schema, table, request_id, result } => self.foreign_keys_received(conn, db, schema, table, request_id, result),
-                Response::ReferenceCounts { request_id, result } => self.reference_counts_received(request_id, result),
-                Response::ModelSaved { result } => match result { Ok(path) => self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())])), Err(error) => self.error(error) },
+                Response::ReferenceCounts { request_id, result } => {
+                    self.reference_counts_received(request_id, result)
+                }
+                Response::ModelSaved { result } => match result { Ok(path) => {
+                        self.info(trf("Saved to {path}", &[("path", &path.to_string_lossy())]))
+                    }
+                    Err(error) => self.error(error) },
                 Response::ObjectInfo { conn, request_id, result } => self.object_browser.receive(conn, request_id, result.map(|info| *info)),
                 Response::TableObjects { conn, db, schema, table, group, request_id, result } => {
                     self.explorer.receive_table_objects(&TableRef { conn, db, schema, table }, group, request_id, result);
@@ -963,7 +1033,9 @@ impl DataCraftApp {
                 Response::Backup { conn, id, request, result } => {
                     if let Ok(bytes) = &result {
                         let destination = match self.conn(conn).map(|c| c.cfg.driver) {
-                            Some(Driver::Oracle) => format!("{}:{}", request.directory, request.destination),
+                            Some(Driver::Oracle) => {
+                                format!("{}:{}", request.directory, request.destination)
+                            }
                             Some(Driver::Snowflake) => format!("{}.{}.{}", request.db, request.directory, request.destination),
                             _ => request.destination.clone(),
                         };
@@ -983,7 +1055,9 @@ impl DataCraftApp {
                     }
                     if let Some(dialog) = self.restore.as_mut().filter(|d| d.id == id) { dialog.completed(&result); }
                 }
-                Response::ChangesApplied { console, result } => self.changes_applied(console, result),
+                Response::ChangesApplied { console, result } => {
+                    self.changes_applied(console, result)
+                }
                 Response::DdlDone { conn, result } => self.ddl_done(conn, result),
                 Response::RoutineSaved { console, result, identity } => {
                     let saved = result.is_ok();
@@ -995,11 +1069,17 @@ impl DataCraftApp {
                 Response::TableDuplicate { conn, request_id, result } => self.table_duplicate_received(conn, request_id, result),
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
                 Response::TableGrants { conn, request_id, result } => self.table_grants_received(conn, request_id, result),
-                Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
+                Response::RoutinesLoaded { conn, db, result } => {
+                    self.routines_loaded(conn, db, result)
+                }
                 Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
-                Response::TableDetails { request_id, result } => self.modify_loaded(request_id, result.map(|d| *d)),
+                Response::TableDetails { request_id, result } => {
+                    self.modify_loaded(request_id, result.map(|d| *d))
+                }
                 Response::TableCopied { request_id, result } => self.copy_done(request_id, result),
-                Response::SchemaCompared { request_id, result } => self.compare_received(request_id, result),
+                Response::SchemaCompared { request_id, result } => {
+                    self.compare_received(request_id, result)
+                }
                 Response::Users { conn, result } => self.users_response(conn, result),
                 Response::DatabaseChoices { conn, result } => {
                     if let Some(d) = self.create.as_mut().filter(|d| d.conn == conn && matches!(d.target, CreateTarget::Database)) {
@@ -1352,13 +1432,14 @@ impl DataCraftApp {
             Discard::CloseAll => (0..self.consoles.len()).collect(),
             _ => Vec::new(),
         };
-        if closing.iter().any(|&i| self.consoles[i].routine.as_ref().is_some_and(|r| r.dialog.running)) { return false; }
+        if closing.iter().any(|&i| {
+            self.consoles[i].routine.as_ref().is_some_and(|r| r.dialog.running)
+        }) { return false; }
         let dirty = match action {
             Discard::CloseTabs(id, which) => self.tab_close_indices(id, which).iter().any(|&i| self.consoles[i].has_pending_edits()),
             Discard::CloseAll => self.consoles.iter().any(|c| c.has_pending_edits()),
-            Discard::Close(id) | Discard::Reload(id) | Discard::Run(id, _) | Discard::ApplyFilter(id) | Discard::Page(id, _) => {
-                self.consoles.iter().any(|c| c.id == id && c.has_pending_edits())
-            }
+            Discard::Close(id) | Discard::Reload(id) | Discard::Run(id, _) | Discard::RunStatements(id)
+            | Discard::ApplyFilter(id) | Discard::Page(id, _) => self.consoles.iter().any(|c| c.id == id && c.has_pending_edits()),
             Discard::CloseResults(id, which) => self.consoles.iter().any(|c| c.id == id && c.closing_dirty(which)),
         };
         if dirty {
@@ -1396,8 +1477,32 @@ impl DataCraftApp {
                     self.close_results_now(i, which);
                 }
             }
+            Discard::RunStatements(id) => {
+                let Some(pending) = self
+                    .pending_statement_run
+                    .take()
+                    .filter(|p| p.console == id)
+                else {
+                    return;
+                };
+                let Some(index) = self.consoles.iter().position(|c| c.id == id) else {
+                    return;
+                };
+                let console = &mut self.consoles[index];
+                console.navigation.sync_text(&console.text);
+                if console.conn != pending.conn
+                    || console.db != pending.db
+                    || console.navigation.revision() != pending.revision
+                    || console.is_busy()
+                {
+                    return;
+                }
+                console.discard_edits();
+                self.run_statements(index, pending.statements);
+            }
             Discard::Reload(id) | Discard::Run(id, _) => {
-                let Some(i) = self.consoles.iter().position(|c| c.id == id) else { return };
+                let Some(i) = self.consoles.iter().position(|c| c.id == id) else { return;
+                };
                 self.consoles[i].discard_edits();
                 match action {
                     Discard::Run(_, all) => self.run_console(i, all),
@@ -1410,8 +1515,18 @@ impl DataCraftApp {
     // ---------------------------------------------------------------- execution
 
     fn run_console(&mut self, idx: usize, all: bool) {
-        if let Some(reference) = self.consoles.get(idx).and_then(|c| c.routine.as_ref()).map(|r| r.reference.clone()) { self.open_execute_routine(reference); return; }
-        let Some(console) = self.consoles.get(idx) else { return };
+        if let Some(reference) = self
+            .consoles
+            .get(idx)
+            .and_then(|c| c.routine.as_ref())
+            .map(|r| r.reference.clone())
+        {
+            self.open_execute_routine(reference);
+            return;
+        }
+        let Some(console) = self.consoles.get(idx) else {
+            return;
+        };
         let id = console.id;
         if console.is_busy() {
             return;
@@ -1422,20 +1537,51 @@ impl DataCraftApp {
             }
             return;
         }
+        let Some(console) = self.consoles.get(idx) else {
+            return;
+        };
+        let conn_id = console.conn;
+        let driver = conn_id
+            .and_then(|id| self.conn(id))
+            .map(|c| c.cfg.driver)
+            .unwrap_or(Driver::Postgres);
         if !self.guard(Discard::Run(id, all)) {
             return;
         }
-        let Some(console) = self.consoles.get(idx) else { return };
-        let conn_id = console.conn;
-        let driver = conn_id.and_then(|id| self.conn(id)).map(|c| c.cfg.driver).unwrap_or(Driver::Postgres);
-        let statements: Vec<String> = if all {
-            sql::split_batches(&console.text, driver).into_iter().map(|s| s.text).collect()
-        } else if let Some(sel) = console.selection() {
-            sql::split_batches(sel, driver).into_iter().map(|s| s.text).collect()
-        } else {
-            sql::statement_at(&console.text, console.cursor_byte(), driver).into_iter().map(|s| s.text).collect()
-        };
+        let statements = self.consoles[idx].prepare_run(driver, all);
         self.run_statements(idx, statements);
+    }
+
+    fn run_selected_statements(&mut self, index: usize, statements: Vec<String>) {
+        if let Some(reference) = self
+            .consoles
+            .get(index)
+            .and_then(|c| c.routine.as_ref())
+            .map(|r| r.reference.clone())
+        {
+            self.open_execute_routine(reference);
+            return;
+        }
+        let Some(console) = self
+            .consoles
+            .get_mut(index)
+            .filter(|c| c.table.is_none() && !c.is_busy())
+        else {
+            return;
+        };
+        console.navigation.sync_text(&console.text);
+        let pending = PendingRun {
+            console: console.id,
+            conn: console.conn,
+            db: console.db.clone(),
+            revision: console.navigation.revision(),
+            statements,
+        };
+        if self.guard(Discard::RunStatements(pending.console)) {
+            self.run_statements(index, pending.statements);
+        } else {
+            self.pending_statement_run = Some(pending);
+        }
     }
 
     /// Sends statements of tab `idx`, connecting first if needed.
@@ -1483,17 +1629,28 @@ impl DataCraftApp {
     /// [`Self::run_statements`]; `confirmed`: the user already accepted them (dangerous
     /// statements and writes on Production ask first).
     fn send_statements(&mut self, idx: usize, statements: Vec<String>, confirmed: bool) {
-        let Some(console) = self.consoles.get(idx) else { return };
+        let Some(console) = self.consoles.get(idx) else {
+            return;
+        };
         if console.is_busy() {
             return;
         }
         let conn_id = console.conn;
-        let status = conn_id.and_then(|id| self.conn(id)).map(|c| c.status.clone());
+        let status = conn_id
+            .and_then(|id| self.conn(id))
+            .map(|c| c.status.clone());
         let max_rows = self.max_rows;
 
-        let Some(console) = self.consoles.get_mut(idx) else { return };
+        let Some(console) = self.consoles.get_mut(idx) else {
+            return;
+        };
         if statements.is_empty() {
-            console.log.push(OutputEntry { time: now(), statement: String::new(), message: tr("Nothing to run").into(), is_error: true });
+            console.log.push(OutputEntry {
+                time: now(),
+                statement: String::new(),
+                message: tr("Nothing to run").into(),
+                is_error: true,
+            });
             console.result_tab = ResultTab::Output;
             return;
         }
@@ -1516,18 +1673,40 @@ impl DataCraftApp {
             self.safety.confirm = Some(confirm);
             return;
         }
-        let Some(console) = self.consoles.get_mut(idx) else { return };
+        let Some(console) = self.consoles.get_mut(idx) else {
+            return;
+        };
         console.last_statements = statements.clone();
-        console.run_started = Some(Instant::now());
         match status {
             ConnStatus::Connected => {
+                console.execution_started(&statements);
+                console.run_started = Some(Instant::now());
                 console.running = true;
                 let id = console.id;
                 let db = console.db.clone();
                 let manual = console.manual_tx;
                 console.tx_released = false;
-                let parameters = console.table.as_ref().and_then(|t| t.bound_filter.as_ref().filter(|b| b.display == t.where_clause && statements.len() == 1 && b.query.as_ref() == statements.first())).map(|b| b.parameters.clone()).unwrap_or_default();
-                self.worker.send(Request::Execute { conn, db, console: id, statements, max_rows, manual, parameters });
+                let parameters = console
+                    .table
+                    .as_ref()
+                    .and_then(|t| {
+                        t.bound_filter.as_ref().filter(|b| {
+                            b.display == t.where_clause
+                                && statements.len() == 1
+                                && b.query.as_ref() == statements.first()
+                        })
+                    })
+                    .map(|b| b.parameters.clone())
+                    .unwrap_or_default();
+                self.worker.send(Request::Execute {
+                    conn,
+                    db,
+                    console: id,
+                    statements,
+                    max_rows,
+                    manual,
+                    parameters,
+                });
             }
             ConnStatus::Connecting => console.pending = Some(statements),
             ConnStatus::Disconnected | ConnStatus::Error(_) => {
@@ -2647,6 +2826,9 @@ impl DataCraftApp {
     // ---------------------------------------------------------------- UI
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.navigation_shortcuts(ctx) {
+            return;
+        }
         // IDE zoom (⌘= / ⌘+ / ⌘- / ⌘0) and editor font (⌥⌘= / ⌥⌘-). The ⌥ variants go
         // first: `consume_key` ignores an extra ⌥.
         let (font_up, font_down, zoom_up, zoom_down, zoom_reset) = ctx.input_mut(|i| {
@@ -2741,6 +2923,12 @@ impl DataCraftApp {
             || self.safety.confirm.is_some()
             || self.tx_prompt.is_some()
             || self.modify.is_some()
+            || self.navigation.is_open()
+            || (!self.object_browser.active
+                && self
+                    .consoles
+                    .get(self.active)
+                    .is_some_and(|c| c.navigation.is_open()))
     }
 
     fn reload_active(&mut self) {
@@ -2765,7 +2953,8 @@ impl DataCraftApp {
     /// equivalent shortcuts in `shortcuts` only act if the menu was not installed.
     fn menu_commands(&mut self, ctx: &egui::Context) {
         use crate::native_menu::MenuCommand as M;
-        let Some(menu) = self.native_menu.as_ref() else { return };
+        let Some(menu) = self.native_menu.as_ref() else { return;
+        };
         let cmds = menu.poll();
         for cmd in cmds {
             let modal = self.modal_open();
@@ -2779,7 +2968,9 @@ impl DataCraftApp {
                 M::OpenSql if !modal => self.open_sql_file(),
                 M::SaveSqlAs if !modal && !self.object_browser.active => self.save_console_as(),
                 M::CloseTab if !modal && self.object_browser.active => { self.object_browser.active = false; self.object_browser.scope = None; }
-                M::CloseTab if !modal && !self.consoles.is_empty() => self.close_console(self.active),
+                M::CloseTab if !modal && !self.consoles.is_empty() => {
+                    self.close_console(self.active)
+                }
                 // In a console: find in the editor; elsewhere: filter the explorer.
                 M::Find if !modal => {
                     if self.object_browser.active {
@@ -2792,6 +2983,7 @@ impl DataCraftApp {
                     }
                 }
                 M::ToggleExplorer => self.show_explorer = !self.show_explorer,
+                M::Navigate(cmd) if !modal => self.navigation_command(ctx, cmd),
                 M::ToggleResults => self.show_results = !self.show_results,
                 M::ThemeLight => self.dark = false,
                 M::ThemeDark => self.dark = true,
@@ -2801,9 +2993,15 @@ impl DataCraftApp {
                 M::FontBigger => self.font_size = (self.font_size + 1.0).min(32.0),
                 M::FontSmaller => self.font_size = (self.font_size - 1.0).max(8.0),
                 M::FontReset => self.font_size = DEFAULT_FONT_SIZE,
-                M::Run if !modal && !self.object_browser.active => self.run_console(self.active, false),
-                M::RunAll if !modal && !self.object_browser.active => self.run_console(self.active, true),
-                M::SaveChanges if !modal && !self.object_browser.active => self.save_active_changes(),
+                M::Run if !modal && !self.object_browser.active => {
+                    self.run_console(self.active, false)
+                }
+                M::RunAll if !modal && !self.object_browser.active => {
+                    self.run_console(self.active, true)
+                }
+                M::SaveChanges if !modal && !self.object_browser.active => {
+                    self.save_active_changes()
+                }
                 // ⌘R: reload in the data editor, replace in a console (like DataGrip).
                 M::Reload if !modal => {
                     if self.object_browser.active {
@@ -2859,6 +3057,17 @@ impl DataCraftApp {
             }
         });
         ui.menu_button(tr("View"), |ui| self.view_menu(ui));
+        ui.menu_button(tr("Navigate"), |ui| {
+            for &(cmd, label, key) in console::navigation::ACTIONS {
+                if ui
+                    .add(egui::Button::new(tr(label)).shortcut_text(crate::shortcuts::format(key)))
+                    .clicked()
+                {
+                    self.navigation_command(ui.ctx(), cmd);
+                    ui.close();
+                }
+            }
+        });
         ui.menu_button(tr("Help"), |ui| {
             if ui.button(tr("Keyboard shortcuts…")).clicked() {
                 self.show_shortcuts = true;
@@ -3151,7 +3360,16 @@ impl DataCraftApp {
             top.painter().circle_filled(c, 3.0, palette(self.dark).accent);
         }
         let structure = stripe_button(&mut top, Ico::Structure, false, tr("Tab structure"));
-        egui::Popup::menu(&structure).show(|ui| {
+        let sql_editor = !self.object_browser.active
+            && self
+                .consoles
+                .get(self.active)
+                .is_some_and(|c| c.table.is_none());
+        if sql_editor && structure.clicked() {
+            self.navigation_command(ui.ctx(), console::navigation::Command::Structure);
+        }
+        if !sql_editor {
+            egui::Popup::menu(&structure).show(|ui| {
             let cols = self.consoles.get(self.active).and_then(|c| {
                 let t = c.table.as_ref()?;
                 self.table_columns(c.conn?, c.db.as_deref(), &t.schema, &t.table)
@@ -3167,6 +3385,7 @@ impl DataCraftApp {
                 }
             }
         });
+        }
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -3289,6 +3508,8 @@ impl DataCraftApp {
 
     /// Editor tabs (at the top of the editor island).
     fn editor_tabs(&mut self, ui: &mut Ui) {
+        // A reveal is a one-shot scroll request, even when a tab is being renamed.
+        let reveal_tab = self.navigation.reveal_tab.take();
         let mut close = None;
         let mut activate = None;
         let mut start_rename = None;
@@ -3322,8 +3543,13 @@ impl DataCraftApp {
                                 && *id == c.id
                             {
                                 let resp = ui.add(egui::TextEdit::singleline(name).desired_width(140.0).margin(vec2(6.0, 4.0)));
+                                if reveal_tab == Some(c.id) {
+                                    ui.scroll_to_rect(resp.rect, Some(egui::Align::Center));
+                                }
                                 resp.request_focus();
-                                let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+                                let (enter, esc) = ui.input(|i| {
+                                                (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape))
+                                            });
                                 if esc {
                                     self.renaming = None;
                                 } else if enter || resp.lost_focus() {
@@ -3331,7 +3557,9 @@ impl DataCraftApp {
                                     let id = *id;
                                     self.renaming = None;
                                     if !name.is_empty() {
-                                        ui.memory_mut(|m| m.data.insert_temp(egui::Id::new("rename_result"), (id, name)));
+                                        ui.memory_mut(|m| {
+                                                        m.data.insert_temp(egui::Id::new("rename_result"), (id, name))
+                                                    });
                                     }
                                 }
                                 continue;
@@ -3348,8 +3576,15 @@ impl DataCraftApp {
                                 c.title.clone()
                             };
                             let (resp, closed) = theme::tab(ui, !self.object_browser.active && i == self.active, Some(ico), &title, true);
-                            // The data source's environment, as a line under the tab.
-                            if let Some((_, color)) = c.conn.and_then(|id| self.conns.iter().find(|x| x.cfg.id == id)).and_then(|x| theme::environment(&x.cfg)) {
+                                        if reveal_tab == Some(c.id) {
+                                            ui.scroll_to_rect(resp.rect, Some(egui::Align::Center));
+                                        }
+                                        // The data source's environment, as a line under the tab.
+                                        if let Some((_, color)) = c
+                                            .conn
+                                            .and_then(|id| {
+                                                self.conns.iter().find(|x| x.cfg.id == id)
+                                            }).and_then(|x| theme::environment(&x.cfg)) {
                                 let r = resp.rect;
                                 ui.painter().hline(egui::Rangef::new(r.left() + 8.0, r.right() - 8.0), r.bottom() - 1.0, egui::Stroke::new(2.0, color));
                             }
@@ -3413,7 +3648,9 @@ impl DataCraftApp {
                 });
             });
         });
-        if let Some((id, name)) = ui.memory_mut(|m| m.data.remove_temp::<(u64, String)>(egui::Id::new("rename_result")))
+        if let Some((id, name)) = ui.memory_mut(|m| {
+            m.data.remove_temp::<(u64, String)>(egui::Id::new("rename_result"))
+        })
             && let Some(c) = self.console_by_id(id)
         {
             c.title = name;
@@ -3431,7 +3668,9 @@ impl DataCraftApp {
         if close_all && self.tx_guard(self.consoles.iter().map(|c| c.id).collect(), transactions::TxThen::CloseAll) && self.guard(Discard::CloseAll) {
             self.discard_and_do(Discard::CloseAll);
         }
-        let closing = close_tabs.map(|(id, which)| self.tab_close_indices(id, which).into_iter().map(|i| self.consoles[i].id).collect()).unwrap_or_default();
+        let closing = close_tabs.map(|(id, which)| {
+                self.tab_close_indices(id, which).into_iter().map(|i| self.consoles[i].id).collect()
+            }).unwrap_or_default();
         if let Some((id, which)) = close_tabs && self.tx_guard(closing, transactions::TxThen::CloseTabs(id, which)) && self.guard(Discard::CloseTabs(id, which)) { self.close_tabs_now(id, which); }
         if close_objects { self.object_browser.scope = None; self.object_browser.active = false; }
         if new {
@@ -3452,9 +3691,15 @@ impl DataCraftApp {
             });
             for action in actions {
                 match action {
-                    crate::ui::object_browser::BrowserAction::Search(request) => self.worker.send(*request),
-                    crate::ui::object_browser::BrowserAction::Explorer(action) => self.handle_explorer(ui.ctx(), vec![action]),
-                    crate::ui::object_browser::BrowserAction::Inspect { table, count_rows } => self.inspect_object(table, count_rows),
+                    crate::ui::object_browser::BrowserAction::Search(request) => {
+                        self.worker.send(*request)
+                    }
+                    crate::ui::object_browser::BrowserAction::Explorer(action) => {
+                        self.handle_explorer(ui.ctx(), vec![action])
+                    }
+                    crate::ui::object_browser::BrowserAction::Inspect { table, count_rows } => {
+                        self.inspect_object(table, count_rows)
+                    }
                 }
             }
             return;
@@ -3551,8 +3796,30 @@ impl DataCraftApp {
             };
             let history = self.key_history_flags();
             let console = &mut self.consoles[idx];
-            if let Some(t) = console.table.as_mut() { t.history = history; }
-            let out = if console.routine.is_some() { console.show_routine(ui, &cx) } else if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
+            console
+                .navigation
+                .saved
+                .apply_settings(&self.navigation.settings);
+            if let Some(t) = console.table.as_mut() {
+                t.history = history;
+            }
+            let out = if console.routine.is_some() {
+                console.show_routine(ui, &cx)
+            } else if console.table.is_some() {
+                console.show_table(ui, &cx)
+            } else {
+                console.show_console(ui, &cx)
+            };
+            let settings = console::navigation::Settings::from(&console.navigation.saved);
+            if settings != self.navigation.settings {
+                self.navigation.settings = settings;
+                for console in &mut self.consoles {
+                    console
+                        .navigation
+                        .saved
+                        .apply_settings(&self.navigation.settings);
+                }
+            }
             actions.extend(out);
         });
 
@@ -3560,6 +3827,17 @@ impl DataCraftApp {
         self.sync_save_on_row_change();
         for a in actions {
             match a {
+                ConsoleAction::Navigate(cmd) => self.navigation_command(ui.ctx(), cmd),
+                ConsoleAction::BookmarkAssigned(mnemonic) => {
+                    for (i, c) in self.consoles.iter_mut().enumerate() {
+                        if i != idx {
+                            c.navigation
+                                .saved
+                                .bookmarks
+                                .retain(|b| !b.mnemonic.eq_ignore_ascii_case(&mnemonic));
+                        }
+                    }
+                }
                 ConsoleAction::SaveRoutine => self.save_routine_tab(idx),
                 ConsoleAction::ApplyFilter => {
                     if let Some(id) = self.consoles.get(idx).map(|c| c.id) && self.guard(Discard::ApplyFilter(id)) { self.apply_filter_now(idx); }
@@ -3567,7 +3845,9 @@ impl DataCraftApp {
                 ConsoleAction::Page(page) => {
                     if let Some(id) = self.consoles.get(idx).map(|c| c.id) && self.guard(Discard::Page(id, page)) { self.navigate_page(idx, page); }
                 }
-                ConsoleAction::Inspect(count_rows) => self.request_table_details(idx, count_rows, false),
+                ConsoleAction::Inspect(count_rows) => {
+                    self.request_table_details(idx, count_rows, false)
+                }
                 ConsoleAction::Run => self.run_console(idx, false),
                 ConsoleAction::RunAll => self.run_console(idx, true),
                 ConsoleAction::Cancel => {
@@ -3599,10 +3879,7 @@ impl DataCraftApp {
                     }
                 }
                 ConsoleAction::RunStatements(statements) => {
-                    let id = self.consoles[idx].id;
-                    if self.consoles[idx].table.is_none() && !self.consoles[idx].is_busy() && self.guard(Discard::Run(id, false)) {
-                        self.run_statements(idx, statements);
-                    }
+                    self.run_selected_statements(idx, statements)
                 }
                 ConsoleAction::Reload => {
                     if let Some(id) = self.consoles.get(idx).map(|c| c.id)
@@ -3667,15 +3944,21 @@ impl DataCraftApp {
         self.update_notice(ctx);
         if let Some(dialog) = self.backup.as_mut() {
             match dialog.show(ctx, &self.explorer.backups) {
-                Some(crate::ui::backup_dialog::BackupAction::Start(request)) => self.worker.send(Request::Backup { conn: dialog.conn, id: dialog.id, request: Box::new(request), cancel: dialog.cancel.clone() }),
+                Some(crate::ui::backup_dialog::BackupAction::Start(request)) => {
+                    self.worker.send(Request::Backup { conn: dialog.conn, id: dialog.id, request: Box::new(request), cancel: dialog.cancel.clone() })
+                }
                 Some(crate::ui::backup_dialog::BackupAction::Close) => self.backup = None,
                 None => {}
             }
         }
         if let Some(dialog) = self.restore.as_mut() {
             match dialog.show(ctx, &self.explorer.restores) {
-                Some(crate::ui::restore_dialog::RestoreAction::Inspect(request)) => self.worker.send(Request::InspectRestore { conn: dialog.conn, id: dialog.id, request: Box::new(request) }),
-                Some(crate::ui::restore_dialog::RestoreAction::Start(request)) => self.worker.send(Request::Restore { conn: dialog.conn, id: dialog.id, request: Box::new(request), progress: dialog.progress.clone() }),
+                Some(crate::ui::restore_dialog::RestoreAction::Inspect(request)) => {
+                    self.worker.send(Request::InspectRestore { conn: dialog.conn, id: dialog.id, request: Box::new(request) })
+                }
+                Some(crate::ui::restore_dialog::RestoreAction::Start(request)) => {
+                    self.worker.send(Request::Restore { conn: dialog.conn, id: dialog.id, request: Box::new(request), progress: dialog.progress.clone() })
+                }
                 Some(crate::ui::restore_dialog::RestoreAction::Close) => self.restore = None,
                 None => {}
             }
@@ -3693,9 +3976,7 @@ impl DataCraftApp {
 
         if let Some(d) = self.create.as_ref() {
             let schemas: Vec<String> = match &d.target {
-                CreateTarget::Table { db, .. } => {
-                    self.conn(d.conn).and_then(|c| c.schemas(Some(db))).unwrap_or_default().iter().map(|s| s.name.clone()).collect()
-                }
+                CreateTarget::Table { db, .. } => self.conn(d.conn).and_then(|c| c.schemas(Some(db))).unwrap_or_default().iter().map(|s| s.name.clone()).collect(),
                 CreateTarget::Database => vec![],
             };
             if let Some(d) = self.create.as_mut() {
@@ -3905,11 +4186,19 @@ impl DataCraftApp {
                 ui.label(RichText::new(tr("Unsaved changes")).font(theme::bold(15.0)));
                 ui.add_space(8.0);
                 ui.label(match action {
-                    Discard::Close(_) | Discard::CloseAll | Discard::CloseTabs(..) => if self.consoles.iter().any(|c| c.routine.is_some() && c.has_pending_edits()) { tr("Unsaved changes") } else { tr("Closing the tab will discard the pending grid changes.") },
-                    Discard::Reload(_) | Discard::ApplyFilter(_) | Discard::Page(..) => tr("Reloading the data will discard the pending grid changes."),
-                    Discard::CloseResults(..) => tr("Closing the result tab will discard the pending grid changes."),
-                    Discard::Run(..) => tr("Running again will discard the pending grid changes."),
-                });
+                    Discard::Close(_) | Discard::CloseAll | Discard::CloseTabs(..) => {
+                            if self.consoles.iter().any(|c| c.routine.is_some() && c.has_pending_edits()) { tr("Unsaved changes") } else { tr("Closing the tab will discard the pending grid changes.") }
+                        }
+                        Discard::Reload(_) | Discard::ApplyFilter(_) | Discard::Page(..) => {
+                            tr("Reloading the data will discard the pending grid changes.")
+                        }
+                        Discard::CloseResults(..) => {
+                            tr("Closing the result tab will discard the pending grid changes.")
+                        }
+                        Discard::Run(..) | Discard::RunStatements(..) => {
+                            tr("Running again will discard the pending grid changes.")
+                        }
+                    });
                 ui.add_space(16.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -3929,7 +4218,10 @@ impl DataCraftApp {
                     self.confirm_discard = None;
                     self.discard_and_do(action);
                 }
-                Some(false) => self.confirm_discard = None,
+                Some(false) => {
+                    self.confirm_discard = None;
+                    self.pending_statement_run = None;
+                }
                 None => {}
             }
         }
@@ -3995,6 +4287,17 @@ impl DataCraftApp {
                             });
                         }
                     }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(tr("Navigation")).strong());
+                    ui.separator();
+                    for &(_,label,keys) in console::navigation::ACTIONS {
+                        if keys.is_empty(){continue;}
+                        ui.horizontal(|ui|{
+                            ui.label(tr(label));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{ui.label(RichText::new(crate::shortcuts::format(keys)).monospace().color(p.muted));});
+                        });
+                    }
+                    ui.label(tr("Numbered bookmarks: Ctrl+Shift+0…9. On Windows/Linux, Ctrl+G also opens Go to Line when Find is closed."));
                     if cfg!(target_os = "macos") {
                         ui.add_space(8.0);
                         ui.label(RichText::new("macOS").strong());
@@ -4056,7 +4359,9 @@ impl DataCraftApp {
                 ui.separator();
                 self.perf.settings_ui(ui);
                 ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::primary_button(ui, tr("Close")).clicked())
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        theme::primary_button(ui, tr("Close")).clicked()
+                    })
                     .inner
             });
             if resp.inner || resp.should_close() {
@@ -4611,24 +4916,42 @@ impl eframe::App for DataCraftApp {
                 panel = panel.exact_size(w);
             }
             let explorer_actions = panel
-                .show(ui, |ui| theme::fixed_island(ui, &p, |ui| explorer::show(ui, &mut self.explorer, &self.conns)))
+                .show(ui, |ui| {
+                    theme::fixed_island(ui, &p, |ui| {
+                        explorer::show(ui, &mut self.explorer, &self.conns)
+                    })
+                })
                 .inner;
             self.handle_explorer(&ctx, explorer_actions);
         }
         let left = if self.show_explorer { theme::ISLAND_GAP } else { 0 };
         egui::CentralPanel::default()
             .frame(bar.inner_margin(Margin { left, ..Margin::ZERO }))
-            .show(ui, |ui| self.central(ui));
+            .show(ui, |ui| {
+                ui.add_enabled_ui(!self.navigation.is_open(), |ui| self.central(ui));
+            });
         self.dialogs(&ctx);
+        self.navigation_ui(&ctx);
+        self.observe_navigation();
+        if self.navigation.reveal_tab.is_some() {
+            ctx.request_repaint();
+        }
         if cfg!(target_os = "windows") { crate::ui::window_chrome::resize_edges(&ctx); }
         self.perf.stats_overlay(&ctx, frame.info().cpu_usage);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         let state = Persisted {
+            editor_settings: Some(self.navigation.settings.clone()),
             backups: self.explorer.backups.clone(),
             restores: self.explorer.restores.clone(),
-            object_organizations: self.object_browser.organizations.iter().filter(|o| !o.is_empty()).cloned().collect(),
+            object_organizations: self
+                .object_browser
+                .organizations
+                .iter()
+                .filter(|o| !o.is_empty())
+                .cloned()
+                .collect(),
             object_layout: self.object_browser.layout,
             save_on_row_change: self.save_on_row_change,
             islands_dark: self.dark,
@@ -4639,6 +4962,7 @@ impl eframe::App for DataCraftApp {
                 .consoles
                 .iter()
                 .map(|c| PersistedConsole {
+                    editor_navigation: c.navigation.saved.clone(),
                     routine_comment: c.routine.as_ref().map(|r| r.comment.clone()),
                     routine: c.routine.as_ref().map(|r| (r.reference.clone(), r.saved.clone(), r.transaction)),
                     title: c.title.clone(),
@@ -4672,8 +4996,73 @@ impl eframe::App for DataCraftApp {
 mod tests {
     use super::*;
 
+    #[test]
+    fn unknown_navigation_bindings_preserve_saved_tabs() {
+        use console::navigation::{Binding, Command};
+        #[derive(Default)]
+        struct Storage(HashMap<String, String>);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let mut app = tabs_app();
+        app.consoles[0].text = "SELECT 42;".into();
+        for (command, key) in [
+            (Command::Context, Key::J),
+            (Command::Structure, Key::K),
+            (Command::Bookmarks, Key::H),
+        ] {
+            app.consoles[0].navigation.saved.bindings.push(Binding {
+                command,
+                shortcut: egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, key),
+            });
+        }
+        let mut storage = Storage::default();
+        app.navigation.settings =
+            console::navigation::Settings::from(&app.consoles[0].navigation.saved);
+        eframe::App::save(&mut app, &mut storage);
+        eframe::set_value(&mut storage, "legacy", &app.consoles[0].navigation.saved);
+        eframe::set_value(&mut storage, "settings", &app.navigation.settings);
+        let encoded = storage.0[STORAGE_KEY].clone();
+        for legacy in [false, true] {
+            let mut encoded = encoded.clone();
+            if legacy {
+                encoded = encoded.replace(
+                    &format!("editor_settings:Some({})", storage.0["settings"]),
+                    "editor_settings:None",
+                );
+                encoded = encoded.replace(
+                    "editor_navigation:(bookmarks:[])",
+                    &format!("editor_navigation:{}", storage.0["legacy"]),
+                );
+            }
+            storage.0.insert(
+                STORAGE_KEY.into(),
+                encoded
+                    .replace("command:Context", "command:RemovedCommand")
+                    .replace("logical_key:K", "logical_key:RemovedKey"),
+            );
+            let saved: Persisted = eframe::get_value(&storage, STORAGE_KEY)
+                .expect("unknown bindings must not reset UI state");
+            assert_eq!(saved.consoles.len(), 4);
+            assert_eq!(saved.consoles[0].text, "SELECT 42;");
+            let settings = saved.navigation_settings();
+            assert_eq!(settings.bindings.len(), 1, "legacy: {legacy}");
+            assert_eq!(settings.bindings[0].command, Command::Bookmarks);
+        }
+    }
+
     pub(super) fn tabs_app() -> DataCraftApp {
         DataCraftApp {
+            navigation: Default::default(),
             worker: Worker::start(egui::Context::default()), conns: Vec::new(),
             consoles: (1..=4).map(|id| Console::new(id, format!("Query {id}"), String::new(), None)).collect(),
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
@@ -4683,7 +5072,8 @@ mod tests {
             show_about: false, show_shortcuts: false, show_settings: false, script: None, session_monitors: Vec::new(), next_monitor_request: 0, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
-            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None, safety: Default::default(), tx_prompt: None, quit_confirmed: false,
+            zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
+            pending_statement_run: None, safety: Default::default(), tx_prompt: None, quit_confirmed: false,
             startup_table: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
@@ -4765,7 +5155,8 @@ mod tests {
         assert!(h.query_by_label("Select a database in the explorer to browse its objects.").is_some());
         let app = h.state_mut();
         app.restore_tabs(vec![PersistedConsole {
-            routine_comment: None,
+                editor_navigation: Default::default(),
+                routine_comment: None,
             routine: None,
             title: "Saved query".into(), text: "SELECT 42;".into(), conn: None,
             table: None, table_view: Default::default(), db: None,

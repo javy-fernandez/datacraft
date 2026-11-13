@@ -142,6 +142,16 @@ pub enum Request {
     CloseSessionMonitor(ConnId),
 }
 
+/// One submitted SQL unit, timed around execution and fetching, excluding connection setup.
+/// Result indexes preserve provenance when a batch returns several result sets.
+#[derive(Debug, Clone)]
+pub struct StatementExecution {
+    pub statement: String,
+    pub results: std::ops::Range<usize>,
+    pub elapsed: std::time::Duration,
+    pub failed: bool,
+}
+
 pub enum Response {
     TableShortcut { result: Result<std::path::PathBuf, String> },
     TableModel { request_id: u64, result: Result<crate::db::table_model::Model, String> },
@@ -193,6 +203,7 @@ pub enum Response {
     Executed {
         console: ConsoleId,
         results: Vec<ResultSet>,
+        executions: Vec<StatementExecution>,
         error: Option<String>,
         elapsed: std::time::Duration,
     },
@@ -1367,6 +1378,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                     return vec![Response::Executed {
                         console,
                         results: vec![],
+                        executions: vec![],
                         error: Some(format!("{e:#}")),
                         elapsed: start.elapsed(),
                     }];
@@ -1376,6 +1388,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             *running.native.lock().unwrap_or_else(|e| e.into_inner()) = s.cancel_handle();
             let statements_tail = statements.last().cloned();
             let mut results = Vec::new();
+            let mut executions = Vec::new();
             let mut error = None;
             let mut abandoned = false;
             if let Err(e) = s.use_database(&target).await {
@@ -1389,6 +1402,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                         running.in_flight.store(false, SeqCst);
                         break;
                     }
+                    let began = Instant::now();
                     let result = tokio::select! {
                         r = s.execute_bound(&stmt, &parameters, max_rows) => r,
                         _ = running.abandon.notified() => {
@@ -1397,6 +1411,13 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
                         }
                     };
                     running.in_flight.store(false, SeqCst);
+                    let end = results.len() + result.as_ref().map_or(0, |rs| rs.len());
+                    executions.push(StatementExecution {
+                        statement: stmt,
+                        results: results.len()..end,
+                        elapsed: began.elapsed(),
+                        failed: result.is_err(),
+                    });
                     match result {
                         Ok(rs) => results.extend(rs),
                         Err(e) => {
@@ -1424,7 +1445,13 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             // An abandoned query leaves the session in an unknown state: it is closed.
             let lost = abandoned || s.is_closed();
             drop(s);
-            let mut out = vec![Response::Executed { console, results, error: error.clone(), elapsed: start.elapsed() }];
+            let mut out = vec![Response::Executed {
+                console,
+                results,
+                executions,
+                error: error.clone(),
+                elapsed: start.elapsed(),
+            }];
             if abandoned {
                 state.forget(conn, &session).await;
                 out.push(Response::ConnectFailed { conn, error: tr("Query cancelled; the connection was closed and will reopen on the next run").to_string() });
@@ -1459,7 +1486,20 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
         Err(e) => {
             unregister(state);
             let error = Some(format!("{e:#}"));
-            return vec![Response::Executed { console, results: vec![], error, elapsed: start.elapsed() }, Response::Transaction { console, tx: None, note: None }];
+            return vec![
+                Response::Executed {
+                    console,
+                    results: vec![],
+                    executions: vec![],
+                    error,
+                    elapsed: start.elapsed(),
+                },
+                Response::Transaction {
+                    console,
+                    tx: None,
+                    note: None,
+                },
+            ];
         }
     };
     let mut guard = shared.lock().await;
@@ -1468,6 +1508,7 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
     let driver = t.driver;
     let statements_tail = statements.last().cloned();
     let (mut results, mut error, mut abandoned, mut note) = (Vec::new(), None, false, None);
+    let mut executions = Vec::new();
     let mut broken = false;
     let db = t.db.clone();
     if let Err(e) = t.session.use_database(&db).await {
@@ -1497,6 +1538,8 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
         }
         let was_open = t.tx.is_some();
         let was_aborted = t.tx.is_some_and(|tx| tx.aborted);
+        let began = Instant::now();
+        let attempted = result.is_ok();
         if result.is_ok() {
             result = tokio::select! {
                 r = t.session.execute_bound(&stmt, &parameters, max_rows) => r,
@@ -1507,6 +1550,15 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
             };
         }
         running.in_flight.store(false, SeqCst);
+        if attempted {
+            let end = results.len() + result.as_ref().map_or(0, |rs| rs.len());
+            executions.push(StatementExecution {
+                statement: stmt.clone(),
+                results: results.len()..end,
+                elapsed: began.elapsed(),
+                failed: result.is_err(),
+            });
+        }
         let failed = match result {
             Ok(rs) => {
                 results.extend(rs);
@@ -1596,7 +1648,16 @@ async fn execute_manual(state: &State, conn: ConnId, db: Option<String>, console
     if lost {
         state.forget_console_tx(console, &shared);
     }
-    vec![Response::Executed { console, results, error, elapsed: start.elapsed() }, Response::Transaction { console, tx, note }]
+    vec![
+        Response::Executed {
+            console,
+            results,
+            executions,
+            error,
+            elapsed: start.elapsed(),
+        },
+        Response::Transaction { console, tx, note },
+    ]
 }
 
 /// Longest wait for a console's COMMIT or ROLLBACK before its session is closed.
@@ -2307,6 +2368,72 @@ mod tests {
         assert_eq!(catalog[0].name, "notes");
         w.send(Request::Disconnect(17));
         wait_for(&w, |r| matches!(r, Response::Disconnected(17)));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_reports_timing_provenance_for_auto_manual_batches_and_errors() {
+        let path =
+            std::env::temp_dir().join(format!("datacraft-timing-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&path).unwrap();
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(71, Driver::Sqlite);
+        cfg.file_path = path.display().to_string();
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 71, .. }));
+        for manual in [false, true] {
+            let statements = vec![
+                "SELECT 1; SELECT 1;".to_string(),
+                "SELECT 2".into(),
+                "SELECT * FROM absent_table".into(),
+                "SELECT 3".into(),
+            ];
+            w.send(Request::Execute {
+                conn: 71,
+                db: None,
+                console: 71,
+                statements: statements.clone(),
+                max_rows: 10,
+                manual,
+                parameters: Vec::new(),
+            });
+            let Response::Executed {
+                results,
+                executions,
+                error,
+                elapsed,
+                ..
+            } = wait_for(&w, |r| matches!(r, Response::Executed { console: 71, .. }))
+            else {
+                unreachable!()
+            };
+            assert!(error.is_some());
+            assert_eq!(results.len(), 3);
+            assert_eq!(
+                executions.len(),
+                3,
+                "the last statement must not run after the error"
+            );
+            assert_eq!(
+                executions.iter().map(|e| &e.statement).collect::<Vec<_>>(),
+                statements[..3].iter().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                executions
+                    .iter()
+                    .map(|e| e.results.clone())
+                    .collect::<Vec<_>>(),
+                vec![0..2, 2..3, 3..3]
+            );
+            assert!(!executions[0].failed && !executions[1].failed && executions[2].failed);
+            assert!(executions.iter().all(|e| !e.elapsed.is_zero()));
+            assert!(executions.iter().map(|e| e.elapsed).sum::<Duration>() <= elapsed);
+            assert!(
+                results[..2].iter().map(|r| r.elapsed).sum::<Duration>() <= executions[0].elapsed
+            );
+        }
+        w.send(Request::Disconnect(71));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(71)));
         std::fs::remove_file(path).unwrap();
     }
 
