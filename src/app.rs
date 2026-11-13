@@ -916,11 +916,18 @@ impl DataCraftApp {
                         self.load_object_catalog();
                     }
                 }
-                Response::Executed { console, results, error, elapsed } => {
+                Response::Executed {
+                    console,
+                    results,
+                    executions,
+                    error,
+                    elapsed,
+                } => {
                     let succeeded = error.is_none();
                     self.result_salt += 1;
                     let salt = self.result_salt;
                     if let Some(c) = self.console_by_id(console) {
+                        c.execution_finished(&results, &executions);
                         apply_execution(c, results, error, elapsed, salt);
                     }
                     self.navigation_finished(console, succeeded);
@@ -1428,13 +1435,7 @@ impl DataCraftApp {
         let Some(console) = self.consoles.get(idx) else { return };
         let conn_id = console.conn;
         let driver = conn_id.and_then(|id| self.conn(id)).map(|c| c.cfg.driver).unwrap_or(Driver::Postgres);
-        let statements: Vec<String> = if all {
-            sql::split_batches(&console.text, driver).into_iter().map(|s| s.text).collect()
-        } else if let Some(sel) = console.selection() {
-            sql::split_batches(sel, driver).into_iter().map(|s| s.text).collect()
-        } else {
-            sql::statement_at(&console.text, console.cursor_byte(), driver).into_iter().map(|s| s.text).collect()
-        };
+        let statements = self.consoles[idx].prepare_run(driver, all);
         self.run_statements(idx, statements);
     }
 
@@ -1517,6 +1518,7 @@ impl DataCraftApp {
             return;
         }
         let Some(console) = self.consoles.get_mut(idx) else { return };
+        console.execution_started(&statements);
         console.last_statements = statements.clone();
         console.run_started = Some(Instant::now());
         match status {

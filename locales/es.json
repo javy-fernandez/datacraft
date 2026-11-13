@@ -1782,5 +1782,8 @@
     "FK": "FK",
     "reverse FK": "FK inversa",
     "inferred": "deducida"
+  },
+  "query_execution": {
+    "Execution time, including data retrieval": "Tiempo de ejecución, incluida la recuperación de datos"
   }
 }

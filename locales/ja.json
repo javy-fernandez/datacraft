@@ -1782,5 +1782,8 @@
     "FK": "FK",
     "reverse FK": "逆方向 FK",
     "inferred": "推定"
+  },
+  "query_execution": {
+    "Execution time, including data retrieval": "データ取得を含む実行時間"
   }
 }

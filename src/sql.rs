@@ -57,7 +57,8 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
     let dialect = Dialect::for_driver(driver);
     let oracle = driver == Driver::Oracle;
     let mysql = matches!(driver, Driver::MySql | Driver::MariaDb);
-    let track = oracle || mysql;
+    let sqlite = driver == Driver::Sqlite;
+    let track = oracle || mysql || sqlite;
     // Start of every `/` line (Oracle), to know whether a block has one ahead.
     let slashes: Vec<usize> = if dialect.slash_separator {
         Lexer::new(script, dialect)
@@ -115,8 +116,19 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
             continue;
         }
         if tok.kind == Kind::Semicolon {
+            if sqlite && is_sqlite_trigger(&cur.head) {
+                // SQLite ends a trigger with `; END ;`. Counting BEGIN/END
+                // words also counts valid contextual table and column names.
+                cur.extend(tok.start, tok.end);
+                if !cur.sqlite_end {
+                    cur.blocks.prev = ";".into();
+                    continue;
+                }
+                cur.flush(script, &mut out);
+                continue;
+            }
             if let Some((start, _)) = cur.range
-                && track
+                && (oracle || mysql)
                 && is_block_statement(&cur.head, oracle)
             {
                 cur.blocks.token(";", false, oracle);
@@ -140,7 +152,12 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
             if is_word && cur.head.len() < 10 {
                 cur.head.push(up.clone());
             }
-            cur.blocks.token(&up, is_word, oracle);
+            if sqlite {
+                cur.sqlite_end = is_word && up == "END" && cur.blocks.prev == ";";
+                cur.blocks.prev = up;
+            } else {
+                cur.blocks.token(&up, is_word, oracle);
+            }
         }
     }
     cur.flush(script, &mut out);
@@ -155,6 +172,8 @@ struct Pending {
     /// First words, uppercased (to recognize blocks).
     head: Vec<String>,
     blocks: Blocks,
+    /// An unquoted END immediately after a trigger-body statement's semicolon.
+    sqlite_end: bool,
 }
 
 impl Pending {
@@ -174,6 +193,24 @@ impl Pending {
             });
         }
         *self = Pending::default();
+    }
+}
+
+fn is_sqlite_trigger(head: &[String]) -> bool {
+    match head {
+        [explain, query, plan, rest @ ..]
+            if explain == "EXPLAIN" && query == "QUERY" && plan == "PLAN" =>
+        {
+            is_sqlite_trigger(rest)
+        }
+        [explain, rest @ ..] if explain == "EXPLAIN" => is_sqlite_trigger(rest),
+        [create, trigger, ..] if create == "CREATE" && trigger == "TRIGGER" => true,
+        [create, modifier, trigger, ..] => {
+            create == "CREATE"
+                && matches!(modifier.as_str(), "TEMP" | "TEMPORARY")
+                && trigger == "TRIGGER"
+        }
+        _ => false,
     }
 }
 
@@ -238,7 +275,7 @@ fn is_block_statement(head: &[String], oracle: bool) -> bool {
             let mut definer = false;
             for w in rest {
                 match *w {
-                    "OR" | "REPLACE" => {}
+                    "OR" | "REPLACE" | "TEMP" | "TEMPORARY" => {}
                     "EDITIONABLE" | "NONEDITIONABLE" if oracle => {}
                     "DEFINER" | "AGGREGATE" if !oracle => definer |= *w == "DEFINER",
                     "PROCEDURE" | "FUNCTION" | "TRIGGER" => return true,
@@ -1701,6 +1738,52 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_trigger_keyword_identifiers_preserve_boundaries() {
+        let schema = "CREATE TABLE begin(end); CREATE TABLE notes(end); CREATE TABLE log(end);";
+        for (table, body) in [
+            ("begin", "INSERT INTO log VALUES (1);"),
+            ("notes", "INSERT INTO log(end) VALUES (NEW.end);"),
+            (
+                "notes",
+                "UPDATE notes SET end = 2; INSERT INTO log VALUES (1);",
+            ),
+            (
+                "notes",
+                "INSERT INTO log SELECT CASE WHEN NEW.end = 1 THEN 2 ELSE 0 END;",
+            ),
+        ] {
+            for prefix in ["", "EXPLAIN ", "EXPLAIN QUERY PLAN "] {
+                let trigger = format!(
+                    "{prefix}CREATE TRIGGER audit AFTER INSERT ON {table} BEGIN {body} END;"
+                );
+                let text = format!("{trigger}\nSELECT 42;");
+                let db = rusqlite::Connection::open_in_memory().unwrap();
+                db.execute_batch(schema).unwrap();
+                db.execute_batch(&text)
+                    .expect("the fixture must be valid SQLite");
+                let statements = split_statements(&text, Driver::Sqlite);
+                assert_eq!(statements.len(), 2, "{text}");
+                assert_eq!(statements[0].text, trigger);
+                assert_eq!(statements[1].text, "SELECT 42");
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_trigger_is_one_executable_statement() {
+        for modifier in ["", "TEMP ", "TEMPORARY "] {
+            let text = format!(
+                "CREATE {modifier}TRIGGER audit AFTER INSERT ON notes BEGIN\n INSERT INTO log VALUES ('a;');\n UPDATE log SET n = 2;\nEND;\nSELECT 42;"
+            );
+            let ss = split_statements(&text, Driver::Sqlite);
+            assert_eq!(ss.len(), 2);
+            assert!(ss[0].text.ends_with("END;"));
+            assert_eq!(ss[1].text, "SELECT 42");
+            assert_eq!(text[ss[0].start..ss[0].end], ss[0].text);
+        }
+    }
 
     fn texts(script: &str, driver: Driver) -> Vec<String> {
         split_statements(script, driver)

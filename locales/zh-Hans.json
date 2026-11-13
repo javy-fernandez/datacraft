@@ -1782,5 +1782,8 @@
     "FK": "外键",
     "reverse FK": "反向外键",
     "inferred": "推断"
+  },
+  "query_execution": {
+    "Execution time, including data retrieval": "执行时间（包括数据检索）"
   }
 }

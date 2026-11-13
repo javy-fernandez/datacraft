@@ -250,27 +250,18 @@ impl Splitter {
         if self.driver != Driver::Sqlite {
             return split_batches(&self.buf, self.driver);
         }
-        let mut out: Vec<Statement> = Vec::new();
-        let mut in_trigger = false;
-        for s in split_statements(&self.buf, self.driver) {
-            let words: Vec<String> = s.text.split_whitespace().take(3).map(|w| w.to_ascii_uppercase()).collect();
-            let starts_trigger = words.first().is_some_and(|w| w == "CREATE") && words[1..].iter().any(|w| w == "TRIGGER");
-            match out.last_mut() {
-                Some(prev) if in_trigger => {
-                    prev.text = self.buf[prev.start..s.end].to_string();
-                    prev.end = s.end;
+        split_statements(&self.buf, self.driver)
+            .into_iter()
+            .map(|mut s| {
+                // File pieces omit the outer terminator; the shared splitter preserves a
+                // trigger's entire body, including its inner semicolons.
+                if s.text.ends_with(';') {
+                    s.text.pop();
+                    s.end -= 1;
                 }
-                _ => out.push(s.clone()),
-            }
-            if starts_trigger {
-                in_trigger = true;
-            }
-            // The body's statements end with `;`, so its `END` comes alone (a `CASE … END` doesn't).
-            if in_trigger && s.text.trim().eq_ignore_ascii_case("END") {
-                in_trigger = false;
-            }
-        }
-        out
+                s
+            })
+            .collect()
     }
 }
 
@@ -297,6 +288,25 @@ mod tests {
 
     fn whole(script: &str, driver: Driver) -> Vec<Piece> {
         Splitter::new(driver).feed_last(script)
+    }
+
+    #[test]
+    fn sqlite_keyword_identifiers_survive_streamed_trigger_boundaries() {
+        let script = "CREATE TABLE begin(end);\nCREATE TABLE log(end);\nCREATE TRIGGER audit AFTER INSERT ON begin BEGIN\n UPDATE begin SET end = 2; INSERT INTO log(end) VALUES (NEW.end);\nEND;\nINSERT INTO begin VALUES (1);\nSELECT * FROM log;";
+        for size in 1..script.len() {
+            let pieces = run_in_pieces(script, Driver::Sqlite, size);
+            assert_eq!(pieces.len(), 5, "pieces of {size}");
+            assert!(pieces[2].text.ends_with("END"));
+            let db = rusqlite::Connection::open_in_memory().unwrap();
+            for piece in pieces {
+                db.execute_batch(&piece.text).unwrap();
+            }
+            assert_eq!(
+                db.query_row("SELECT end FROM log", [], |row| row.get::<_, i32>(0))
+                    .unwrap(),
+                1
+            );
+        }
     }
 
     #[test]

@@ -15,6 +15,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod execution;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResultTab {
     Output,
@@ -97,6 +99,7 @@ struct Completion {
 }
 
 pub struct Console {
+    execution: execution::State,
     pub routine: Option<crate::ui::routine_dialog::RoutineEditor>,
     pub id: u64,
     pub title: String,
@@ -286,6 +289,7 @@ pub struct ConsoleCtx<'a> {
 impl Console {
     pub fn new(id: u64, title: String, text: String, conn: Option<ConnId>) -> Self {
         Self {
+            execution: Default::default(),
             routine: None,
             id,
             title,
@@ -1774,12 +1778,12 @@ impl Console {
             self.accept_completion(ui.ctx(), cx.driver);
         }
 
-        let caret_line = self.line_col().0;
         // Layouter caching the highlighted LayoutJob.
         let dark = cx.dark;
         let driver = cx.driver;
         let font_size = cx.font_size;
         let hl_cache = &mut self.hl_cache;
+        let text_revision = std::cell::Cell::new(0);
         // Find bar matches are painted with a background (the selected one stronger).
         let search = self.find.as_ref().filter(|f| !f.query.is_empty()).map(|f| (f.query.clone(), f.case_sensitive));
         let selected = self.cursor;
@@ -1788,6 +1792,7 @@ impl Console {
             let text = buf.as_str();
             let mut h = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut h);
+            text_revision.set(h.finish());
             dark.hash(&mut h);
             driver.hash(&mut h);
             font_size.to_bits().hash(&mut h);
@@ -1857,6 +1862,20 @@ impl Console {
                             .layouter(&mut layouter)
                             .show(ui);
 
+                        // TextEdit may have changed the text and cursor during show().
+                        // Cache text-derived offsets by the hash already used by the layouter.
+                        self.execution.sync_revision(
+                            &self.text,
+                            self.conn,
+                            &self.db,
+                            text_revision.get(),
+                        );
+                        let caret = output
+                            .cursor_range
+                            .map(|r| r.primary.index.0)
+                            .or(self.cursor.map(|(_, b)| b))
+                            .unwrap_or(0);
+                        let caret_line = self.execution.line_at(caret);
                         let mut line = 1;
                         let mut start_of_line = true;
                         for row in &output.galley.rows {
@@ -1882,6 +1901,13 @@ impl Console {
                             start_of_line = row.ends_with_newline;
                         }
 
+                        self.execution.show(
+                            ui,
+                            &output.galley,
+                            output.galley_pos,
+                            font_size,
+                            pal.text_muted,
+                        );
                         if let Some(range) = output.cursor_range {
                             let r = range.as_sorted_char_range();
                             new_cursor = Some((r.start.0, r.end.0, range.primary));
