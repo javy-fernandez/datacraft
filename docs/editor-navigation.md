@@ -16,7 +16,7 @@ Open **Navigate** in the application menu, SQL toolbar, or editor context menu f
 | Previous/next navigation jump, including other tabs | Command+Alt+Left / Right |
 | Last edited location | Command+Shift+Backspace |
 | Beginning/end of editor | Command+Page Up / Page Down |
-| Next/previous word | Alt+Right / Left on macOS; Ctrl+Right / Left elsewhere |
+| Next/previous word; extend selection | Alt+Right / Left on macOS; Ctrl+Right / Left elsewhere; add Shift to select with the same endpoints |
 | Paragraph movement, with or without selection | Navigate menu or Find navigation action |
 | Find navigation action | Command+Shift+A |
 | Next occurrence of the word at the caret | Command+Alt+G on macOS; Ctrl+F3 elsewhere; whole-word search avoids matching parts of identifiers |
@@ -34,7 +34,7 @@ Open **Navigate** in the application menu, SQL toolbar, or editor context menu f
 
 The switcher scrolls only when the selected row changes, so an idle switcher stops repainting. Esc or its close button cancels and returns focus to the current editor. Losing application focus also cancels, including when the operating system misses Control release. A quick Ctrl+Tab press and release switches immediately even when both arrive in one frame.
 
-Bookmarks and editor navigation settings are saved with each console. Bookmark anchors follow text inserted or deleted before them. Assigning a mnemonic replaces its previous assignment in another open console.
+Bookmarks are saved with each console. Editor navigation settings and recorded shortcuts apply globally to existing and new tabs. Older per-console settings migrate from the previously active tab. Unknown saved commands or keys are skipped without losing tabs or other UI state. Bookmark anchors follow text inserted or deleted before them. Assigning a mnemonic replaces its previous assignment in another open console.
 
 **Navigate → Editor navigation settings** controls line numbers, word movement endpoints, stopping at line breaks, and issue priority. It also records additional shortcuts for navigation actions, including paragraph selection. The standard shortcuts remain available; Reset removes an additional assignment. Recorded shortcuts require Ctrl or Command, and known system and editing shortcuts remain reserved. Character-producing Option and AltGr input is preserved.
 

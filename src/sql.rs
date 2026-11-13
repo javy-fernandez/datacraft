@@ -27,6 +27,15 @@ pub struct Statement {
 /// to the `;` after their outermost `END` (which they keep). MySQL / MariaDB: stored routines
 /// run to the `;` after their outermost `END`, and `DELIMITER x` lines change the separator.
 pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
+    split_statements_inner(script, driver, true)
+}
+
+/// Streaming script execution must keep unfinished triggers until the next chunk.
+pub(crate) fn split_stream_statements(script: &str, driver: Driver) -> Vec<Statement> {
+    split_statements_inner(script, driver, false)
+}
+
+fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -> Vec<Statement> {
     // Redis: one command per line (`#` and `//` comment lines are skipped).
     if driver == Driver::Redis {
         let mut out = Vec::new();
@@ -117,11 +126,18 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
             continue;
         }
         if tok.kind == Kind::Semicolon {
-            if sqlite && is_sqlite_trigger(&cur.head) {
+            if sqlite && cur.sqlite_begin && is_sqlite_trigger(&cur.head) {
                 // SQLite ends a trigger with `; END ;`. Counting BEGIN/END
                 // words also counts valid contextual table and column names.
-                cur.extend(tok.start, tok.end);
                 if !cur.sqlite_end {
+                    if let Some(fragment) = cur.sqlite_fragment.take() {
+                        cur.sqlite_parts.push(fragment);
+                    }
+                    // Keep inner separators in the complete trigger's range, while
+                    // retaining per-semicolon fragments if END never arrives.
+                    if let Some((_, end)) = &mut cur.range {
+                        *end = tok.end;
+                    }
                     cur.blocks.prev = ";".into();
                     continue;
                 }
@@ -154,6 +170,7 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
                 cur.head.push(up.clone());
             }
             if sqlite {
+                cur.sqlite_begin |= is_word && up == "BEGIN" && is_sqlite_trigger(&cur.head);
                 cur.sqlite_end = is_word && up == "END" && cur.blocks.prev == ";";
                 cur.blocks.prev = up;
             } else {
@@ -161,7 +178,15 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
             }
         }
     }
-    cur.flush(script, &mut out);
+    if recover_trigger && !cur.sqlite_parts.is_empty() && !cur.sqlite_end {
+        // In an editor, an unfinished trigger must not swallow statements below
+        // the caret. Recover the ordinary semicolon boundaries in one pass.
+        for (start, end) in cur.sqlite_parts.drain(..).chain(cur.sqlite_fragment.take()) {
+            out.push(Statement { text: script[start..end].to_string(), start, end });
+        }
+    } else {
+        cur.flush(script, &mut out);
+    }
     out
 }
 
@@ -175,10 +200,17 @@ struct Pending {
     blocks: Blocks,
     /// An unquoted END immediately after a trigger-body statement's semicolon.
     sqlite_end: bool,
+    sqlite_begin: bool,
+    sqlite_parts: Vec<(usize, usize)>,
+    sqlite_fragment: Option<(usize, usize)>,
 }
 
 impl Pending {
     fn extend(&mut self, start: usize, end: usize) {
+        match &mut self.sqlite_fragment {
+            Some((_, e)) => *e = end,
+            None => self.sqlite_fragment = Some((start, end)),
+        }
         match &mut self.range {
             Some((_, e)) => *e = end,
             None => self.range = Some((start, end)),
@@ -276,7 +308,7 @@ fn is_block_statement(head: &[String], oracle: bool) -> bool {
             let mut definer = false;
             for w in rest {
                 match *w {
-                    "OR" | "REPLACE" | "TEMP" | "TEMPORARY" => {}
+                    "OR" | "REPLACE" => {}
                     "EDITIONABLE" | "NONEDITIONABLE" if oracle => {}
                     "DEFINER" | "AGGREGATE" if !oracle => definer |= *w == "DEFINER",
                     "PROCEDURE" | "FUNCTION" | "TRIGGER" => return true,
@@ -1741,6 +1773,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unfinished_sqlite_triggers_leave_following_statements_runnable() {
+        for modifier in ["", "TEMP ", "TEMPORARY "] {
+            for body in ["", " BEGIN INSERT INTO log VALUES (1)"] {
+                let script = format!(
+                    "CREATE {modifier}TRIGGER audit AFTER INSERT ON notes{body};\nSELECT 42;\nSELECT 43;"
+                );
+                let statements = split_statements(&script, Driver::Sqlite);
+                assert_eq!(statements.len(), 3, "{script}");
+                assert_eq!(statements[1].text, "SELECT 42");
+                assert_eq!(statements[2].text, "SELECT 43");
+                let caret = script.find("SELECT 42").unwrap();
+                assert_eq!(
+                    statement_at(&script, caret, Driver::Sqlite).unwrap().text,
+                    "SELECT 42"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn sqlite_trigger_keyword_identifiers_preserve_boundaries() {
         let schema = "CREATE TABLE begin(end); CREATE TABLE notes(end); CREATE TABLE log(end);";
         for (table, body) in [
@@ -1766,7 +1818,7 @@ mod tests {
                     .expect("the fixture must be valid SQLite");
                 let statements = split_statements(&text, Driver::Sqlite);
                 assert_eq!(statements.len(), 2, "{text}");
-                assert_eq!(statements[0].text, trigger);
+                assert_eq!(statements[0].text, trigger.trim_end_matches(';'));
                 assert_eq!(statements[1].text, "SELECT 42");
             }
         }
@@ -1780,7 +1832,7 @@ mod tests {
             );
             let ss = split_statements(&text, Driver::Sqlite);
             assert_eq!(ss.len(), 2);
-            assert!(ss[0].text.ends_with("END;"));
+            assert!(ss[0].text.ends_with("END"));
             assert_eq!(ss[1].text, "SELECT 42");
             assert_eq!(text[ss[0].start..ss[0].end], ss[0].text);
         }

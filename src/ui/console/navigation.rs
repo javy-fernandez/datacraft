@@ -17,6 +17,8 @@ pub enum Command {
     MatchingBrace,
     WordForward,
     WordBackward,
+    WordForwardSelect,
+    WordBackwardSelect,
     ParagraphForward,
     ParagraphBackward,
     ParagraphForwardSelect,
@@ -62,6 +64,16 @@ pub const ACTIONS: &[(Command, &str, &str)] = &[
     (Command::MatchingBrace, "Matching brace", "⇧⌘M"),
     (Command::WordForward, "Move caret to next word", ""),
     (Command::WordBackward, "Move caret to previous word", ""),
+    (
+        Command::WordForwardSelect,
+        "Move caret to next word with selection",
+        "",
+    ),
+    (
+        Command::WordBackwardSelect,
+        "Move caret to previous word with selection",
+        "",
+    ),
     (
         Command::ParagraphForward,
         "Move caret forward a paragraph",
@@ -162,12 +174,138 @@ pub struct Saved {
     pub line_numbers: bool,
     pub word_end: bool,
     pub stop_at_line_break: bool,
+    pub highest_priority: bool,
+    #[serde(deserialize_with = "deserialize_bindings")]
     pub bindings: Vec<Binding>,
 }
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub line_numbers: bool,
+    pub word_end: bool,
+    pub stop_at_line_break: bool,
+    pub highest_priority: bool,
+    #[serde(deserialize_with = "deserialize_bindings")]
+    pub bindings: Vec<Binding>,
+}
+
+impl From<&Saved> for Settings {
+    fn from(saved: &Saved) -> Self {
+        Self {
+            line_numbers: saved.line_numbers,
+            word_end: saved.word_end,
+            stop_at_line_break: saved.stop_at_line_break,
+            highest_priority: saved.highest_priority,
+            bindings: saved.bindings.clone(),
+        }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self::from(&Saved::default())
+    }
+}
+
+impl Saved {
+    pub fn apply_settings(&mut self, settings: &Settings) {
+        self.line_numbers = settings.line_numbers;
+        self.word_end = settings.word_end;
+        self.stop_at_line_break = settings.stop_at_line_break;
+        self.highest_priority = settings.highest_priority;
+        self.bindings.clone_from(&settings.bindings);
+    }
+}
+
+// Legacy console settings still deserialize through Saved. New state stores
+// only bookmarks here, with preferences and bindings saved once for the app.
+pub fn serialize_bookmarks<S: serde::Serializer>(
+    saved: &Saved,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    #[derive(serde::Serialize)]
+    struct Bookmarks<'a> {
+        bookmarks: &'a [Bookmark],
+    }
+    serde::Serialize::serialize(
+        &Bookmarks {
+            bookmarks: &saved.bookmarks,
+        },
+        serializer,
+    )
+}
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Binding {
     pub command: Command,
     pub shortcut: egui::KeyboardShortcut,
+}
+
+// Read unit variants by name before decoding them, so a removed command or egui
+// key only drops its binding. This also accepts the enum syntax in eframe's RON.
+fn known_variant<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    struct Variant<T>(std::marker::PhantomData<T>);
+    impl<'de, T: serde::de::DeserializeOwned> serde::de::DeserializeSeed<'de> for Variant<T> {
+        type Value = Option<T>;
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
+            deserializer.deserialize_identifier(self)
+        }
+    }
+    impl<'de, T: serde::de::DeserializeOwned> serde::de::Visitor<'de> for Variant<T> {
+        type Value = Option<T>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a shortcut command or key name")
+        }
+        fn visit_enum<A: serde::de::EnumAccess<'de>>(
+            self,
+            data: A,
+        ) -> Result<Self::Value, A::Error> {
+            let (value, variant) = data.variant_seed(self)?;
+            serde::de::VariantAccess::unit_variant(variant)?;
+            Ok(value)
+        }
+        fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Self::Value, E> {
+            Ok(serde_json::from_value(serde_json::Value::String(name.to_owned())).ok())
+        }
+    }
+    deserializer.deserialize_enum("ShortcutVariant", &[], Variant(std::marker::PhantomData))
+}
+
+fn deserialize_bindings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Binding>, D::Error> {
+    #[derive(serde::Deserialize)]
+    struct RawShortcut {
+        modifiers: Modifiers,
+        #[serde(deserialize_with = "known_variant")]
+        logical_key: Option<Key>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawBinding {
+        #[serde(deserialize_with = "known_variant")]
+        command: Option<Command>,
+        shortcut: RawShortcut,
+    }
+    let raw = <Vec<RawBinding> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|b| {
+            Some(Binding {
+                command: b.command?,
+                shortcut: egui::KeyboardShortcut::new(
+                    b.shortcut.modifiers,
+                    b.shortcut.logical_key?,
+                ),
+            })
+        })
+        .collect())
 }
 
 pub fn shortcut_allowed(shortcut: &egui::KeyboardShortcut, mac: bool) -> bool {
@@ -249,6 +387,7 @@ impl Default for Saved {
             line_numbers: true,
             word_end: true,
             stop_at_line_break: true,
+            highest_priority: false,
             bindings: Vec::new(),
         }
     }
@@ -307,7 +446,6 @@ pub struct State {
     filter_builds: usize,
     #[cfg(test)]
     outline_builds: usize,
-    pub highest_priority: bool,
     pub(super) gutter_run: Option<GutterRun>,
     recording: Option<Command>,
 }
@@ -641,6 +779,16 @@ impl Console {
                 Key::ArrowLeft,
                 Command::WordBackward,
             ),
+            (
+                (if cfg!(target_os = "macos") { a } else { c }) | s,
+                Key::ArrowRight,
+                Command::WordForwardSelect,
+            ),
+            (
+                (if cfg!(target_os = "macos") { a } else { c }) | s,
+                Key::ArrowLeft,
+                Command::WordBackwardSelect,
+            ),
         ];
         ui.input_mut(|i| {
             for (mods, key, cmd) in bindings { if take_key(i, mods, key) { cmds.push(EditCmd::Navigate(cmd)); } }
@@ -677,6 +825,8 @@ impl Console {
             cmd,
             WordForward
                 | WordBackward
+                | WordForwardSelect
+                | WordBackwardSelect
                 | ParagraphForward
                 | ParagraphBackward
                 | ParagraphForwardSelect
@@ -706,12 +856,12 @@ impl Console {
                     .then_some(self.navigation.anchor.unwrap_or(pos));
                 self.navigate_to(ctx, p, anchor);
             }
-            WordForward | WordBackward => {
+            WordForward | WordBackward | WordForwardSelect | WordBackwardSelect => {
                 let chars: Vec<_> = self.text.chars().collect();
                 let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
                 let mut p = pos.min(chars.len());
                 let mut line_stop = false;
-                if cmd == WordForward {
+                if matches!(cmd, WordForward | WordForwardSelect) {
                     if self.navigation.saved.word_end {
                         while p < chars.len() && !ident(chars[p]) {
                             if chars[p] == '\n' && self.navigation.saved.stop_at_line_break {
@@ -746,7 +896,9 @@ impl Console {
                         p -= 1;
                     }
                 }
-                self.navigate_to(ctx, p, None);
+                let anchor = matches!(cmd, WordForwardSelect | WordBackwardSelect)
+                    .then_some(self.navigation.anchor.unwrap_or(pos));
+                self.navigate_to(ctx, p, anchor);
             }
             MatchingBrace => {
                 if let Some(p) = source::matching_brace(&self.text, pos, driver) {
@@ -796,7 +948,7 @@ impl Console {
             }
             Bookmarks => actions.push(ConsoleAction::Navigate(cmd)),
             NextIssue | PreviousIssue => {
-                let highest = self.navigation.highest_priority;
+                let highest = self.navigation.saved.highest_priority;
                 let problems = self.navigation.problems(&self.text, driver);
                 let errors_only = highest && problems.iter().any(|p| p.error);
                 let problems: Vec<_> = problems
@@ -863,6 +1015,8 @@ impl Console {
         let Some(popup) = self.navigation.popup else {
             return;
         };
+        // Editor commands can change the text after the editor was drawn this frame.
+        self.navigation.ensure_index(&self.text, cx.driver);
         self.completion = None;
         let title = match popup {
             Popup::Line => "Go to Line/Column",
@@ -996,7 +1150,7 @@ impl Console {
                     ui.checkbox(&mut self.navigation.saved.line_numbers, tr("Show line numbers"));
                     ui.checkbox(&mut self.navigation.saved.word_end, tr("Next word stops at the end of the word"));
                     ui.checkbox(&mut self.navigation.saved.stop_at_line_break, tr("Stop word movement at line breaks"));
-                    ui.checkbox(&mut self.navigation.highest_priority, tr("Problems with highest priority only"));
+                    ui.checkbox(&mut self.navigation.saved.highest_priority, tr("Problems with highest priority only"));
                     ui.separator();ui.label(tr("Keyboard shortcuts"));
                     if self.navigation.recording.is_some(){ui.label(tr("Press a key combination. Esc cancels recording."));}
                     egui::ScrollArea::vertical().max_height(250.0).show(ui,|ui|{
@@ -1091,6 +1245,117 @@ fn move_choice(rows: &[usize], current: usize, up: bool, down: bool) -> Option<u
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn context_popup_rebuilds_after_same_frame_edits() {
+        for command in [
+            Some(EditCmd::Format),
+            Some(EditCmd::ToggleComment),
+            Some(EditCmd::ReplaceAll),
+            None,
+        ] {
+            let mut h = egui_kittest::Harness::builder().build_ui_state(
+                move |ui, console: &mut Console| {
+                    let cx = ConsoleCtx {
+                        connections: &[],
+                        schemas: None,
+                        driver: Driver::Postgres,
+                        dark: true,
+                        font_size: 14.0,
+                        columns: None,
+                        auto_complete: false,
+                    };
+                    let mut actions = Vec::new();
+                    console.editor(ui, &cx, &mut Vec::new());
+                    console.navigation_command(ui.ctx(), cx.driver, Command::Context, &mut actions);
+                    console.open_find(true);
+                    let find = console.find.as_mut().unwrap();
+                    find.query = "1".into();
+                    find.replace = "42".into();
+                    if let Some(command) = command {
+                        console.apply_cmd(ui.ctx(), &cx, command, &mut actions);
+                    } else {
+                        console.insert_text(ui.ctx(), "42");
+                    }
+                    console.navigation_ui(ui, &cx, &mut actions);
+                    assert_eq!(
+                        console.navigation.index().revision,
+                        console.navigation.revision()
+                    );
+                },
+                Console::new(1, "test".into(), "select 1 from notes;".into(), None),
+            );
+            h.run_steps(1);
+        }
+    }
+
+    #[test]
+    fn word_selection_uses_the_same_endpoints_as_movement() {
+        let text = "order_id, next\n\nسلام.value";
+        for word_end in [false, true] {
+            for stop_at_line_break in [false, true] {
+                for (key, start) in [(Key::ArrowRight, 0), (Key::ArrowLeft, text.chars().count())] {
+                    let mut h = harness(text, false);
+                    let ctx = h.ctx.clone();
+                    h.state_mut().console.navigation.saved.word_end = word_end;
+                    h.state_mut().console.navigation.saved.stop_at_line_break = stop_at_line_break;
+                    h.state_mut().console.navigate_to(&ctx, start, None);
+                    h.run_steps(1);
+                    let mods = if cfg!(target_os = "macos") {
+                        Modifiers::ALT
+                    } else {
+                        Modifiers::CTRL
+                    };
+                    h.key_press_modifiers(mods, key);
+                    h.run_steps(2);
+                    let endpoint = h.state().console.navigation.caret;
+                    h.state_mut().console.navigate_to(&ctx, start, None);
+                    h.run_steps(1);
+                    h.key_press_modifiers(mods | Modifiers::SHIFT, key);
+                    h.run_steps(2);
+                    assert_eq!(h.state().console.navigation.caret, endpoint);
+                    assert_eq!(h.state().console.navigation.anchor, Some(start));
+                    h.key_press_modifiers(mods | Modifiers::SHIFT, key);
+                    h.run_steps(2);
+                    assert_eq!(h.state().console.navigation.anchor, Some(start));
+                    assert_eq!(h.state().console.text, text);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_events_protect_alt_defaults_including_altgr() {
+        for (mods, key) in [
+            (Modifiers::ALT, Key::Num7),
+            (Modifiers::ALT, Key::Q),
+            (Modifiers::ALT | Modifiers::SHIFT, Key::B),
+        ] {
+            for ctrl in [false, true] {
+                let modifiers = if ctrl { mods | Modifiers::CTRL } else { mods };
+                let input = egui::RawInput {
+                    events: vec![
+                        Event::Key {
+                            key,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers,
+                        },
+                        Event::Text("@".into()),
+                    ],
+                    ..Default::default()
+                };
+                let mut output = egui::Context::default().run_ui(input, |ui| {
+                    ui.input_mut(|i| {
+                        assert!(!take_key(i, mods, key));
+                        assert_eq!(i.events.len(), 2);
+                    });
+                });
+                output.textures_delta.clear();
+            }
+        }
+    }
 
     #[test]
     fn many_selected_scopes_reuse_geometry_and_only_paint_visible_rows() {
@@ -1927,11 +2192,11 @@ mod tests {
     }
 
     #[test]
-    fn next_issue_wraps_and_highest_priority_skips_warnings() {
+    fn next_issue_wraps_without_flagging_whitespace() {
         let mut c = Console::new(1, "test".into(), "SELECT 1;  \nSELECT (2;".into(), None);
         let ctx = egui::Context::default();
         c.navigate_to(&ctx, 0, None);
-        c.navigation.highest_priority = true;
+        c.navigation.saved.highest_priority = true;
         c.navigation_command(&ctx, Driver::Postgres, Command::NextIssue, &mut Vec::new());
         assert_eq!(c.cursor, Some((19, 19)));
         c.navigation_command(&ctx, Driver::Postgres, Command::NextIssue, &mut Vec::new());
@@ -1943,7 +2208,7 @@ mod tests {
         let text = "CREATE TRIGGER audit AFTER INSERT ON notes BEGIN\n INSERT INTO log VALUES ('a;');\n UPDATE log SET n = 2;\nEND;\nSELECT 42;";
         let ss = sql::split_statements(text, Driver::Sqlite);
         assert_eq!(ss.len(), 2);
-        assert!(ss[0].text.ends_with("END;"));
+        assert!(ss[0].text.ends_with("END"));
         assert_eq!(ss[1].text, "SELECT 42");
     }
 }

@@ -332,6 +332,26 @@ fn add_routine_schemas(driver: Driver, schemas: Option<&mut Vec<SchemaInfo>>, ro
 mod tests {
     use super::*;
 
+    #[test]
+    fn gutter_and_structure_route_routine_tabs_to_execute_dialog() {
+        use egui_kittest::kittest::Queryable;
+        for structure in [false, true] {
+            let mut h = routine_editor_harness();
+            if structure {
+                let app = h.state_mut();
+                app.consoles[app.active].open_structure(Driver::MsSql);
+                h.run_steps(2);
+                h.get_by_label("Execute selected statements").click();
+            } else {
+                h.get_by_label("Execute statement 1").click();
+            }
+            h.run_steps(1);
+            let app = h.state();
+            assert!(app.routines.execute.is_some());
+            assert!(app.consoles[app.active].last_statements.is_empty());
+        }
+    }
+
     fn routine_editor_harness() -> egui_kittest::Harness<'static, DataCraftApp> {
         let mut app = crate::app::tests::tabs_app();
         let mut connection = crate::app::ConnState::new(crate::db::ConnectionConfig::new(7, Driver::MsSql));
@@ -521,9 +541,18 @@ mod tests {
         editor.comment.submitted = Some("edited comment".into());
         editor.comment.text = "newer comment".into();
         app.routine_tab_saved(id, Ok(()));
-        assert_eq!(app.consoles[first].routine.as_ref().unwrap().saved, "submitted");
-        assert_eq!(app.consoles[first].routine.as_ref().unwrap().comment.saved, "edited comment");
-        assert!(app.consoles[first].has_pending_edits(), "a reply must not mark newer text as saved");
+        assert_eq!(
+            app.consoles[first].routine.as_ref().unwrap().saved,
+            "submitted"
+        );
+        assert_eq!(
+            app.consoles[first].routine.as_ref().unwrap().comment.saved,
+            "edited comment"
+        );
+        assert!(
+            app.consoles[first].has_pending_edits(),
+            "a reply must not mark newer text as saved"
+        );
         let editor = app.consoles[first].routine.as_ref().unwrap();
         let persisted = crate::app::PersistedConsole {
             editor_navigation: Default::default(),

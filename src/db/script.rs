@@ -4,7 +4,7 @@
 
 use super::{ConnectionConfig, Driver, Session};
 use crate::i18n::tr;
-use crate::sql::{Statement, split_batches, split_statements};
+use crate::sql::{Statement, split_batches, split_stream_statements};
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -245,23 +245,13 @@ impl Splitter {
         })
     }
 
-    /// The statements (SQL Server: `GO` batches) of `buf`. SQLite's triggers keep their `;`s.
+    /// The statements (SQL Server: `GO` batches) of `buf`. Unfinished SQLite triggers
+    /// remain one pending statement until more input arrives.
     fn statements(&self) -> Vec<Statement> {
         if self.driver != Driver::Sqlite {
             return split_batches(&self.buf, self.driver);
         }
-        split_statements(&self.buf, self.driver)
-            .into_iter()
-            .map(|mut s| {
-                // File pieces omit the outer terminator; the shared splitter preserves a
-                // trigger's entire body, including its inner semicolons.
-                if s.text.ends_with(';') {
-                    s.text.pop();
-                    s.end -= 1;
-                }
-                s
-            })
-            .collect()
+        split_stream_statements(&self.buf, self.driver)
     }
 }
 

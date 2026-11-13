@@ -340,19 +340,6 @@ pub fn issues(text: &str, driver: Driver) -> Vec<Issue> {
         message: "Unclosed bracket",
         error: true,
     }));
-    // Trailing spaces are navigable low-priority warnings.
-    let mut start = 0;
-    for line in text.split_inclusive('\n') {
-        let row = line.trim_end_matches(['\r', '\n']);
-        if row.ends_with([' ', '\t']) {
-            out.push(Issue {
-                position: start + row.trim_end().chars().count(),
-                message: "Trailing whitespace",
-                error: false,
-            });
-        }
-        start += line.chars().count();
-    }
     out.sort_by_key(|i| i.position);
     out
 }
@@ -405,6 +392,18 @@ pub fn cte_declarations(text: &str, driver: Driver) -> Vec<(Identifier, usize)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailing_spaces_in_typed_sql_literals_and_comments_are_not_issues() {
+        for text in [
+            "SELECT ",
+            "SELECT 1;  \n",
+            "SELECT 'one  \ntwo ';",
+            "/* one  \ntwo */ SELECT 1;",
+        ] {
+            assert!(issues(text, Driver::Postgres).is_empty(), "{text}");
+        }
+    }
     #[test]
     fn unicode_lines_columns_and_paragraphs() {
         let s = "select 'سلام';\n\nselect 2;";

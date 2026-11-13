@@ -56,6 +56,7 @@ struct Definitions {
 
 #[derive(Default)]
 pub(super) struct State {
+    pub(super) settings: console::navigation::Settings,
     pub(super) reveal_tab: Option<u64>,
     recent: Vec<Target>,
     switcher: Option<Switcher>,
@@ -72,6 +73,12 @@ pub(super) struct State {
     bookmark_sort_name: bool,
 }
 impl State {
+    pub fn new(settings: console::navigation::Settings) -> Self {
+        Self {
+            settings,
+            ..Default::default()
+        }
+    }
     pub fn is_open(&self) -> bool {
         self.switcher.is_some() || self.definitions.is_some() || self.bookmarks
     }
@@ -1452,6 +1459,108 @@ mod tests {
             before,
             "switcher keys must not reach the SQL editors"
         );
+    }
+
+    #[test]
+    fn revealing_a_renamed_tab_consumes_the_scroll_request_and_settles() {
+        let mut app = metadata_app("SELECT 1;");
+        app.renaming = Some((app.consoles[0].id, "Renaming query".into()));
+        app.navigation.reveal_tab = Some(app.consoles[0].id);
+        let mut h = harness(app);
+        assert!(h.state().navigation.reveal_tab.is_none());
+        h.run_steps(40);
+        assert!(
+            h.try_run().is_ok(),
+            "renaming must not keep a reveal repaint loop alive"
+        );
+    }
+
+    #[test]
+    fn editor_settings_apply_to_existing_and_new_tabs_without_sharing_bookmarks() {
+        let mut app = metadata_app("SELECT 1;");
+        app.consoles[0]
+            .navigation
+            .saved
+            .bookmarks
+            .push(console::navigation::Bookmark {
+                position: 0,
+                mnemonic: "A".into(),
+                description: String::new(),
+            });
+        app.navigation
+            .settings
+            .bindings
+            .push(console::navigation::Binding {
+                command: Command::ParagraphForward,
+                shortcut: egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::J),
+            });
+        app.consoles[0].navigation.pending.push(Command::Settings);
+        let mut h = harness(app);
+        h.get_by_label("Show line numbers").click();
+        h.run_steps(2);
+        let app = h.state_mut();
+        assert!(!app.navigation.settings.line_numbers);
+        let new = app.new_console(None, None, "SELECT 2;".into());
+        for console in &app.consoles {
+            assert!(!console.navigation.saved.line_numbers);
+            assert_eq!(console.navigation.saved.bindings.len(), 1);
+        }
+        assert_eq!(app.consoles[0].navigation.saved.bookmarks.len(), 1);
+        assert!(app.consoles[new].navigation.saved.bookmarks.is_empty());
+    }
+
+    #[test]
+    fn reconnect_starts_timing_when_pending_sql_is_sent() {
+        use egui_kittest::kittest::NodeT;
+        let path =
+            std::env::temp_dir().join(format!("datacraft-reconnect-{}.db", uuid::Uuid::new_v4()));
+        drop(rusqlite::Connection::open(&path).unwrap());
+        let mut app = crate::app::tests::tabs_app();
+        let mut config = ConnectionConfig::new(7, Driver::Sqlite);
+        config.file_path = path.to_string_lossy().into_owned();
+        app.conns.push(ConnState::new(config));
+        app.active = 0;
+        app.object_browser.active = false;
+        app.consoles[0].conn = Some(7);
+        app.consoles[0].text = "SELECT 42;".into();
+        app.consoles[0].cursor = Some((0, 0));
+        let mut h = harness(app);
+        for _ in 0..2 {
+            h.state_mut().run_console(0, false);
+            assert!(h.state().consoles[0].pending.is_some());
+            assert!(
+                h.state().consoles[0].run_started.is_none(),
+                "connection setup must not consume the prepared timing plan"
+            );
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            while h.state().consoles[0].is_busy() {
+                assert!(Instant::now() < deadline, "SQLite query timed out");
+                h.run_steps(1);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            h.run_steps(2);
+            assert!(!h.state().consoles[0].log.iter().any(|entry| entry.is_error));
+            assert!(
+                [" ms", " s"].iter().any(|suffix| h
+                    .query_all_by_label_contains(suffix)
+                    .into_iter()
+                    .any(|node| {
+                        node.accesskit_node()
+                            .value()
+                            .or_else(|| node.accesskit_node().label())
+                            .is_some_and(|label| {
+                                label.split_once(' ').is_some_and(|(value, unit)| {
+                                    value.parse::<f64>().is_ok() && matches!(unit, "ms" | "s")
+                                })
+                            })
+                    })),
+                "the first query after connecting must show its timing beside the SQL"
+            );
+            h.state_mut().disconnect(7);
+            h.run_steps(2);
+        }
+        drop(h);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

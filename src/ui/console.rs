@@ -469,7 +469,9 @@ impl Console {
     fn set_cursor(&mut self, ctx: &egui::Context, a: usize, b: usize) {
         let id = self.editor_id();
         let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
-        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
         state.store(ctx, id);
         self.cursor = Some((a.min(b), a.max(b)));
         self.navigation.sync_text(&self.text);
@@ -624,7 +626,9 @@ impl Console {
             }
         }
         let ctx = ui.ctx().clone();
-        for cmd in cmds { self.apply_cmd(&ctx, cx, cmd, &mut actions); }
+        for cmd in cmds {
+            self.apply_cmd(&ctx, cx, cmd, &mut actions);
+        }
         self.navigation_ui(ui, cx, &mut actions);
         actions
     }
@@ -1831,7 +1835,11 @@ impl Console {
         let driver = cx.driver;
         let font_size = cx.font_size;
         // Find bar matches are painted with a background (the selected one stronger).
-        let search = self.find.as_ref().filter(|f| !f.query.is_empty()).map(|f| (f.query.clone(), f.case_sensitive, f.whole_word));
+        let search = self
+            .find
+            .as_ref()
+            .filter(|f| !f.query.is_empty())
+            .map(|f| (f.query.clone(), f.case_sensitive, f.whole_word));
         let selected = self.cursor;
         let hl_cache = &mut self.hl_cache;
         let text_revision = std::cell::Cell::new(self.navigation.revision());
@@ -1852,7 +1860,8 @@ impl Console {
             let mut job = match hl_cache {
                 Some((k, job)) if *k == key => job.clone(),
                 _ => {
-                    let mut job = sql::highlight_for(text, driver, dark, FontId::monospace(font_size));
+                    let mut job =
+                        sql::highlight_for(text, driver, dark, FontId::monospace(font_size));
                     job.wrap.max_width = f32::INFINITY;
                     if let Some((q, case, whole)) = &search {
                         let (other, current) = match_colors(dark);
@@ -1874,7 +1883,8 @@ impl Console {
         };
 
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
-        let line_count = self.navigation
+        let line_count = self
+            .navigation
             .line_count()
             .unwrap_or_else(|| self.text.bytes().filter(|&b| b == b'\n').count() + 1);
         let digits = line_count.to_string().len().max(2) as f32;
@@ -1979,8 +1989,8 @@ impl Console {
                                     let marker=ui.interact(r.expand(3.0), editor_id.with(("problem", line)), Sense::click()).on_hover_text(tr(problem.message));
                                     if marker.clicked(){issue_jump=Some(problem.position);}
                                     marker.context_menu(|ui|{
-                                        ui.radio_value(&mut self.navigation.highest_priority,false,tr("All problems"));
-                                        ui.radio_value(&mut self.navigation.highest_priority,true,tr("Problems with highest priority"));
+                                        ui.radio_value(&mut self.navigation.saved.highest_priority,false,tr("All problems"));
+                                        ui.radio_value(&mut self.navigation.saved.highest_priority,true,tr("Problems with highest priority"));
                                     });
                                 }
                                 line += 1;
@@ -2216,6 +2226,9 @@ impl Console {
 
 /// Removes a key press with exactly these modifiers (⌘/Ctrl, ⌥, ⇧) from the frame's events.
 pub(crate) fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> bool {
+    if mods.alt && i.events.iter().any(|e| matches!(e, Event::Text(_))) {
+        return false;
+    }
     let before = i.events.len();
     i.events.retain(|e| {
         !matches!(e, Event::Key { key: k, pressed: true, modifiers: m, .. }

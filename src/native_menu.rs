@@ -112,7 +112,9 @@ impl MenuCommand {
     }
 
     fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().chain(
+        Self::ALL
+            .into_iter()
+            .chain(
                 crate::ui::console::navigation::ACTIONS
                     .iter()
                     .map(|(c, _, _)| Self::Navigate(*c)),
@@ -287,7 +289,9 @@ type Label = fn() -> &'static str;
 fn build() -> muda::Result<Built> {
     let labels = RefCell::new(Vec::new());
     let keep = |entry: Entry, text: Label| {
-        labels.borrow_mut().push(Labeled { entry, text: Box::new(text),
+        labels.borrow_mut().push(Labeled {
+            entry,
+            text: Box::new(text),
         })
     };
 
@@ -319,17 +323,11 @@ fn build() -> muda::Result<Built> {
             &sep(),
             &item(MenuCommand::Settings, || tr("Settings…"), acc(cmd, Code::Comma)),
             &sep(),
-            &predefined(PredefinedMenuItem::services(Some(tr("Services"))), || {
-                tr("Services")
-            }),
+            &predefined(PredefinedMenuItem::services(Some(tr("Services"))), || tr("Services")),
             &sep(),
-            &predefined(PredefinedMenuItem::hide(Some(tr("Hide DataCraft"))), || {
-                tr("Hide DataCraft")
-            }),
+            &predefined(PredefinedMenuItem::hide(Some(tr("Hide DataCraft"))), || tr("Hide DataCraft")),
             &predefined(PredefinedMenuItem::hide_others(Some(tr("Hide Others"))), || tr("Hide Others")),
-            &predefined(PredefinedMenuItem::show_all(Some(tr("Show All"))), || {
-                tr("Show All")
-            }),
+            &predefined(PredefinedMenuItem::show_all(Some(tr("Show All"))), || tr("Show All")),
             &sep(),
             &item(MenuCommand::Quit, || tr("Quit DataCraft"), acc(cmd, Code::KeyQ)),
         ],
@@ -401,13 +399,12 @@ fn build() -> muda::Result<Built> {
     let window_menu = submenu(
         || tr("Window"),
         &[
-            &predefined(PredefinedMenuItem::minimize(Some(tr("Minimize"))), || {
-                tr("Minimize")
-            }),
+            &predefined(PredefinedMenuItem::minimize(Some(tr("Minimize"))), || tr("Minimize")),
             &PredefinedMenuItem::maximize(Some(tr("Zoom"))),
             &sep(),
-            &predefined(PredefinedMenuItem::bring_all_to_front(Some(tr("Bring All to Front"))), || tr("Bring All to Front"),
-            ),
+            &predefined(PredefinedMenuItem::bring_all_to_front(Some(tr("Bring All to Front"))), || {
+                tr("Bring All to Front")
+            }),
         ],
     )?;
     #[cfg(target_os = "macos")]
@@ -427,9 +424,24 @@ fn build() -> muda::Result<Built> {
             text: Box::new(move || tr(label)),
         });
     }
-    let menu = Menu::with_items(&[&app_menu, &file_menu, &edit_menu, &view_menu,
-        &navigation_menu, &run_menu, &window_menu, &help_menu])?;
-    Ok(Built { menu, theme_light, theme_dark, explorer, results, labels: labels.into_inner() })
+    let menu = Menu::with_items(&[
+        &app_menu,
+        &file_menu,
+        &edit_menu,
+        &view_menu,
+        &navigation_menu,
+        &run_menu,
+        &window_menu,
+        &help_menu,
+    ])?;
+    Ok(Built {
+        menu,
+        theme_light,
+        theme_dark,
+        explorer,
+        results,
+        labels: labels.into_inner(),
+    })
 }
 
 #[cfg(test)]
