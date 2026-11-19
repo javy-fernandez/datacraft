@@ -253,6 +253,11 @@ fn classify(driver: Driver, data_type: &str) -> Kind {
         "tinyint" if args.first() == Some(&1) => Kind::Bool,
         "tinyint" | "mediumint" | "int" | "integer" | "int4" | "serial" | "year" => Kind::Int,
         "bigint" | "int8" | "bigserial" => Kind::BigInt,
+        // DuckDB's unsigned and wide integers: the next type that holds them.
+        "utinyint" | "usmallint" => Kind::Int,
+        "uinteger" => Kind::BigInt,
+        "ubigint" => Kind::Decimal(Some((20, 0))),
+        "hugeint" | "uhugeint" => Kind::Decimal(Some((38, 0))),
         "number" | "numeric" | "decimal" | "dec" => match args.as_slice() {
             // Oracle and Snowflake write integers as NUMBER(p) / NUMBER(p,0).
             [p] | [p, 0] if *p <= 4 => Kind::SmallInt,
@@ -348,6 +353,21 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
     match (kind, to) {
         // Never a copy target (the dialog isn't offered for it).
         (_, Redis | MongoDb | InfluxDb | Kusto) => "string".into(),
+        (_, DuckDb) => match kind {
+            Kind::SmallInt => "SMALLINT".into(),
+            Kind::Int => "INTEGER".into(),
+            Kind::BigInt => "BIGINT".into(),
+            Kind::Decimal(Some((p, s))) => format!("DECIMAL({},{})", p.min(38), s.min(p.min(38))),
+            Kind::Decimal(None) => "DECIMAL(38,10)".into(),
+            Kind::Float => "DOUBLE".into(),
+            Kind::Bool => "BOOLEAN".into(),
+            Kind::Date => "DATE".into(),
+            Kind::Time => "TIME".into(),
+            Kind::Timestamp => "TIMESTAMP".into(),
+            Kind::TimestampTz => "TIMESTAMPTZ".into(),
+            Kind::Binary => "BLOB".into(),
+            Kind::Varchar(_) | Kind::Text => "VARCHAR".into(),
+        },
         (_, Sqlite) => match kind {
             Kind::SmallInt | Kind::Int | Kind::BigInt => "INTEGER".into(),
             Kind::Decimal(_) => "NUMERIC".into(),

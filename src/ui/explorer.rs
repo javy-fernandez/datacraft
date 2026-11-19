@@ -1303,6 +1303,8 @@ fn connection_summary(c: &ConnState) -> String {
     let cfg = &c.cfg;
     match cfg.driver {
         crate::db::Driver::Sqlite => format!("SQLite: {}", cfg.file_path),
+        crate::db::Driver::DuckDb if cfg.file_path.trim().is_empty() => "DuckDB: :memory:".into(),
+        crate::db::Driver::DuckDb => format!("DuckDB: {}", cfg.file_path),
         d => format!("{}: {}@{}:{}/{}", d.label(), cfg.user, cfg.host, cfg.port, cfg.database),
     }
 }

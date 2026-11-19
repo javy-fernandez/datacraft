@@ -58,6 +58,10 @@ pub(crate) fn common_types(driver: Driver) -> &'static [&'static str] {
             "nvarchar(max)", "varchar(255)", "date", "datetime2", "uniqueidentifier", "varbinary(max)",
         ],
         Driver::Sqlite => &["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "BOOLEAN", "DATE", "DATETIME"],
+        Driver::DuckDb => &[
+            "INTEGER", "BIGINT", "SMALLINT", "HUGEINT", "DECIMAL(18,2)", "DOUBLE", "BOOLEAN", "VARCHAR", "DATE", "TIME",
+            "TIMESTAMP", "TIMESTAMPTZ", "INTERVAL", "UUID", "BLOB", "JSON", "VARCHAR[]",
+        ],
         Driver::MySql | Driver::MariaDb => &[
             "int", "bigint", "smallint", "tinyint", "decimal(10,2)", "double", "boolean", "varchar(255)", "text",
             "longtext", "date", "datetime", "timestamp", "json", "blob",
@@ -84,7 +88,7 @@ pub fn default_schema(driver: Driver) -> &'static str {
     match driver {
         Driver::Postgres => "public",
         Driver::MsSql => "dbo",
-        Driver::Sqlite => "main",
+        Driver::Sqlite | Driver::DuckDb => "main",
         Driver::Snowflake => "PUBLIC",
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => "",
         // ClickHouse has no schemas: the (only) database is the schema shown.
@@ -98,7 +102,7 @@ fn id_column(driver: Driver) -> NewColumn {
     let data_type = match driver {
         Driver::Postgres => "integer",
         Driver::MsSql => "int",
-        Driver::Sqlite => "INTEGER",
+        Driver::Sqlite | Driver::DuckDb => "INTEGER",
         Driver::MySql | Driver::MariaDb => "int",
         Driver::Oracle => "number(10)",
         Driver::Snowflake => "number(38,0)",

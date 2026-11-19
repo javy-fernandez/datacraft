@@ -75,6 +75,11 @@ pub fn fk_sql(driver: Driver, db: &str, schema: &str) -> String {
         Driver::Sqlite => "SELECT m.name || ':' || p.id, 'main', m.name, p.\"from\", 'main', p.\"table\", p.\"to\", p.seq \
              FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table'"
             .into(),
+        // DuckDB: one row per key column (the lists unnest together, in order).
+        Driver::DuckDb => "SELECT constraint_name, schema_name, table_name, unnest(constraint_column_names), schema_name, \
+             referenced_table, unnest(referenced_column_names), unnest(range(1, len(constraint_column_names) + 1)) \
+             FROM duckdb_constraints() WHERE constraint_type = 'FOREIGN KEY' AND database_name = current_database()"
+            .into(),
         Driver::Snowflake => format!("SHOW IMPORTED KEYS IN SCHEMA {}", Session::quote_table(driver, db, schema)),
         // No foreign keys (copies are not offered for them).
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),

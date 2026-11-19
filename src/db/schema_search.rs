@@ -108,6 +108,7 @@ fn search_sql(
                 Driver::Snowflake => format!("TO_VARCHAR({column})"),
                 Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => column.clone(),
                 Driver::Postgres | Driver::Sqlite => format!("CAST({column} AS TEXT)"),
+                Driver::DuckDb => format!("CAST({column} AS VARCHAR)"),
                 // toString keeps NULL (a CAST to String fails on it) and takes any type.
                 Driver::ClickHouse => format!("toString({column})"),
             };

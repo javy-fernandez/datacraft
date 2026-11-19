@@ -32,7 +32,7 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
                 // MySQL and Snowflake also treat a backslash as an escape inside strings; ClickHouse
                 // does the same inside '…' (its `"…"` stays an identifier).
                 Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => format!("'{}'", escaped.replace('\\', "\\\\")),
-                Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => format!("'{escaped}'"),
+                Driver::Postgres | Driver::Sqlite | Driver::DuckDb | Driver::Oracle | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => format!("'{escaped}'"),
                 // KQL escapes both the quote and the backslash with a backslash.
                 Driver::Kusto => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")),
             }
