@@ -169,6 +169,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
 | SQLite | Local database files, SQL console, data editor and online backups |
+| DuckDB | Embedded analytics engine: a `.duckdb` file or an in-memory database, SQL console, data editor, and direct queries over Parquet, CSV, JSON and Excel files (`SELECT * FROM 'sales.parquet'`). Its official library (DuckDB 2.0.0) is a downloadable add-on: the connection dialog's **Download driver** fetches it once from DuckDB's GitHub release and checks its SHA-256, so the app stays small for everyone else |
 | ClickHouse | Native TCP protocol (port 9000, or 9440 with TLS checked against the system's certificates), SQL console and data editor for inserts only (updates and deletes are asynchronous mutations, run them from the console). Copies into ClickHouse run without a transaction |
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
@@ -177,7 +178,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 
 ### SSH tunnels
 
-Every engine reached over TCP (all but SQLite, Snowflake and Kusto) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
+Every engine reached over TCP (all but SQLite, DuckDB, Snowflake and Kusto) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
 
 - The first time a bastion is reached, Test Connection shows its key fingerprint and asks before trusting it. Keys already in `~/.ssh/known_hosts` are trusted, others go to DataCraft's own `ssh_known_hosts`, and a bastion whose key changed is refused, naming both fingerprints.
 - The sessions of a data source share one SSH connection, with keepalives every 30 seconds. If it drops, the next query opens it again.
@@ -203,7 +204,7 @@ PostgreSQL, MySQL and MariaDB data sources choose how the connection is encrypte
 
 ### Bring your connections
 
-- **Paste a URL:** the URL field also takes `postgresql://`, `mysql://`, `mariadb://`, `sqlserver://`, `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://` and `clickhouse://` URLs, and a SQLite file's path. The engine, user, password and SSL settings are filled in; the password goes to the system keychain.
+- **Paste a URL:** the URL field also takes `postgresql://`, `mysql://`, `mariadb://`, `sqlserver://`, `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://`, `clickhouse://` and `duckdb:` URLs, and a SQLite or DuckDB file's path. The engine, user, password and SSL settings are filled in; the password goes to the system keychain.
 - **Copy as URL:** a connection's context menu copies its URL for other tools, without the password.
 - **Import from DataGrip:** **+ → Import from DataGrip…** lists the data sources of DataGrip's projects (or any `dataSources.xml`) with their engine, folder and address. Engines DataCraft doesn't support are shown but can't be ticked, existing ones are left unticked and a name in use is imported as a copy. Passwords aren't imported: DataCraft asks for each one on the first connect. DataGrip's files are only read.
 

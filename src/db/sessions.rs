@@ -263,7 +263,7 @@ pub fn list_sql(driver: Driver, nonce: &str) -> Option<String> {
              if(is_cancelled, 'cancelling', 'running') AS s_state, toString(toUInt64(elapsed * 1000)) AS s_ms, query AS s_query \
              FROM system.processes ORDER BY elapsed DESC"
         ),
-        Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
+        Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
     };
     Some(sql)
 }

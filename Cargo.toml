@@ -42,6 +42,10 @@ uuid = { version = "1.28.0", features = ["v4"] }
 # SSH tunnels to the database through a bastion (pure Rust, crypto on aws-lc like the rest).
 russh = "0.65.0"
 flate2 = "1.1.10"
+# DuckDB: its official library is downloaded on request and loaded at runtime (not linked).
+libloading = "0.8"
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
 muda = { version = "0.21.2", default-features = false }
 sys-locale = "0.3.2"
 # ClickHouse: protocolo nativo TCP (nativeclick, tenedero de klickhouse; sin derive ni serde: filas dinámicas).

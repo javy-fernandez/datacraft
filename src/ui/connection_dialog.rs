@@ -147,6 +147,8 @@ impl ConnectionDialog {
         match cfg.driver {
             Driver::Sqlite if cfg.file_path.trim().is_empty() => Err(tr("Specify the database file").into()),
             Driver::Sqlite => Ok(()),
+            // No file: an in-memory database.
+            Driver::DuckDb => Ok(()),
             _ if cfg.host.trim().is_empty() => Err(tr("Host is required").into()),
             Driver::Snowflake => snowflake::credentials(cfg).map(|_| ()).map_err(|e| e.to_string()),
             _ if tls::supported(cfg.driver) && cfg.tls.mode != TlsMode::Disable && cfg.tls.cert_file.trim().is_empty() != cfg.tls.key_file.trim().is_empty() => {
@@ -439,10 +441,15 @@ impl ConnectionDialog {
             driver_combo(ui, &mut item.cfg, p);
             ui.end_row();
 
-            if item.cfg.driver == Driver::Sqlite {
+            if matches!(item.cfg.driver, Driver::Sqlite | Driver::DuckDb) {
                 ui.label(tr("File:"));
-                sqlite_file(ui, &mut item.cfg, &mut self.error);
+                database_file(ui, &mut item.cfg, &mut self.error);
                 ui.end_row();
+                if item.cfg.driver == Driver::DuckDb {
+                    ui.label("");
+                    duckdb_driver_row(ui, p);
+                    ui.end_row();
+                }
             } else {
                 ui.label(tr("Connection type:"));
                 segmented(ui, &mut item.cfg.url_only, [(false, tr("default")), (true, tr("URL only"))], p);
@@ -471,7 +478,7 @@ impl ConnectionDialog {
 
             if !item.cfg.url_only {
                 match item.cfg.driver {
-                    Driver::Sqlite => {}
+                    Driver::Sqlite | Driver::DuckDb => {}
                     Driver::Snowflake => {
                         for (label, value) in [
                             (tr("Role:"), &mut item.cfg.role),
@@ -950,7 +957,7 @@ impl ConnectionDialog {
 /// list already has.
 fn same_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
     a.driver == b.driver
-        && if a.driver == Driver::Sqlite {
+        && if matches!(a.driver, Driver::Sqlite | Driver::DuckDb) {
             a.file_path.trim() == b.file_path.trim()
         } else {
             a.host.trim().eq_ignore_ascii_case(b.host.trim()) && a.port == b.port && a.database.trim() == b.database.trim() && a.user.trim() == b.user.trim()
@@ -959,7 +966,10 @@ fn same_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
 
 /// `user@host:port/database`, or the SQLite file.
 fn target(c: &ConnectionConfig) -> String {
-    if c.driver == Driver::Sqlite {
+    if matches!(c.driver, Driver::Sqlite | Driver::DuckDb) {
+        if c.file_path.trim().is_empty() {
+            return ":memory:".into();
+        }
         return home_relative(std::path::Path::new(&c.file_path));
     }
     let user = if c.user.trim().is_empty() { String::new() } else { format!("{}@", c.user.trim()) };
@@ -1145,14 +1155,19 @@ fn url_row(ui: &mut Ui, cfg: &mut ConnectionConfig, url: &mut String, p: &Palett
     ui.end_row();
 }
 
-fn sqlite_file(ui: &mut Ui, cfg: &mut ConnectionConfig, error: &mut Option<String>) {
+/// The database file of SQLite and DuckDB, with Browse… and New….
+fn database_file(ui: &mut Ui, cfg: &mut ConnectionConfig, error: &mut Option<String>) {
+    let duck = cfg.driver == Driver::DuckDb;
+    let (label, extensions, new_name): (&str, &[&str], &str) =
+        if duck { ("DuckDB", &["duckdb", "ddb", "db"], "new.duckdb") } else { ("SQLite", &["db", "sqlite", "sqlite3", "db3"], "new.db") };
     ui.horizontal(|ui| {
         let w = (ui.available_width() - 150.0).max(160.0);
-        ui.add(egui::TextEdit::singleline(&mut cfg.file_path).margin(egui::vec2(8.0, 5.0)).desired_width(w));
+        let hint = if duck { tr("Empty: an in-memory database") } else { "" };
+        ui.add(egui::TextEdit::singleline(&mut cfg.file_path).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(w));
         if ui.button(tr("Browse…")).clicked()
             && let Some(p) = rfd::FileDialog::new()
-                .set_title(tr("Open SQLite Database"))
-                .add_filter("SQLite", &["db", "sqlite", "sqlite3", "db3"])
+                .set_title(trf("Open {engine} Database", &[("engine", &label)]))
+                .add_filter(label, extensions)
                 .add_filter(tr("All files"), &["*"])
                 .pick_file()
         {
@@ -1160,19 +1175,52 @@ fn sqlite_file(ui: &mut Ui, cfg: &mut ConnectionConfig, error: &mut Option<Strin
         }
         if ui.button(tr("New…")).on_hover_text(tr("Create a new file")).clicked()
             && let Some(p) = rfd::FileDialog::new()
-                .set_title(tr("New SQLite Database"))
-                .add_filter("SQLite", &["db", "sqlite", "sqlite3"])
-                .set_file_name(tr("new.db"))
+                .set_title(trf("New {engine} Database", &[("engine", &label)]))
+                .add_filter(label, &extensions[..extensions.len().min(3)])
+                .set_file_name(new_name)
                 .save_file()
         {
-            // The driver no longer creates files: it is created empty here (SQLite
-            // initializes it on open). An existing file is reused.
+            // The drivers don't create files on a mistyped path: it is created empty here
+            // (SQLite and DuckDB initialize it on open). An existing file is reused.
             match std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&p) {
                 Ok(_) => {
                     cfg.file_path = p.to_string_lossy().into_owned();
                     *error = None;
                 }
                 Err(e) => *error = Some(trf("Could not create {path}: {error}", &[("path", &p.display()), ("error", &e)])),
+            }
+        }
+    });
+}
+
+/// DuckDB's driver: installed, or a button that downloads it (with its progress).
+fn duckdb_driver_row(ui: &mut Ui, p: &Palette) {
+    use crate::db::duckdb::install;
+    ui.horizontal(|ui| match install::state() {
+        install::State::Installed => {
+            ui.label(RichText::new(trf("DuckDB {version} driver installed", &[("version", &install::VERSION)])).size(12.0).color(p.muted));
+        }
+        install::State::Downloading(fraction) => {
+            let bar = egui::ProgressBar::new(fraction.unwrap_or(0.0)).desired_width(220.0).show_percentage();
+            ui.add(if fraction.is_none() { bar.animate(true) } else { bar });
+            ui.label(RichText::new(tr("Downloading the DuckDB driver…")).size(12.0).color(p.muted));
+        }
+        state => {
+            let size = install::download_size_mb();
+            if ui
+                .button(trf("Download driver ({size} MB)", &[("size", &size)]))
+                .on_hover_text(trf("Downloads DuckDB {version}'s official library from github.com/duckdb and checks its SHA-256", &[("version", &install::VERSION)]))
+                .clicked()
+            {
+                install::start_download(ui.ctx().clone());
+            }
+            match state {
+                install::State::Failed(e) => {
+                    ui.add(egui::Label::new(RichText::new(e.lines().next().unwrap_or_default().to_string()).size(12.0).color(p.error)).truncate()).on_hover_text(e);
+                }
+                _ => {
+                    ui.label(RichText::new(tr("The DuckDB driver is downloaded once, on request")).size(12.0).color(p.muted));
+                }
             }
         }
     });
@@ -1189,7 +1237,7 @@ mod tests {
     #[test]
     fn ssh_tab_and_its_checks() {
         for d in Driver::ALL {
-            assert_eq!(ConnectionDialog::has_tab(d, Tab::Ssh), !matches!(d, Driver::Sqlite | Driver::Snowflake | Driver::Kusto), "{d:?}");
+            assert_eq!(ConnectionDialog::has_tab(d, Tab::Ssh), !matches!(d, Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto), "{d:?}");
         }
         let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
         cfg.name = "db".into();
@@ -1261,6 +1309,16 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dialog-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         harness.render().expect("render").save(dir.join(format!("{name}.png"))).unwrap();
+    }
+
+    /// DuckDB's General tab before its driver is downloaded (the tests' data folder is empty).
+    #[test]
+    #[ignore]
+    fn render_duckdb_dialog() {
+        let mut duck = ConnectionConfig::new(4, Driver::DuckDb);
+        duck.name = "sales".into();
+        duck.file_path = "~/data/sales.duckdb".into();
+        render("duckdb_general", true, ConnectionDialog::edit(4, &[duck]), |_| {});
     }
 
     #[test]

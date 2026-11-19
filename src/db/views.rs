@@ -285,6 +285,12 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             driver.quote_ident(if schema.is_empty() { "main" } else { schema }),
             lit(view)
         ),
+        // The CREATE VIEW statement DuckDB keeps.
+        Driver::DuckDb => format!(
+            "SELECT sql FROM duckdb_views() WHERE database_name = current_database() AND schema_name = {} AND view_name = {}",
+            lit(if schema.is_empty() { "main" } else { schema }),
+            lit(view)
+        ),
         Driver::Snowflake => format!(
             "SELECT VIEW_DEFINITION FROM {}.INFORMATION_SCHEMA.VIEWS WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {}",
             driver.quote_ident(db),

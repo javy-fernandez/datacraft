@@ -2371,6 +2371,34 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// A DuckDB data source through the worker, as the app drives it: Test Connection, connect
+    /// (with the explorer's catalog), and a console run. Needs `DATACRAFT_DUCKDB_LIB`.
+    #[test]
+    fn duckdb_connects_lists_and_runs_through_the_worker() {
+        if !crate::db::duckdb::install::is_installed() {
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("datacraft-worker-{}.duckdb", uuid::Uuid::new_v4()));
+        std::fs::File::create(&path).unwrap();
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(72, Driver::DuckDb);
+        cfg.file_path = path.display().to_string();
+        w.send(Request::Test(cfg.clone()));
+        let Response::TestResult { result, .. } = wait_for(&w, |r| matches!(r, Response::TestResult { conn: 72, .. })) else { unreachable!() };
+        assert!(result.unwrap().unwrap().starts_with("DuckDB v"));
+        w.send(Request::Connect(cfg));
+        let Response::Connected { databases, .. } = wait_for(&w, |r| matches!(r, Response::Connected { conn: 72, .. })) else { unreachable!() };
+        assert_eq!(databases.len(), 1);
+        w.send(Request::Execute { conn: 72, db: None, console: 72, statements: vec!["CREATE TABLE t AS SELECT 7 AS v".into(), "SELECT v FROM t".into()], max_rows: 10, manual: false, parameters: Vec::new() });
+        let Response::Executed { results, error, .. } = wait_for(&w, |r| matches!(r, Response::Executed { console: 72, .. })) else { unreachable!() };
+        assert_eq!(error, None);
+        assert_eq!(results.last().unwrap().rows, vec![vec![Some("7".to_string())]]);
+        w.send(Request::Disconnect(72));
+        wait_for(&w, |r| matches!(r, Response::Disconnected(72)));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("duckdb.wal"));
+    }
+
     #[test]
     fn sqlite_reports_timing_provenance_for_auto_manual_batches_and_errors() {
         let path =

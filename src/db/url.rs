@@ -23,6 +23,8 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::MsSql => format!("jdbc:sqlserver://{authority};database={db}{extra}"),
         Driver::Oracle => format!("jdbc:oracle:thin:@//{authority}{slash_db}{extra}"),
         Driver::Sqlite => format!("jdbc:sqlite:{}", cfg.file_path.trim()),
+        // DuckDB's JDBC URL: `jdbc:duckdb:` alone is an in-memory database.
+        Driver::DuckDb => format!("jdbc:duckdb:{}", cfg.file_path.trim()),
         Driver::Snowflake => snowflake::jdbc_url(cfg),
         Driver::Redis if truthy(cfg.property("tls")) => format!("rediss://{authority}{slash_db}{extra}"),
         Driver::Redis => format!("redis://{authority}{slash_db}{extra}"),
@@ -48,6 +50,11 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
         Driver::Oracle => "jdbc:oracle:thin:@//",
         Driver::Sqlite => {
             let Some(path) = url.strip_prefix("jdbc:sqlite:") else { return false };
+            cfg.file_path = path.to_string();
+            return true;
+        }
+        Driver::DuckDb => {
+            let Some(path) = url.strip_prefix("jdbc:duckdb:") else { return false };
             cfg.file_path = path.to_string();
             return true;
         }
@@ -117,7 +124,7 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
 }
 
 /// Schemes of the connection URLs other tools take, and their engine.
-const SCHEMES: [(&str, Driver); 12] = [
+const SCHEMES: [(&str, Driver); 13] = [
     ("postgresql://", Driver::Postgres),
     ("postgres://", Driver::Postgres),
     ("mysql://", Driver::MySql),
@@ -130,6 +137,7 @@ const SCHEMES: [(&str, Driver); 12] = [
     ("redis://", Driver::Redis),
     ("clickhouse://", Driver::ClickHouse),
     ("sqlite:", Driver::Sqlite),
+    ("duckdb:", Driver::DuckDb),
 ];
 
 fn scheme_of(url: &str) -> Option<(&'static str, Driver)> {
@@ -145,11 +153,21 @@ fn mongo_srv(cfg: &ConnectionConfig) -> bool {
     cfg.host.trim().ends_with(".mongodb.net") || truthy(cfg.property("srv"))
 }
 
-/// A SQLite file's path, pasted as is (`/data/app.db`, `~/app.sqlite`, `C:\data\app.db`).
-fn sqlite_path(text: &str) -> bool {
+/// A SQLite or DuckDB file's path, pasted as is (`/data/app.db`, `~/app.sqlite`,
+/// `C:\data\app.db`, `~/sales.duckdb`), and its engine.
+fn file_path_driver(text: &str) -> Option<Driver> {
     let lower = text.to_ascii_lowercase();
     let absolute = text.starts_with('/') || text.starts_with("~/") || text.get(1..3).is_some_and(|s| s == ":\\" || s == ":/");
-    absolute && !text.contains("://") && [".db", ".sqlite", ".sqlite3", ".db3"].iter().any(|e| lower.ends_with(e))
+    if !absolute || text.contains("://") {
+        return None;
+    }
+    if [".duckdb", ".ddb"].iter().any(|e| lower.ends_with(e)) {
+        Some(Driver::DuckDb)
+    } else if [".db", ".sqlite", ".sqlite3", ".db3"].iter().any(|e| lower.ends_with(e)) {
+        Some(Driver::Sqlite)
+    } else {
+        None
+    }
 }
 
 /// The URL field's text: this driver's JDBC URL, or another tool's connection URL of any engine
@@ -159,8 +177,7 @@ pub fn apply_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
     let url = url.trim();
     let driver = match scheme_of(url) {
         Some((_, d)) => Some(d),
-        None if sqlite_path(url) => Some(Driver::Sqlite),
-        None => None,
+        None => file_path_driver(url),
     };
     if let Some(driver) = driver {
         let mut c = cfg.clone();
@@ -177,8 +194,9 @@ pub fn apply_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
 /// scheme must be one of; SQL Server also takes `;database=…;user=…` parameters. The password
 /// is only replaced when the URL has one.
 pub(crate) fn apply_connection_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
-    if cfg.driver == Driver::Sqlite {
-        let path = ["sqlite://", "sqlite:"].iter().find_map(|s| url.get(..s.len()).filter(|p| p.eq_ignore_ascii_case(s)).map(|_| &url[s.len()..]));
+    if matches!(cfg.driver, Driver::Sqlite | Driver::DuckDb) {
+        let schemes = if cfg.driver == Driver::Sqlite { ["sqlite://", "sqlite:"] } else { ["duckdb://", "duckdb:"] };
+        let path = schemes.iter().find_map(|s| url.get(..s.len()).filter(|p| p.eq_ignore_ascii_case(s)).map(|_| &url[s.len()..]));
         let path = path.unwrap_or(url);
         // `sqlite:////abs` (SQLAlchemy) is `/abs`.
         let path = if path.starts_with("//") { &path[path.len() - path.trim_start_matches('/').len() - 1..] } else { path };
@@ -396,6 +414,7 @@ pub fn connection_url(cfg: &ConnectionConfig) -> String {
             format!("clickhouse://{userinfo}{authority}/{db}{extra}{secure}")
         }
         Driver::Sqlite => format!("sqlite:{}", cfg.file_path.trim()),
+        Driver::DuckDb => format!("duckdb:{}", cfg.file_path.trim()),
         Driver::Oracle | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => jdbc_url(cfg),
     }
 }

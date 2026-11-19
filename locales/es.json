@@ -1865,5 +1865,25 @@
     "Numbered bookmarks: Ctrl+Shift+0…9. On Windows/Linux, Ctrl+G also opens Go to Line when Find is closed.": "Marcadores numerados: Ctrl+Shift+0…9. En Windows/Linux, Ctrl+G abre Ir a línea si la búsqueda está cerrada.",
     "No bookmarks. Use Toggle bookmark in an editor to add one.": "No hay marcadores. Usa Alternar marcador en el editor para añadir uno.",
     "Use Ctrl or Command; this shortcut is reserved or types text.": "Usa Ctrl o Comando; este atajo está reservado o introduce texto."
+  },
+  "duckdb": {
+    "Could not bind a parameter": "No se pudo enlazar un parámetro",
+    "Could not connect to the DuckDB database": "No se pudo conectar a la base de datos DuckDB",
+    "Could not download {url}": "No se pudo descargar {url}",
+    "Could not load the DuckDB driver {path}: {error}": "No se pudo cargar el driver de DuckDB {path}: {error}",
+    "Download driver ({size} MB)": "Descargar driver ({size} MB)",
+    "Downloading the DuckDB driver…": "Descargando el driver de DuckDB…",
+    "Downloads DuckDB {version}'s official library from github.com/duckdb and checks its SHA-256": "Descarga la librería oficial de DuckDB {version} desde github.com/duckdb y comprueba su SHA-256",
+    "DuckDB has no build for this platform": "DuckDB no tiene versión para esta plataforma",
+    "DuckDB {version} driver installed": "Driver de DuckDB {version} instalado",
+    "Empty: an in-memory database": "Vacío: una base de datos en memoria",
+    "New {engine} Database": "Nueva base de datos {engine}",
+    "Open {engine} Database": "Abrir base de datos {engine}",
+    "The DuckDB archive has no {name}": "El archivo de DuckDB no contiene {name}",
+    "The DuckDB connection became unusable": "La conexión de DuckDB quedó inutilizable",
+    "The DuckDB driver is downloaded once, on request": "El driver de DuckDB se descarga una sola vez, cuando lo pidas",
+    "The DuckDB driver is not installed. Download it from the connection dialog.": "El driver de DuckDB no está instalado. Descárgalo desde el diálogo de conexión.",
+    "The downloaded DuckDB driver failed its checksum; nothing was installed": "El driver de DuckDB descargado no superó la comprobación de suma; no se ha instalado nada",
+    "The statement contains a NUL character": "La sentencia contiene un carácter NUL"
   }
 }

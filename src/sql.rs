@@ -377,7 +377,7 @@ pub fn statement_at(script: &str, cursor: usize, driver: Driver) -> Option<State
 /// function bodies and Snowflake's `$$…$$` procedure bodies).
 pub fn split_batches(script: &str, driver: Driver) -> Vec<Statement> {
     match driver {
-        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => {
+        Driver::Postgres | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => {
             split_statements(script, driver)
         }
         Driver::MsSql | Driver::Sqlite => {
@@ -799,7 +799,7 @@ pub fn explain_statements(stmt: &str, driver: Driver) -> Vec<String> {
         return Vec::new();
     }
     match driver {
-        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::ClickHouse => vec![format!("EXPLAIN {s}")],
+        Driver::Postgres | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::ClickHouse => vec![format!("EXPLAIN {s}")],
         Driver::Sqlite => vec![format!("EXPLAIN QUERY PLAN {s}")],
         Driver::Snowflake => vec![format!("EXPLAIN USING TEXT {s}")],
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => Vec::new(),
@@ -1315,7 +1315,8 @@ impl Dialect {
                 single_quote_backslash: false,
                 slash_comments: true,
             },
-            Driver::Postgres => Dialect {
+            // DuckDB's parser comes from PostgreSQL's: the same quoting and comments.
+            Driver::Postgres | Driver::DuckDb => Dialect {
                 brackets: false,
                 backticks: false,
                 dollar_quotes: true,

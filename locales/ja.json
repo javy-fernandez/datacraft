@@ -1865,5 +1865,25 @@
     "Numbered bookmarks: Ctrl+Shift+0…9. On Windows/Linux, Ctrl+G also opens Go to Line when Find is closed.": "番号付きブックマーク: Ctrl+Shift+0…9。Windows/Linux では検索バーが閉じているとき Ctrl+G でも行移動を開けます。",
     "No bookmarks. Use Toggle bookmark in an editor to add one.": "ブックマークがありません。エディターの「ブックマークの切り替え」で追加できます。",
     "Use Ctrl or Command; this shortcut is reserved or types text.": "Ctrl または Command を使用してください。このショートカットは予約済みか、文字を入力します。"
+  },
+  "duckdb": {
+    "Could not bind a parameter": "パラメーターをバインドできませんでした",
+    "Could not connect to the DuckDB database": "DuckDB データベースに接続できませんでした",
+    "Could not download {url}": "{url} をダウンロードできませんでした",
+    "Could not load the DuckDB driver {path}: {error}": "DuckDB ドライバー {path} を読み込めませんでした: {error}",
+    "Download driver ({size} MB)": "ドライバーをダウンロード（{size} MB）",
+    "Downloading the DuckDB driver…": "DuckDB ドライバーをダウンロード中…",
+    "Downloads DuckDB {version}'s official library from github.com/duckdb and checks its SHA-256": "DuckDB {version} の公式ライブラリを github.com/duckdb からダウンロードし、SHA-256 を検証します",
+    "DuckDB has no build for this platform": "このプラットフォーム向けの DuckDB はありません",
+    "DuckDB {version} driver installed": "DuckDB {version} ドライバーをインストール済み",
+    "Empty: an in-memory database": "空欄: インメモリデータベース",
+    "New {engine} Database": "新しい {engine} データベース",
+    "Open {engine} Database": "{engine} データベースを開く",
+    "The DuckDB archive has no {name}": "DuckDB のアーカイブに {name} がありません",
+    "The DuckDB connection became unusable": "DuckDB の接続が使用できなくなりました",
+    "The DuckDB driver is downloaded once, on request": "DuckDB ドライバーは必要なときに一度だけダウンロードされます",
+    "The DuckDB driver is not installed. Download it from the connection dialog.": "DuckDB ドライバーがインストールされていません。接続ダイアログからダウンロードしてください。",
+    "The downloaded DuckDB driver failed its checksum; nothing was installed": "ダウンロードした DuckDB ドライバーはチェックサム検証に失敗しました。何もインストールされていません",
+    "The statement contains a NUL character": "ステートメントに NUL 文字が含まれています"
   }
 }

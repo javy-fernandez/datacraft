@@ -66,6 +66,14 @@ fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>
              FROM system.tables WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema')".to_string(),
             "database", "name", " AND database = currentDatabase()",
         ),
+        // DuckDB: estimated row counts and comments of tables and views.
+        Driver::DuckDb => (
+            "SELECT * FROM (SELECT schema_name, table_name AS object_name, estimated_size AS row_count, comment AS object_comment \
+             FROM duckdb_tables() WHERE database_name = current_database() AND NOT internal \
+             UNION ALL SELECT schema_name, view_name, NULL, comment FROM duckdb_views() \
+             WHERE database_name = current_database() AND NOT internal) o WHERE 1=1".to_string(),
+            "o.schema_name", "o.object_name", "",
+        ),
         Driver::Sqlite => {
             let schema = schema.unwrap_or("main");
             (format!("SELECT {} AS schema_name, name AS object_name, NULL AS row_count FROM {}.sqlite_schema WHERE type IN ('table','view')",

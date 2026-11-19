@@ -13,6 +13,7 @@ pub mod datagrip;
 pub mod backup;
 pub mod restore;
 pub mod clickhouse;
+pub mod duckdb;
 pub mod influx;
 pub mod kusto;
 pub mod mongo;
@@ -65,10 +66,13 @@ pub enum Driver {
     InfluxDb,
     /// Kusto: Azure Data Explorer, Fabric Eventhouses and the Kusto emulator (REST API, KQL).
     Kusto,
+    /// DuckDB: an embedded engine (a file or in memory) that also queries Parquet, CSV, JSON and
+    /// Excel files. Its library is a downloadable add-on (see `duckdb::install`).
+    DuckDb,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 12] = [
+    pub const ALL: [Driver; 13] = [
         Driver::Postgres,
         Driver::MySql,
         Driver::MariaDb,
@@ -77,6 +81,7 @@ impl Driver {
         Driver::Snowflake,
         Driver::ClickHouse,
         Driver::Sqlite,
+        Driver::DuckDb,
         Driver::MongoDb,
         Driver::Redis,
         Driver::InfluxDb,
@@ -92,13 +97,13 @@ impl Driver {
 
     /// Engines whose consoles offer Manual transactions (Commit / Roll Back).
     pub fn has_transactions(self) -> bool {
-        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MsSql | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake)
+        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MsSql | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::DuckDb)
     }
 
     /// Engines whose running statement can be cancelled without closing the session (see
     /// `Engine::cancel_handle`); elsewhere a cancel abandons the query and closes the session.
     pub fn has_native_cancel(self) -> bool {
-        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake)
+        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::DuckDb)
     }
 
     /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys,
@@ -107,10 +112,10 @@ impl Driver {
         !matches!(self, Driver::Redis | Driver::InfluxDb | Driver::Kusto)
     }
 
-    /// Engines reached over one TCP address, which an SSH tunnel can forward: not SQLite (a file)
-    /// nor the cloud services (Snowflake, Kusto), which are reached over the internet.
+    /// Engines reached over one TCP address, which an SSH tunnel can forward: not SQLite
+    /// or DuckDB (files) nor the cloud services (Snowflake, Kusto), which are reached over the internet.
     pub fn supports_ssh(self) -> bool {
-        !matches!(self, Driver::Sqlite | Driver::Snowflake | Driver::Kusto)
+        !matches!(self, Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto)
     }
 
     pub fn label(self) -> &'static str {
@@ -127,6 +132,7 @@ impl Driver {
             Driver::MongoDb => "MongoDB",
             Driver::InfluxDb => "InfluxDB",
             Driver::Kusto => "Kusto / Azure Data Explorer",
+            Driver::DuckDb => "DuckDB",
         }
     }
 
@@ -142,7 +148,7 @@ impl Driver {
             Driver::MongoDb => 27017,
             Driver::InfluxDb => 8086,
             Driver::Kusto => 443,
-            Driver::Sqlite => 0,
+            Driver::Sqlite | Driver::DuckDb => 0,
         }
     }
 
@@ -154,7 +160,7 @@ impl Driver {
 
     /// Engines whose server has several databases that can be created and dropped from the app.
     pub fn has_databases(self) -> bool {
-        !matches!(self, Driver::Sqlite | Driver::Oracle)
+        !matches!(self, Driver::Sqlite | Driver::Oracle | Driver::DuckDb)
     }
 
     /// Identifier quoted for the dialect.
@@ -169,7 +175,7 @@ impl Driver {
             Driver::InfluxDb => format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")),
             // Kusto: `['name']`, with the escapes of a KQL string.
             Driver::Kusto => format!("['{}']", name.replace('\\', "\\\\").replace('\'', "\\'")),
-            Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
+            Driver::Postgres | Driver::Sqlite | Driver::DuckDb | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
         }
@@ -190,7 +196,7 @@ pub struct ConnectionConfig {
     pub user: String,
     #[serde(skip)]
     pub password: String,
-    /// File path for SQLite.
+    /// File path for SQLite and DuckDB (DuckDB: empty = an in-memory database).
     pub file_path: String,
     /// SQL Server: accept self-signed certificates.
     pub trust_cert: bool,
@@ -305,7 +311,7 @@ impl ConnectionConfig {
                 Driver::Redis => "0".into(),
                 Driver::ClickHouse => "default".into(),
                 // InfluxDB: the bucket; Kusto: the database. Empty = the first one.
-                Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => String::new(),
+                Driver::Sqlite | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => String::new(),
             },
             user: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -315,7 +321,7 @@ impl ConnectionConfig {
                 Driver::ClickHouse => "default".into(),
                 // InfluxDB: the organization; empty = the token's only one. Kusto: an
                 // application's client ID.
-                Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
+                Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
             },
             password: String::new(),
             file_path: String::new(),
@@ -507,6 +513,8 @@ pub enum CancelHandle {
     Oracle(std::sync::Arc<::oracle::Connection>),
     /// Snowflake: `abort-request` for the running request id.
     Snowflake(snowflake::SfCancel),
+    /// DuckDB: `duckdb_interrupt` on the session's connection.
+    DuckDb(std::sync::Arc<duckdb::Handle>),
 }
 
 impl CancelHandle {
@@ -530,6 +538,10 @@ impl CancelHandle {
                 Ok(())
             }
             CancelHandle::Snowflake(h) => h.cancel().await,
+            CancelHandle::DuckDb(h) => {
+                h.interrupt();
+                Ok(())
+            }
         }
     }
 }
@@ -599,6 +611,7 @@ impl Session {
             Driver::MongoDb => Engine::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
             Driver::InfluxDb => Engine::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
             Driver::Kusto => Engine::Kusto(Box::new(kusto::KustoSession::connect(cfg).await?)),
+            Driver::DuckDb => Engine::DuckDb(duckdb::DuckSession::connect(cfg).await?),
         };
         // Read-only data sources are also enforced by the server where the engine allows it
         // (SQLite opens the file read-only; SQL Server and Oracle rely on the app's checks).
@@ -618,7 +631,7 @@ impl Session {
     /// Qualified name quoted for the dialect, e.g. `"public"."users"` or `[dbo].[users]`.
     pub fn quote_table(driver: Driver, schema: &str, table: &str) -> String {
         match driver {
-            Driver::Postgres | Driver::Snowflake => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
+            Driver::Postgres | Driver::Snowflake | Driver::DuckDb => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
             // No qualified names: a collection, a key pattern or a measurement, as is.
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
             // Kusto: the table of the request's database.
@@ -667,6 +680,7 @@ pub enum Engine {
     MongoDb(Box<mongo::MongoSession>),
     InfluxDb(Box<influx::InfluxSession>),
     Kusto(Box<kusto::KustoSession>),
+    DuckDb(duckdb::DuckSession),
 }
 
 impl Engine {
@@ -686,6 +700,7 @@ impl Engine {
             Engine::MongoDb(s) => s.execute(sql, max_rows).await,
             Engine::InfluxDb(s) => s.execute(sql, max_rows).await,
             Engine::Kusto(s) => s.execute(sql, max_rows).await,
+            Engine::DuckDb(s) => s.execute(sql, max_rows).await,
         }
     }
 
@@ -699,6 +714,7 @@ impl Engine {
             Engine::MySql(s) => s.execute_bound(sql, parameters, max_rows).await,
             Engine::Oracle(s) => s.execute_bound(sql, parameters, max_rows).await,
             Engine::Snowflake(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::DuckDb(s) => s.execute_bound(sql, parameters, max_rows).await,
             _ => anyhow::bail!(crate::i18n::tr("Not available for this engine")),
         }
     }
@@ -717,6 +733,7 @@ impl Engine {
             Engine::MongoDb(s) => s.current_database().await,
             Engine::InfluxDb(s) => s.current_database().await,
             Engine::Kusto(s) => s.current_database().await,
+            Engine::DuckDb(s) => s.current_database().await,
         }
     }
 
@@ -734,6 +751,8 @@ impl Engine {
             Engine::MongoDb(s) => s.list_databases().await,
             Engine::InfluxDb(s) => s.list_databases().await,
             Engine::Kusto(s) => s.list_databases().await,
+            // The database the connection opened (its file, or the in-memory one).
+            Engine::DuckDb(s) => Ok(vec![s.current_database().await?]),
         }
     }
 
@@ -770,6 +789,7 @@ impl Engine {
             Engine::MySql(s) => s.apply_changes(statements).await,
             Engine::Oracle(s) => s.apply_changes(statements).await,
             Engine::Snowflake(s) => s.apply_changes(statements).await,
+            Engine::DuckDb(s) => s.apply_changes(statements).await,
             // ClickHouse: only the editor's INSERTs (see `ChSession::apply_changes`).
             Engine::ClickHouse(s) => s.apply_changes(statements).await,
             // Their commands (not SQL) come from `redis_db::change_commands` / `mongo::change_command`.
@@ -805,6 +825,7 @@ impl Engine {
             }
             Engine::Oracle(s) => Some(CancelHandle::Oracle(s.break_handle())),
             Engine::Snowflake(s) => Some(CancelHandle::Snowflake(s.cancel_handle())),
+            Engine::DuckDb(s) => Some(CancelHandle::DuckDb(s.interrupt_handle())),
             _ => None,
         }
     }
@@ -856,7 +877,7 @@ impl Engine {
             }
             Engine::MsSql(_) => "BEGIN TRANSACTION",
             Engine::MySql(_) => "START TRANSACTION",
-            Engine::Postgres(_) | Engine::Sqlite(_) | Engine::Snowflake(_) => "BEGIN",
+            Engine::Postgres(_) | Engine::Sqlite(_) | Engine::Snowflake(_) | Engine::DuckDb(_) => "BEGIN",
             _ => anyhow::bail!(crate::i18n::tr("Manual transactions are not available for this engine")),
         };
         self.execute(sql, 0).await.map(|_| ())
@@ -910,7 +931,7 @@ impl Engine {
     pub fn is_closed(&self) -> bool {
         match self {
             Engine::Postgres(s) => s.is_closed(),
-            Engine::Sqlite(_) => false,
+            Engine::Sqlite(_) | Engine::DuckDb(_) => false,
             Engine::MsSql(s) => s.is_closed(),
             Engine::MySql(s) => s.is_closed(),
             Engine::Oracle(s) => s.is_closed(),
@@ -936,6 +957,7 @@ impl Engine {
             Engine::MongoDb(s) => s.introspect().await,
             Engine::InfluxDb(s) => s.introspect().await,
             Engine::Kusto(s) => s.introspect().await,
+            Engine::DuckDb(s) => s.introspect().await,
         }
     }
 
@@ -956,7 +978,7 @@ impl Engine {
             Driver::Oracle => "SELECT version FROM product_component_version WHERE product LIKE 'Oracle%'",
             Driver::Sqlite => "SELECT sqlite_version()",
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
-            Driver::ClickHouse => "SELECT version()",
+            Driver::ClickHouse | Driver::DuckDb => "SELECT version()",
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
