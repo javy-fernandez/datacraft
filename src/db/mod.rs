@@ -163,6 +163,14 @@ impl Driver {
         !matches!(self, Driver::Sqlite | Driver::Oracle | Driver::DuckDb)
     }
 
+    /// Engines whose databases can be created and dropped from the app (New Database… and
+    /// Drop…): those with several databases, except the NoSQL ones, which have no
+    /// `CREATE DATABASE` (Redis's databases are fixed, MongoDB creates one on its first write,
+    /// InfluxDB buckets and Kusto databases are managed through their own APIs).
+    pub fn can_create_databases(self) -> bool {
+        self.has_databases() && !self.is_nosql()
+    }
+
     /// Identifier quoted for the dialect.
     pub fn quote_ident(self, name: &str) -> String {
         match self {
@@ -992,5 +1000,51 @@ impl Engine {
             d => d.label(),
         };
         Some(format!("{product} {v}"))
+    }
+}
+
+#[cfg(test)]
+mod feature_matrix_tests {
+    use super::Driver;
+
+    /// The README's feature matrix must match what each `Driver` declares.
+    #[test]
+    fn readme_feature_matrix_matches_the_drivers() {
+        let readme = include_str!("../../README.md");
+        let section = readme.split("### Feature matrix").nth(1).expect("README has a feature matrix");
+        let rows: Vec<Vec<&str>> = section
+            .lines()
+            .skip_while(|l| !l.starts_with("| Engine"))
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .map(|l| l.trim_matches('|').split('|').map(str::trim).collect())
+            .collect();
+        let mut seen = Vec::new();
+        for row in &rows {
+            let engine = row[0].trim_end_matches(['¹', '²', '³']);
+            let drivers: Vec<Driver> = Driver::ALL
+                .iter()
+                .copied()
+                .filter(|d| engine == d.label() || engine.split(" / ").any(|part| part == d.label()) || engine.starts_with(&format!("{} ", d.label())))
+                .collect();
+            assert!(!drivers.is_empty(), "unknown engine in the README matrix: {engine}");
+            for d in drivers {
+                let expected = [
+                    true,
+                    !d.is_nosql(),
+                    d.has_transactions(),
+                    d.has_native_cancel(),
+                    d.supports_ssh(),
+                    d.can_copy(),
+                    d.can_create_databases(),
+                ];
+                let cells: Vec<bool> = row[1..].iter().map(|c| *c == "✅").collect();
+                assert_eq!(cells, expected, "README feature matrix row for {} is out of date", d.label());
+                seen.push(d);
+            }
+        }
+        for d in Driver::ALL {
+            assert!(seen.contains(&d), "{} is missing from the README feature matrix", d.label());
+        }
     }
 }

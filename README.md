@@ -178,9 +178,9 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 
 ### Feature matrix
 
-✅ supported · ❌ not supported. This table mirrors the capabilities each `Driver` declares in <code>src/db/mod.rs</code>; update it when those declarations change.
+✅ supported · ❌ not supported. This table mirrors the capabilities each `Driver` declares in <code>src/db/mod.rs</code>, and a test checks that both agree.
 
-| Engine | View data | Edit data | Transactions | Cancel query | SSH tunnel | Copy table | Databases |
+| Engine | View data | Edit data | Transactions | Cancel query | SSH tunnel | Copy table | Create databases |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | PostgreSQL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | MySQL / MariaDB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -190,21 +190,23 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | SQLite | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | DuckDB² | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | ClickHouse³ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Redis / Valkey | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ |
-| MongoDB | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| InfluxDB 2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ✅ |
-| Kusto / Azure Data Explorer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Redis / Valkey | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| MongoDB | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| InfluxDB 2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Kusto / Azure Data Explorer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
-- **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2 and Kusto) use their own command language and have read-only result grids. ³ ClickHouse's data editor handles inserts only; updates and deletes are asynchronous mutations, so run them from the console.
+- **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2 and Kusto) use their own command language and have read-only result grids.
 - **Transactions:** manual Commit / Roll Back in the SQL console.
 - **Cancel query:** the running statement is cancelled without closing the session; elsewhere a cancel abandons the query and closes the session.
 - **SSH tunnel:** the engine is reached over one TCP address that a bastion can forward (not the file-based or cloud services).
 - **Copy table:** Copy Table To… is offered for the engine's tables or collections.
-- **Databases:** databases can be created and dropped from the app.
+- **Create databases:** **New Database…** and **Drop…** create and drop the server's databases from the explorer. The NoSQL engines list their databases or buckets but don't create them: Redis has a fixed set of numbered databases, MongoDB creates a database on its first write, and InfluxDB buckets and Kusto databases are managed through their own APIs.
 
 ¹ Oracle needs [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) installed separately.
+
 ² DuckDB 2.0.0 is a downloadable add-on: the connection dialog's **Download driver** fetches it once and checks its SHA-256.
-³ ClickHouse copies run without a transaction.
+
+³ ClickHouse's data editor only adds rows: updates and deletes are asynchronous mutations, so run them from the console. Its table copies run without a transaction.
 
 ### SSH tunnels
 

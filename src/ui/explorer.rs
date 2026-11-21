@@ -317,7 +317,7 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
                 ui.close();
             }
             let sql = !sel_driver.is_some_and(|d| d.is_nosql());
-            let can_db = connected && sql && sel_driver.is_some_and(|d| d.has_databases());
+            let can_db = connected && sel_driver.is_some_and(|d| d.can_create_databases());
             if ui.add_enabled(can_db, egui::Button::new(tr("New Database…"))).clicked()
                 && let Some(id) = sel_conn
             {
@@ -537,7 +537,7 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             ui.close();
         }
         ui.separator();
-        if c.cfg.driver.has_databases() && !c.cfg.driver.is_nosql() && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
+        if c.cfg.driver.can_create_databases() && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
             actions.push(ExplorerAction::NewDatabase(id));
             ui.close();
         }
@@ -795,7 +795,7 @@ fn database_rows(
         if routines.is_some() {
             new_routine_buttons(ui, actions, id, &db_name, None, connected);
         }
-        if multi_db && sql && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
+        if c.cfg.driver.can_create_databases() && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
             actions.push(ExplorerAction::NewDatabase(id));
             ui.close();
         }
@@ -808,7 +808,7 @@ fn database_rows(
             ui.ctx().copy_text(db_name.clone());
             ui.close();
         }
-        if multi_db {
+        if c.cfg.driver.can_create_databases() {
             ui.separator();
             // The connection's default database cannot be dropped from its own session.
             let btn = egui::Button::new(RichText::new(tr("Drop…")).color(p.error));
