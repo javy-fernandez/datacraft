@@ -176,6 +176,38 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
 | Kusto / Azure Data Explorer | REST API over HTTPS, signed in with the Azure CLI's account (`az login`), an Entra ID application (client ID and secret), or no authentication for the Kusto emulator; KQL console with control commands (requests separated by blank lines, as in Kusto Explorer), databases with their tables and materialized views, and read-only result grids filtered and sorted with KQL. Read-only connections are also enforced by the server |
 
+### Feature matrix
+
+✅ supported · ❌ not supported. This table mirrors the capabilities each `Driver` declares in <code>src/db/mod.rs</code>, and a test checks that both agree.
+
+| Engine | View data | Edit data | Transactions | Cancel query | SSH tunnel | Copy table | Create databases |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| PostgreSQL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| MySQL / MariaDB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SQL Server | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Oracle¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Snowflake | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| SQLite | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| DuckDB² | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| ClickHouse³ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Redis / Valkey | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| MongoDB | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| InfluxDB 2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Kusto / Azure Data Explorer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+- **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2 and Kusto) use their own command language and have read-only result grids.
+- **Transactions:** manual Commit / Roll Back in the SQL console.
+- **Cancel query:** the running statement is cancelled without closing the session; elsewhere a cancel abandons the query and closes the session.
+- **SSH tunnel:** the engine is reached over one TCP address that a bastion can forward (not the file-based or cloud services).
+- **Copy table:** Copy Table To… is offered for the engine's tables or collections.
+- **Create databases:** **New Database…** and **Drop…** create and drop the server's databases from the explorer. The NoSQL engines list their databases or buckets but don't create them: Redis has a fixed set of numbered databases, MongoDB creates a database on its first write, and InfluxDB buckets and Kusto databases are managed through their own APIs.
+
+¹ Oracle needs [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) installed separately.
+
+² DuckDB 2.0.0 is a downloadable add-on: the connection dialog's **Download driver** fetches it once and checks its SHA-256.
+
+³ ClickHouse's data editor only adds rows: updates and deletes are asynchronous mutations, so run them from the console. Its table copies run without a transaction.
+
 ### SSH tunnels
 
 Every engine reached over TCP (all but SQLite, DuckDB, Snowflake and Kusto) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
