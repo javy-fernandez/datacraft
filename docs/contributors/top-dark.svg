@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="840" height="560" viewBox="0 0 840 560" role="img" aria-labelledby="title desc">
 <title id="title">Top 5 contributors</title>
-<desc id="desc">javy-fernandez: 48.2% of commits, 36.9% of changed lines; YoSiem: 41.3% of commits, 44.1% of changed lines; Claude: 3.7% of commits, 4.8% of changed lines; moein: 3.2% of commits, 8.5% of changed lines; Ivan Temchenko: 2.8% of commits, 3.4% of changed lines; 1 other contributor: 0.9% of commits, 2.3% of changed lines</desc>
+<desc id="desc">javy-fernandez: 48.4% of commits, 36.9% of changed lines; YoSiem: 40.7% of commits, 44.1% of changed lines; Claude: 3.6% of commits, 4.8% of changed lines; moein: 3.2% of commits, 8.5% of changed lines; Ivan Temchenko: 2.7% of commits, 3.4% of changed lines; 2 other contributors: 1.4% of commits, 2.3% of changed lines</desc>
 <style>
 text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;fill:#f0f6fc}
 .t{font-size:18px;font-weight:600} .s{font-size:13px;fill:#9198a1} .n{font-size:15px;font-weight:600}
@@ -11,7 +11,7 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 </style>
 <rect x="0.5" y="0.5" width="839" height="559" rx="12" fill="#0d1117" stroke="#3d444d"/>
 <text class="t" x="28" y="44">Top 5 contributors</text>
-<text class="s" x="28" y="66">Share of 218 non-merge commits and 133,338 changed lines · main as of 19 Nov 2026</text>
+<text class="s" x="28" y="66">Share of 221 non-merge commits and 133,452 changed lines · main as of 21 Nov 2026</text>
 <rect x="28" y="84" width="12" height="12" rx="3" fill="#1d9aaa"/>
 <text class="l" x="46" y="94.5">Commits</text>
 <rect x="124" y="84" width="12" height="12" rx="3" fill="#d95926"/>
@@ -20,12 +20,12 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 <image href="data:image/jpeg;base64,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" x="30" y="124" width="40" height="40" clip-path="url(#a0)" preserveAspectRatio="xMidYMid slice"/>
 <circle cx="50" cy="144" r="19.5" fill="none" stroke="#3d444d"/>
 <text class="n" x="86" y="139">javy-fernandez</text>
-<text class="d" x="86" y="159">105 commits · +45,580 −3,603</text>
+<text class="d" x="86" y="159">107 commits · +45,650 −3,617</text>
 <rect x="330" y="128" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="128" width="188.8" height="10" rx="5" fill="#1d9aaa"/>
-<text class="p" x="812" y="137.5" text-anchor="end">48.2%</text>
+<rect x="330" y="128" width="189.8" height="10" rx="5" fill="#1d9aaa"/>
+<text class="p" x="812" y="137.5" text-anchor="end">48.4%</text>
 <rect x="330" y="146" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="146" width="144.6" height="10" rx="5" fill="#d95926"/>
+<rect x="330" y="146" width="144.7" height="10" rx="5" fill="#d95926"/>
 <text class="q" x="812" y="155.5" text-anchor="end">36.9%</text>
 <line x1="28" x2="812" y1="178" y2="178" stroke="#1c2128"/>
 <clipPath id="a1"><circle cx="50" cy="212" r="20"/></clipPath>
@@ -34,10 +34,10 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 <text class="n" x="86" y="207">YoSiem</text>
 <text class="d" x="86" y="227">90 commits · +51,002 −7,822</text>
 <rect x="330" y="196" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="196" width="161.8" height="10" rx="5" fill="#1d9aaa"/>
-<text class="p" x="812" y="205.5" text-anchor="end">41.3%</text>
+<rect x="330" y="196" width="159.6" height="10" rx="5" fill="#1d9aaa"/>
+<text class="p" x="812" y="205.5" text-anchor="end">40.7%</text>
 <rect x="330" y="214" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="214" width="172.9" height="10" rx="5" fill="#d95926"/>
+<rect x="330" y="214" width="172.8" height="10" rx="5" fill="#d95926"/>
 <text class="q" x="812" y="223.5" text-anchor="end">44.1%</text>
 <line x1="28" x2="812" y1="246" y2="246" stroke="#1c2128"/>
 <clipPath id="a2"><circle cx="50" cy="280" r="20"/></clipPath>
@@ -46,8 +46,8 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 <text class="n" x="86" y="275">Claude</text>
 <text class="d" x="86" y="295">8 commits · +6,399 −41</text>
 <rect x="330" y="264" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="264" width="14.4" height="10" rx="5" fill="#1d9aaa"/>
-<text class="p" x="812" y="273.5" text-anchor="end">3.7%</text>
+<rect x="330" y="264" width="14.2" height="10" rx="5" fill="#1d9aaa"/>
+<text class="p" x="812" y="273.5" text-anchor="end">3.6%</text>
 <rect x="330" y="282" width="392" height="10" rx="5" fill="#212830"/>
 <rect x="330" y="282" width="18.9" height="10" rx="5" fill="#d95926"/>
 <text class="q" x="812" y="291.5" text-anchor="end">4.8%</text>
@@ -58,7 +58,7 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 <text class="n" x="86" y="343">moein<tspan class="h" dx="6">@mo1ein</tspan></text>
 <text class="d" x="86" y="363">7 commits · +10,476 −856</text>
 <rect x="330" y="332" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="332" width="12.6" height="10" rx="5" fill="#1d9aaa"/>
+<rect x="330" y="332" width="12.4" height="10" rx="5" fill="#1d9aaa"/>
 <text class="p" x="812" y="341.5" text-anchor="end">3.2%</text>
 <rect x="330" y="350" width="392" height="10" rx="5" fill="#212830"/>
 <rect x="330" y="350" width="33.3" height="10" rx="5" fill="#d95926"/>
@@ -70,21 +70,21 @@ text{font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Hel
 <text class="n" x="86" y="411">Ivan Temchenko<tspan class="h" dx="6">@35359595</tspan></text>
 <text class="d" x="86" y="431">6 commits · +4,258 −215</text>
 <rect x="330" y="400" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="400" width="10.8" height="10" rx="5" fill="#1d9aaa"/>
-<text class="p" x="812" y="409.5" text-anchor="end">2.8%</text>
+<rect x="330" y="400" width="10.6" height="10" rx="5" fill="#1d9aaa"/>
+<text class="p" x="812" y="409.5" text-anchor="end">2.7%</text>
 <rect x="330" y="418" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="418" width="13.2" height="10" rx="5" fill="#d95926"/>
+<rect x="330" y="418" width="13.1" height="10" rx="5" fill="#d95926"/>
 <text class="q" x="812" y="427.5" text-anchor="end">3.4%</text>
 <line x1="28" x2="812" y1="450" y2="450" stroke="#1c2128"/>
 <circle cx="50" cy="484" r="20" fill="#123b41"/>
-<text class="i" x="50" y="489" text-anchor="middle">+1</text>
-<text class="n" x="86" y="479">1 other contributor</text>
-<text class="d" x="86" y="499">2 commits · 3,086 lines</text>
+<text class="i" x="50" y="489" text-anchor="middle">+2</text>
+<text class="n" x="86" y="479">2 other contributors</text>
+<text class="d" x="86" y="499">3 commits · 3,116 lines</text>
 <rect x="330" y="468" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="468" width="4.0" height="10" rx="5" fill="#1d9aaa"/>
-<text class="p" x="812" y="477.5" text-anchor="end">0.9%</text>
+<rect x="330" y="468" width="5.3" height="10" rx="5" fill="#1d9aaa"/>
+<text class="p" x="812" y="477.5" text-anchor="end">1.4%</text>
 <rect x="330" y="486" width="392" height="10" rx="5" fill="#212830"/>
-<rect x="330" y="486" width="9.1" height="10" rx="5" fill="#d95926"/>
+<rect x="330" y="486" width="9.2" height="10" rx="5" fill="#d95926"/>
 <text class="q" x="812" y="495.5" text-anchor="end">2.3%</text>
 <text class="f" x="28" y="544">Bars span 100% of the total. Merge commits, bots and Cargo.lock are not counted.</text>
 </svg>
