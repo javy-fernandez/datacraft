@@ -464,6 +464,7 @@ impl ConnectionDialog {
                         let hint = match item.cfg.driver {
                             Driver::Snowflake => "<account>.snowflakecomputing.com",
                             Driver::Kusto => "<cluster>.<region>.kusto.windows.net",
+                            Driver::Prometheus => "http://vmselect:8481/select/0/prometheus",
                             _ => "localhost",
                         };
                         ui.add(egui::TextEdit::singleline(&mut item.cfg.host).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(host_w));
@@ -478,7 +479,7 @@ impl ConnectionDialog {
 
             if !item.cfg.url_only {
                 match item.cfg.driver {
-                    Driver::Sqlite | Driver::DuckDb => {}
+                    Driver::Sqlite | Driver::DuckDb | Driver::Prometheus => {}
                     Driver::Snowflake => {
                         for (label, value) in [
                             (tr("Role:"), &mut item.cfg.role),
@@ -554,7 +555,8 @@ impl ConnectionDialog {
         // Redis / Valkey over TLS (`rediss://`); MongoDB takes `?tls=true` in its URL. ClickHouse
         // has its own secure port, followed when it was on the default one; InfluxDB serves
         // HTTPS on the same port. Kusto is HTTPS unless turned off (the emulator serves HTTP).
-        if matches!(cfg.driver, Driver::Redis | Driver::ClickHouse | Driver::InfluxDb | Driver::Kusto) {
+        // Prometheus APIs serve HTTPS on the same port.
+        if matches!(cfg.driver, Driver::Redis | Driver::ClickHouse | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus) {
             ui.add_space(6.0);
             let kusto = cfg.driver == Driver::Kusto;
             let mut tls = cfg.property("tls").map_or(kusto, |v| v.eq_ignore_ascii_case("true"));
@@ -573,7 +575,7 @@ impl ConnectionDialog {
                     }
                 }
             }
-            if tls && matches!(cfg.driver, Driver::ClickHouse | Driver::InfluxDb) {
+            if tls && matches!(cfg.driver, Driver::ClickHouse | Driver::InfluxDb | Driver::Prometheus) {
                 let mut insecure = cfg.property("tls_insecure").is_some_and(|v| v.eq_ignore_ascii_case("true"));
                 if ui.checkbox(&mut insecure, tr("Trust server certificate")).changed() {
                     cfg.set_property("tls_insecure", if insecure { "true" } else { "" });
@@ -1125,7 +1127,8 @@ fn auth_rows(ui: &mut Ui, cfg: &mut ConnectionConfig) {
         text_field(ui, &mut cfg.user, "");
         ui.end_row();
 
-        ui.label(if influx { tr("Token:") } else if kusto { tr("Client secret:") } else { tr("Password:") });
+        // Prometheus: without a user, a bearer token (see `prometheus::Auth`).
+        ui.label(if influx { tr("Token:") } else if kusto { tr("Client secret:") } else if cfg.driver == Driver::Prometheus { tr("Password or token:") } else { tr("Password:") });
         let hint = if cfg.password.is_empty() { tr("<empty>") } else { "" };
         ui.add(egui::TextEdit::singleline(&mut cfg.password).password(true).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(f32::INFINITY));
         ui.end_row();

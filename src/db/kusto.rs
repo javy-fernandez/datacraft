@@ -571,36 +571,7 @@ pub fn is_read_command(statement: &str) -> bool {
 /// them (a blank line inside a ```` ``` ```` multi-line string doesn't end one). Blocks with
 /// only `//` comments are skipped. Byte ranges, trimmed.
 pub fn split_script(script: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut block: Option<(usize, usize, bool)> = None; // (start, end, has code)
-    let mut in_fence = false;
-    let mut pos = 0;
-    let mut flush = |block: &mut Option<(usize, usize, bool)>| {
-        if let Some((start, end, true)) = block.take() {
-            out.push((start, end));
-        }
-    };
-    for line in script.split_inclusive('\n') {
-        let start = pos;
-        pos += line.len();
-        let trimmed = line.trim();
-        if trimmed.is_empty() && !in_fence {
-            flush(&mut block);
-            continue;
-        }
-        let first = start + (line.len() - line.trim_start().len());
-        let last = start + line.trim_end().len();
-        let code = in_fence || !trimmed.starts_with("//");
-        block = Some(match block {
-            Some((s, _, c)) => (s, last.max(s), c || code),
-            None => (first, last, code),
-        });
-        if line.matches("```").count() % 2 == 1 {
-            in_fence = !in_fence;
-        }
-    }
-    flush(&mut block);
-    out
+    crate::sql::split_blocks(script, "//", true)
 }
 
 /// The data editor's query: the table, narrowed by the filter row's left side (a KQL

@@ -114,7 +114,22 @@ fn destination(cfg: &ConnectionConfig) -> anyhow::Result<(String, u16)> {
         bail!(tr("A mongodb+srv address can't go through an SSH tunnel: use the host and port of a server"));
     }
     let port = if cfg.port == 0 { cfg.driver.default_port() } else { cfg.port };
+    if cfg.driver == Driver::Prometheus {
+        return Ok(host_port(&cfg.host, port));
+    }
     Ok((bare_host(&cfg.host).to_string(), port))
+}
+
+/// The host and port of a Prometheus API's host field, which takes a whole URL
+/// (`http://vmselect:8481/select/0/prometheus`): a port in it wins over `port`, the port
+/// field's, as in `prometheus::base_url`.
+pub fn host_port(host: &str, port: u16) -> (String, u16) {
+    let authority = bare_host(host);
+    // A bare IPv6 address has colons and no port.
+    let bare_ipv6 = !authority.starts_with('[') && authority.matches(':').count() > 1;
+    super::url::parse_authority(authority, port)
+        .filter(|_| !bare_ipv6)
+        .unwrap_or_else(|| (authority.to_string(), port))
 }
 
 /// The host name of the host field, without a scheme or path (`https://influx.example/` →
@@ -126,6 +141,18 @@ pub fn bare_host(host: &str) -> &str {
         "" => "localhost",
         h => h,
     }
+}
+
+/// The host field pointed at the tunnel's listener, `127.0.0.1`, keep a scheme and a path
+/// typed in it (InfluxDB's `https://...`, a Prometheus API's `/select/0/prometheus`).
+pub fn local_host(host: &str) -> String {
+    let host = host.trim();
+    let (scheme, rest) = match host.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), host),
+    };
+    let path = rest.find('/').map_or("", |i| &rest[i..]);
+    format!("{scheme}127.0.0.1{path}")
 }
 
 /// The data source's tunnel, opened on first use and shared by its sessions.
@@ -427,6 +454,24 @@ mod tests {
     const ED_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILw6T0013JNbmIcLlRrqUZ29R+h373hBqwizbG8QIHqI";
 
     #[test]
+    fn local_host_keeps_scheme_and_path() {
+        use super::local_host;
+        assert_eq!(local_host("db.example.com"), "127.0.0.1");
+        assert_eq!(
+            local_host(" https://influx.example/ "),
+            "https://127.0.0.1/"
+        );
+        assert_eq!(
+            local_host("http://vmselect:8481/select/0/prometheus"),
+            "http://127.0.0.1/select/0/prometheus"
+        );
+        assert_eq!(
+            local_host("vmselect/select/0/prometheus"),
+            "127.0.0.1/select/0/prometheus"
+        );
+    }
+
+    #[test]
     fn known_unknown_and_changed_keys() {
         let dir = std::env::temp_dir().join(format!("datacraft-ssh-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -492,6 +537,52 @@ mod tests {
         let mut mongo = ConnectionConfig::new(2, Driver::MongoDb);
         mongo.host = "cluster0.abcde.mongodb.net".into();
         assert!(destination(&mongo).is_err());
+    }
+
+    /// A Prometheus API's host field takes a URL with a port: the tunnel goes to that port, and
+    /// the name kept for TLS has none.
+    #[tokio::test]
+    async fn prometheus_ports_in_the_host_field() {
+        let mut cfg = ConnectionConfig::new(1, Driver::Prometheus);
+        cfg.host = "http://vmselect:8481/select/0/prometheus".into();
+        assert_eq!(destination(&cfg).unwrap(), ("vmselect".to_string(), 8481));
+        let tunnel = Tunnel {
+            port: 40123,
+            accept: tokio::spawn(async {}),
+        };
+        let through = super::super::through(&cfg, Some(&tunnel));
+        assert_eq!(through.tunnel_host.as_deref(), Some("vmselect"));
+        assert_eq!(
+            super::super::prometheus::base_url(&through),
+            "http://127.0.0.1:40123/select/0/prometheus"
+        );
+
+        // Without one, the port field's (9090 when it is empty).
+        for (host, port, to) in [
+            ("vmselect", 8481, ("vmselect", 8481)),
+            (
+                "https://prom.example.com/prefix",
+                0,
+                ("prom.example.com", 9090),
+            ),
+            ("fd00::12", 9090, ("fd00::12", 9090)),
+            ("[fd00::12]:8428", 9090, ("[fd00::12]", 8428)),
+            // Not a port: left as typed, for the SSH server to refuse.
+            ("vmselect:99999", 9090, ("vmselect:99999", 9090)),
+        ] {
+            (cfg.host, cfg.port) = (host.into(), port);
+            assert_eq!(
+                destination(&cfg).unwrap(),
+                (to.0.to_string(), to.1),
+                "{host}"
+            );
+        }
+
+        // The other engines keep the host's name, as before.
+        cfg.driver = Driver::InfluxDb;
+        (cfg.host, cfg.port) = ("https://influx.example/".into(), 8086);
+        let through = super::super::through(&cfg, Some(&tunnel));
+        assert_eq!(through.tunnel_host.as_deref(), Some("influx.example"));
     }
 
     fn ed25519(seed: u8) -> PrivateKey {

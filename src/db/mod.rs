@@ -31,6 +31,7 @@ pub mod mysql;
 pub mod oracle;
 pub mod plan;
 pub mod postgres;
+pub mod prometheus;
 pub mod redis_db;
 pub mod routines;
 pub mod snowflake;
@@ -69,10 +70,12 @@ pub enum Driver {
     /// DuckDB: an embedded engine (a file or in memory) that also queries Parquet, CSV, JSON and
     /// Excel files. Its library is a downloadable add-on (see `duckdb::install`).
     DuckDb,
+    /// The Prometheus HTTP API: Prometheus, VictoriaMetrics, Mimir, Thanos... (PromQL).
+    Prometheus,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 13] = [
+    pub const ALL: [Driver; 14] = [
         Driver::Postgres,
         Driver::MySql,
         Driver::MariaDb,
@@ -86,13 +89,14 @@ impl Driver {
         Driver::Redis,
         Driver::InfluxDb,
         Driver::Kusto,
+        Driver::Prometheus,
     ];
 
     /// Redis, MongoDB, InfluxDB and Kusto: no SQL. Their consoles take the engine's own
     /// language, the grid is read-only and the SQL tools (DDL, import, copy, schema search…) are
     /// not offered.
     pub fn is_nosql(self) -> bool {
-        matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+        matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus)
     }
 
     /// Engines whose consoles offer Manual transactions (Commit / Roll Back).
@@ -109,7 +113,10 @@ impl Driver {
     /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys,
     /// InfluxDB measurements nor Kusto tables.
     pub fn can_copy(self) -> bool {
-        !matches!(self, Driver::Redis | Driver::InfluxDb | Driver::Kusto)
+        !matches!(
+            self,
+            Driver::Redis | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus
+        )
     }
 
     /// Engines reached over one TCP address, which an SSH tunnel can forward: not SQLite
@@ -133,6 +140,7 @@ impl Driver {
             Driver::InfluxDb => "InfluxDB",
             Driver::Kusto => "Kusto / Azure Data Explorer",
             Driver::DuckDb => "DuckDB",
+            Driver::Prometheus => "Prometheus / VictoriaMetrics",
         }
     }
 
@@ -149,18 +157,22 @@ impl Driver {
             Driver::InfluxDb => 8086,
             Driver::Kusto => 443,
             Driver::Sqlite | Driver::DuckDb => 0,
+            Driver::Prometheus => prometheus::DEFAULT_PORT,
         }
     }
 
     /// Engines where each database has a single schema with its own name (SQLite: "main"),
     /// shown flattened in the explorer.
     pub fn flat_schema(self) -> bool {
-        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus)
     }
 
     /// Engines whose server has several databases that can be created and dropped from the app.
     pub fn has_databases(self) -> bool {
-        !matches!(self, Driver::Sqlite | Driver::Oracle | Driver::DuckDb)
+        !matches!(
+            self,
+            Driver::Sqlite | Driver::Oracle | Driver::DuckDb | Driver::Prometheus
+        )
     }
 
     /// Engines whose databases can be created and dropped from the app (New Database… and
@@ -183,6 +195,7 @@ impl Driver {
             Driver::InfluxDb => format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")),
             // Kusto: `['name']`, with the escapes of a KQL string.
             Driver::Kusto => format!("['{}']", name.replace('\\', "\\\\").replace('\'', "\\'")),
+            Driver::Prometheus => prometheus::quote_metric(name),
             Driver::Postgres | Driver::Sqlite | Driver::DuckDb | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
@@ -319,7 +332,7 @@ impl ConnectionConfig {
                 Driver::Redis => "0".into(),
                 Driver::ClickHouse => "default".into(),
                 // InfluxDB: the bucket; Kusto: the database. Empty = the first one.
-                Driver::Sqlite | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => String::new(),
+                Driver::Sqlite | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => String::new(),
             },
             user: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -329,7 +342,7 @@ impl ConnectionConfig {
                 Driver::ClickHouse => "default".into(),
                 // InfluxDB: the organization; empty = the token's only one. Kusto: an
                 // application's client ID.
-                Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
+                Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => String::new(),
             },
             password: String::new(),
             file_path: String::new(),
@@ -620,6 +633,9 @@ impl Session {
             Driver::InfluxDb => Engine::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
             Driver::Kusto => Engine::Kusto(Box::new(kusto::KustoSession::connect(cfg).await?)),
             Driver::DuckDb => Engine::DuckDb(duckdb::DuckSession::connect(cfg).await?),
+            Driver::Prometheus => {
+                Engine::Prometheus(Box::new(prometheus::PromSession::connect(cfg).await?))
+            }
         };
         // Read-only data sources are also enforced by the server where the engine allows it
         // (SQLite opens the file read-only; SQL Server and Oracle rely on the app's checks).
@@ -650,6 +666,7 @@ impl Session {
             Driver::MySql | Driver::MariaDb | Driver::Oracle => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
             // ClickHouse: the schema is the database.
             Driver::ClickHouse => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
+            Driver::Prometheus => prometheus::quote_metric(table),
         }
     }
 }
@@ -661,13 +678,13 @@ fn through<'a>(cfg: &'a ConnectionConfig, tunnel: Option<&ssh::Tunnel>) -> std::
         None => std::borrow::Cow::Borrowed(cfg),
         Some(t) => {
             let mut c = cfg.clone();
-            // A scheme typed in the host field (InfluxDB's `https://…`) stays.
             let host = cfg.host.trim();
-            c.host = match host.split_once("://") {
-                Some((scheme, _)) => format!("{scheme}://127.0.0.1"),
-                None => "127.0.0.1".into(),
-            };
-            c.tunnel_host = Some(ssh::bare_host(host).to_string());
+            c.host = ssh::local_host(host);
+            c.tunnel_host = Some(match cfg.driver {
+                // The port of a URL in the host field isn't part of the server's name.
+                Driver::Prometheus => ssh::host_port(host, cfg.port).0,
+                _ => ssh::bare_host(host).to_string(),
+            });
             c.port = t.port;
             std::borrow::Cow::Owned(c)
         }
@@ -689,6 +706,7 @@ pub enum Engine {
     InfluxDb(Box<influx::InfluxSession>),
     Kusto(Box<kusto::KustoSession>),
     DuckDb(duckdb::DuckSession),
+    Prometheus(Box<prometheus::PromSession>),
 }
 
 impl Engine {
@@ -709,6 +727,7 @@ impl Engine {
             Engine::InfluxDb(s) => s.execute(sql, max_rows).await,
             Engine::Kusto(s) => s.execute(sql, max_rows).await,
             Engine::DuckDb(s) => s.execute(sql, max_rows).await,
+            Engine::Prometheus(s) => s.execute(sql, max_rows).await,
         }
     }
 
@@ -742,6 +761,7 @@ impl Engine {
             Engine::InfluxDb(s) => s.current_database().await,
             Engine::Kusto(s) => s.current_database().await,
             Engine::DuckDb(s) => s.current_database().await,
+            Engine::Prometheus(s) => s.current_database().await,
         }
     }
 
@@ -761,6 +781,7 @@ impl Engine {
             Engine::Kusto(s) => s.list_databases().await,
             // The database the connection opened (its file, or the in-memory one).
             Engine::DuckDb(s) => Ok(vec![s.current_database().await?]),
+            Engine::Prometheus(s) => s.list_databases().await,
         }
     }
 
@@ -805,7 +826,7 @@ impl Engine {
             Engine::MongoDb(s) => s.apply_changes(statements).await,
             // Points are written with line protocol, which the data editor doesn't produce, and
             // Kusto ingests rows rather than editing them.
-            Engine::InfluxDb(_) | Engine::Kusto(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
+            Engine::InfluxDb(_) | Engine::Kusto(_) | Engine::Prometheus(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
         }
     }
 
@@ -841,7 +862,7 @@ impl Engine {
     /// Runs the statements in ONE transaction (all or nothing), without the one-row rule of
     /// `apply_changes`. Returns the affected rows when the engine reports them.
     pub async fn run_transaction(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        if matches!(self, Engine::Redis(_) | Engine::MongoDb(_) | Engine::InfluxDb(_) | Engine::Kusto(_)) {
+        if matches!(self, Engine::Redis(_) | Engine::MongoDb(_) | Engine::InfluxDb(_) | Engine::Kusto(_) | Engine::Prometheus(_)) {
             anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"));
         }
         if let Engine::ClickHouse(s) = self {
@@ -947,7 +968,7 @@ impl Engine {
             Engine::ClickHouse(s) => s.is_closed(),
             Engine::Redis(s) => s.is_closed(),
             Engine::MongoDb(s) => s.is_closed(),
-            Engine::InfluxDb(_) | Engine::Kusto(_) => false,
+            Engine::InfluxDb(_) | Engine::Kusto(_) | Engine::Prometheus(_) => false,
         }
     }
 
@@ -966,6 +987,7 @@ impl Engine {
             Engine::InfluxDb(s) => s.introspect().await,
             Engine::Kusto(s) => s.introspect().await,
             Engine::DuckDb(s) => s.introspect().await,
+            Engine::Prometheus(s) => s.introspect().await,
         }
     }
 
@@ -977,6 +999,7 @@ impl Engine {
             Engine::MongoDb(s) => return s.server_version().await,
             Engine::InfluxDb(s) => return s.server_version().await,
             Engine::Kusto(s) => return s.server_version().await,
+            Engine::Prometheus(s) => return s.server_version().await,
             _ => {}
         }
         let sql = match driver {
@@ -988,6 +1011,7 @@ impl Engine {
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
             Driver::ClickHouse | Driver::DuckDb => "SELECT version()",
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
+            Driver::Prometheus => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
         let v = rs.into_iter().next()?.rows.into_iter().next()?.into_iter().next()??;

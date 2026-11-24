@@ -62,6 +62,8 @@ pub fn dangerous_statements(script: &str, driver: Driver) -> Vec<Dangerous> {
         Driver::Redis => return split_statements(script, driver).iter().filter_map(|s| redis(&s.text)).collect(),
         Driver::MongoDb => return split_statements(script, driver).iter().filter_map(|s| mongo(&s.text)).collect(),
         Driver::Kusto => return split_statements(script, driver).iter().filter_map(|s| kusto(&s.text)).collect(),
+        // PromQL only reads.
+        Driver::Prometheus => return Vec::new(),
         _ => {}
     }
     let mut out = Vec::new();

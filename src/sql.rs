@@ -35,6 +35,42 @@ pub(crate) fn split_stream_statements(script: &str, driver: Driver) -> Vec<State
     split_statements_inner(script, driver, false)
 }
 
+/// Blocks of lines separated by blank lines, the requests of a Kusto or Prometheus script, as
+/// trimmed byte ranges. Blocks with only `comment` lines are skipped. With `fences`, a blank
+/// line inside a ```` ``` ```` multi-line string (KQL) doesn't end a block.
+pub fn split_blocks(script: &str, comment: &str, fences: bool) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut block: Option<(usize, usize, bool)> = None; // (start, end, has code)
+    let mut in_fence = false;
+    let mut pos = 0;
+    let mut flush = |block: &mut Option<(usize, usize, bool)>| {
+        if let Some((start, end, true)) = block.take() {
+            out.push((start, end));
+        }
+    };
+    for line in script.split_inclusive('\n') {
+        let start = pos;
+        pos += line.len();
+        let trimmed = line.trim();
+        if trimmed.is_empty() && !in_fence {
+            flush(&mut block);
+            continue;
+        }
+        let first = start + (line.len() - line.trim_start().len());
+        let last = start + line.trim_end().len();
+        let code = in_fence || !trimmed.starts_with(comment);
+        block = Some(match block {
+            Some((s, _, c)) => (s, last.max(s), c || code),
+            None => (first, last, code),
+        });
+        if fences && line.matches("```").count() % 2 == 1 {
+            in_fence = !in_fence;
+        }
+    }
+    flush(&mut block);
+    out
+}
+
 fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -> Vec<Statement> {
     // Redis: one command per line (`#` and `//` comment lines are skipped).
     if driver == Driver::Redis {
@@ -50,9 +86,15 @@ fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -
         }
         return out;
     }
-    // Kusto: requests separated by blank lines; `;` belongs to KQL (see `kusto::split_script`).
-    if driver == Driver::Kusto {
-        return crate::db::kusto::split_script(script)
+    // Kusto and Prometheus: requests separated by blank lines; `;` belongs to KQL (see
+    // `kusto::split_script` and `prometheus::split_script`).
+    let blocks = match driver {
+        Driver::Kusto => Some(crate::db::kusto::split_script(script)),
+        Driver::Prometheus => Some(crate::db::prometheus::split_script(script)),
+        _ => None,
+    };
+    if let Some(ranges) = blocks {
+        return ranges
             .into_iter()
             .map(|(start, end)| Statement { text: script[start..end].to_string(), start, end })
             .collect();
@@ -377,7 +419,7 @@ pub fn statement_at(script: &str, cursor: usize, driver: Driver) -> Option<State
 /// function bodies and Snowflake's `$$…$$` procedure bodies).
 pub fn split_batches(script: &str, driver: Driver) -> Vec<Statement> {
     match driver {
-        Driver::Postgres | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => {
+        Driver::Postgres | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
             split_statements(script, driver)
         }
         Driver::MsSql | Driver::Sqlite => {
@@ -802,7 +844,7 @@ pub fn explain_statements(stmt: &str, driver: Driver) -> Vec<String> {
         Driver::Postgres | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::ClickHouse => vec![format!("EXPLAIN {s}")],
         Driver::Sqlite => vec![format!("EXPLAIN QUERY PLAN {s}")],
         Driver::Snowflake => vec![format!("EXPLAIN USING TEXT {s}")],
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => Vec::new(),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => Vec::new(),
         Driver::MsSql => vec!["SET SHOWPLAN_TEXT ON".into(), s.to_string(), "SET SHOWPLAN_TEXT OFF".into()],
         Driver::Oracle => vec![
             format!("EXPLAIN PLAN FOR {s}"),
@@ -1430,6 +1472,22 @@ impl Dialect {
                 slash_separator: false,
                 single_quote_backslash: true,
                 slash_comments: true,
+            },
+            // PromQL: `"…"` and `'…'` strings with `\` escapes, raw `` `…` `` strings and `#`
+            // comments.
+            Driver::Prometheus => Dialect {
+                brackets: false,
+                backticks: true,
+                dollar_quotes: false,
+                nested_comments: false,
+                tsql_names: false,
+                go_separator: false,
+                hash_comments: true,
+                backslash_escapes: true,
+                q_quotes: false,
+                slash_separator: false,
+                single_quote_backslash: false,
+                slash_comments: false,
             },
         }
     }

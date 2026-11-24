@@ -34,6 +34,8 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::InfluxDb => format!("influxdb://{authority}{slash_db}{extra}"),
         // The cluster URI, as Kusto's own tools take it.
         Driver::Kusto => format!("{}{slash_db}{extra}", super::kusto::cluster_url(cfg)),
+        // The API's base, as the server's own UI show it.
+        Driver::Prometheus => format!("{}{extra}", super::prometheus::base_url(cfg)),
     }
 }
 
@@ -65,7 +67,10 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
         Driver::InfluxDb => {
             // `http(s)://host:8086` as InfluxDB's own tools take it: https switches TLS on.
             for (scheme, tls) in [("http://", false), ("https://", true)] {
-                if url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme) {
+                if url
+                    .get(..scheme.len())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(scheme))
+                {
                     let mut c = cfg.clone();
                     c.set_property("tls", if tls { "true" } else { "" });
                     let ok = apply_jdbc_url(&mut c, &format!("influxdb://{}", url[scheme.len()..].trim_end_matches('/')));
@@ -80,13 +85,41 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
         Driver::Kusto => {
             // `https://help.kusto.windows.net/Samples`; `http://` (the emulator) turns TLS off.
             for (scheme, tls, default_port) in [("https://", true, 443), ("http://", false, 80)] {
-                if url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme) {
+                if url
+                    .get(..scheme.len())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(scheme))
+                {
                     let rest = &url[scheme.len()..];
                     let (main, extra) = rest.split_at(rest.find('?').unwrap_or(rest.len()));
                     let (authority, db) = main.split_once('/').unwrap_or((main, ""));
                     let Some((host, port)) = parse_authority(authority, default_port) else { return false };
                     (cfg.host, cfg.port, cfg.database, cfg.url_extra) = (host, port, db.trim_end_matches('/').to_string(), extra.to_string());
                     cfg.set_property("tls", if tls { "" } else { "false" });
+                    return true;
+                }
+            }
+            return false;
+        }
+        Driver::Prometheus => {
+            // `http(s)://host:port/prefix?…`: https switches TLS on, and the path prefix stays in
+            // the host field (`vmselect/select/0/prometheus`).
+            for (scheme, tls, default_port) in [("https://", true, 443), ("http://", false, 80)] {
+                if url
+                    .get(..scheme.len())
+                    .is_some_and(|p| p.eq_ignore_ascii_case(scheme))
+                {
+                    let rest = &url[scheme.len()..];
+                    let (main, extra) = rest.split_at(rest.find('?').unwrap_or(rest.len()));
+                    let (authority, path) = main.split_at(main.find('/').unwrap_or(main.len()));
+                    let Some((host, port)) = parse_authority(authority, default_port) else {
+                        return false;
+                    };
+                    (cfg.host, cfg.port, cfg.url_extra) = (
+                        format!("{host}{}", path.trim_end_matches('/')),
+                        port,
+                        extra.to_string(),
+                    );
+                    cfg.set_property("tls", if tls { "true" } else { "" });
                     return true;
                 }
             }
@@ -415,7 +448,11 @@ pub fn connection_url(cfg: &ConnectionConfig) -> String {
         }
         Driver::Sqlite => format!("sqlite:{}", cfg.file_path.trim()),
         Driver::DuckDb => format!("duckdb:{}", cfg.file_path.trim()),
-        Driver::Oracle | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => jdbc_url(cfg),
+        Driver::Oracle
+        | Driver::Snowflake
+        | Driver::InfluxDb
+        | Driver::Kusto
+        | Driver::Prometheus => jdbc_url(cfg),
     }
 }
 
@@ -435,6 +472,47 @@ pub(crate) fn parse_authority(authority: &str, default_port: u16) -> Option<(Str
 mod tests {
     use super::*;
     use crate::db::tls;
+
+    /// The dialog parses the URL field at every keystroke: text whose bytes at a scheme's length
+    /// aren't a character boundary is refused, not sliced.
+    #[test]
+    fn http_schemes_are_matched_on_any_text() {
+        for driver in [Driver::InfluxDb, Driver::Kusto, Driver::Prometheus] {
+            let mut cfg = ConnectionConfig::new(1, driver);
+            let before = cfg.clone();
+            for text in ["日本語.example:9090", "é", "ht日p://x", ""] {
+                assert!(!apply_jdbc_url(&mut cfg, text), "{driver:?} {text}");
+                assert!(!apply_url(&mut cfg, text), "{driver:?} {text}");
+            }
+            assert_eq!(
+                (cfg.host, cfg.port, cfg.properties),
+                (before.host, before.port, before.properties)
+            );
+        }
+    }
+
+    #[test]
+    fn prometheus_urls_keep_the_path_prefix() {
+        let mut cfg = ConnectionConfig::new(1, Driver::Prometheus);
+        assert!(apply_jdbc_url(
+            &mut cfg,
+            "http://vmselect.vm.svc:8481/select/0/prometheus/"
+        ));
+        assert_eq!(
+            (cfg.host.as_str(), cfg.port),
+            ("vmselect.vm.svc/select/0/prometheus", 8481)
+        );
+        assert_eq!(
+            jdbc_url(&cfg),
+            "http://vmselect.vm.svc:8481/select/0/prometheus"
+        );
+        assert!(apply_jdbc_url(&mut cfg, "HTTPS://prom.example.com"));
+        assert_eq!(
+            (cfg.host.as_str(), cfg.port, cfg.property("tls")),
+            ("prom.example.com", 443, Some("true"))
+        );
+        assert_eq!(jdbc_url(&cfg), "https://prom.example.com");
+    }
 
     #[test]
     fn round_trips_every_driver() {
@@ -546,7 +624,7 @@ mod tests {
             let url = connection_url(&cfg);
             assert!(!url.contains("SECRET-PW"), "{url}");
             let mut back = ConnectionConfig::new(2, Driver::Postgres);
-            assert!(apply_url(&mut back, &url) || matches!(driver, Driver::Oracle | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto), "{url}");
+            assert!(apply_url(&mut back, &url) || matches!(driver, Driver::Oracle | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus), "{url}");
             if matches!(driver, Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::MsSql | Driver::Redis | Driver::MongoDb | Driver::ClickHouse) {
                 assert_eq!((back.driver, back.host.as_str(), back.port, back.database.as_str(), back.user.as_str()), (driver, "db.example.com", 5555, "sales", "app user"), "{url}");
             }
