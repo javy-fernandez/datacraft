@@ -4,48 +4,48 @@
 //! know each engine's native types.
 
 pub mod alter;
-pub mod table_definition;
-pub mod table_duplicate;
-pub mod table_export;
+pub mod backup;
+pub mod clickhouse;
 pub mod copy;
 pub mod create_db;
 pub mod datagrip;
-pub mod backup;
-pub mod restore;
-pub mod clickhouse;
 pub mod duckdb;
+pub mod fk_nav;
+pub mod indexes;
 pub mod influx;
 pub mod kusto;
 pub mod mongo;
 pub mod mssql;
-pub mod object_info;
-pub mod indexes;
-pub mod table_structure;
-pub mod table_model;
-pub mod fk_nav;
-pub mod schema_search;
-pub mod schema_compare;
-pub mod script;
-pub mod subset;
 pub mod mysql;
+pub mod object_info;
 pub mod oracle;
 pub mod plan;
 pub mod postgres;
 pub mod redis_db;
+pub mod restore;
 pub mod routines;
-pub mod snowflake;
-pub mod ssh;
-pub mod tls;
-pub mod sqlite;
-pub mod url;
-pub mod views;
-pub mod users;
+pub mod schema_compare;
+pub mod schema_search;
+pub mod script;
 pub mod sessions;
+pub mod snowflake;
+pub mod sqlite;
+pub mod ssh;
+pub mod subset;
+pub mod table_definition;
+pub mod table_duplicate;
+pub mod table_export;
+pub mod table_model;
 pub mod table_privileges;
+pub mod table_structure;
+pub mod tls;
 pub mod transaction;
+pub mod url;
+pub mod users;
+pub mod views;
 
-use serde::{Deserialize, Serialize};
 use crate::i18n::trf;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -92,18 +92,40 @@ impl Driver {
     /// language, the grid is read-only and the SQL tools (DDL, import, copy, schema search…) are
     /// not offered.
     pub fn is_nosql(self) -> bool {
-        matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+        matches!(
+            self,
+            Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto
+        )
     }
 
     /// Engines whose consoles offer Manual transactions (Commit / Roll Back).
     pub fn has_transactions(self) -> bool {
-        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MsSql | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::DuckDb)
+        matches!(
+            self,
+            Driver::Postgres
+                | Driver::Sqlite
+                | Driver::MsSql
+                | Driver::MySql
+                | Driver::MariaDb
+                | Driver::Oracle
+                | Driver::Snowflake
+                | Driver::DuckDb
+        )
     }
 
     /// Engines whose running statement can be cancelled without closing the session (see
     /// `Engine::cancel_handle`); elsewhere a cancel abandons the query and closes the session.
     pub fn has_native_cancel(self) -> bool {
-        matches!(self, Driver::Postgres | Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::DuckDb)
+        matches!(
+            self,
+            Driver::Postgres
+                | Driver::Sqlite
+                | Driver::MySql
+                | Driver::MariaDb
+                | Driver::Oracle
+                | Driver::Snowflake
+                | Driver::DuckDb
+        )
     }
 
     /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys,
@@ -115,7 +137,10 @@ impl Driver {
     /// Engines reached over one TCP address, which an SSH tunnel can forward: not SQLite
     /// or DuckDB (files) nor the cloud services (Snowflake, Kusto), which are reached over the internet.
     pub fn supports_ssh(self) -> bool {
-        !matches!(self, Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto)
+        !matches!(
+            self,
+            Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto
+        )
     }
 
     pub fn label(self) -> &'static str {
@@ -155,7 +180,17 @@ impl Driver {
     /// Engines where each database has a single schema with its own name (SQLite: "main"),
     /// shown flattened in the explorer.
     pub fn flat_schema(self) -> bool {
-        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+        matches!(
+            self,
+            Driver::Sqlite
+                | Driver::MySql
+                | Driver::MariaDb
+                | Driver::ClickHouse
+                | Driver::Redis
+                | Driver::MongoDb
+                | Driver::InfluxDb
+                | Driver::Kusto
+        )
     }
 
     /// Engines whose server has several databases that can be created and dropped from the app.
@@ -183,7 +218,13 @@ impl Driver {
             Driver::InfluxDb => format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")),
             // Kusto: `['name']`, with the escapes of a KQL string.
             Driver::Kusto => format!("['{}']", name.replace('\\', "\\\\").replace('\'', "\\'")),
-            Driver::Postgres | Driver::Sqlite | Driver::DuckDb | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
+            Driver::Postgres
+            | Driver::Sqlite
+            | Driver::DuckDb
+            | Driver::Oracle
+            | Driver::Snowflake
+            | Driver::Redis
+            | Driver::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
         }
@@ -261,7 +302,12 @@ pub enum Environment {
 }
 
 impl Environment {
-    pub const ALL: [Environment; 4] = [Environment::None, Environment::Development, Environment::Staging, Environment::Production];
+    pub const ALL: [Environment; 4] = [
+        Environment::None,
+        Environment::Development,
+        Environment::Staging,
+        Environment::Production,
+    ];
 
     /// Badge colour (sRGB) unless the data source picks another.
     pub fn default_color(self) -> [u8; 3] {
@@ -278,7 +324,16 @@ impl Environment {
 /// values go to the keychain like the password, never to `connections.json`.
 pub fn is_secret_property(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
-    ["password", "pwd", "secret", "token", "passcode", "private_key_base64"].iter().any(|s| n.contains(s))
+    [
+        "password",
+        "pwd",
+        "secret",
+        "token",
+        "passcode",
+        "private_key_base64",
+    ]
+    .iter()
+    .any(|s| n.contains(s))
 }
 
 /// DataGrip's "Authentication" options for Snowflake.
@@ -308,7 +363,11 @@ impl ConnectionConfig {
             name: format!("{} {}", driver.label(), id),
             driver,
             // Kusto: the cluster, typed (`<cluster>.<region>.kusto.windows.net`).
-            host: if driver == Driver::Kusto { String::new() } else { "localhost".into() },
+            host: if driver == Driver::Kusto {
+                String::new()
+            } else {
+                "localhost".into()
+            },
             port: driver.default_port(),
             database: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -319,7 +378,13 @@ impl ConnectionConfig {
                 Driver::Redis => "0".into(),
                 Driver::ClickHouse => "default".into(),
                 // InfluxDB: the bucket; Kusto: the database. Empty = the first one.
-                Driver::Sqlite | Driver::DuckDb | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => String::new(),
+                Driver::Sqlite
+                | Driver::DuckDb
+                | Driver::MySql
+                | Driver::MariaDb
+                | Driver::Snowflake
+                | Driver::InfluxDb
+                | Driver::Kusto => String::new(),
             },
             user: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -329,7 +394,13 @@ impl ConnectionConfig {
                 Driver::ClickHouse => "default".into(),
                 // InfluxDB: the organization; empty = the token's only one. Kusto: an
                 // application's client ID.
-                Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
+                Driver::Sqlite
+                | Driver::DuckDb
+                | Driver::Snowflake
+                | Driver::Redis
+                | Driver::MongoDb
+                | Driver::InfluxDb
+                | Driver::Kusto => String::new(),
             },
             password: String::new(),
             file_path: String::new(),
@@ -339,7 +410,11 @@ impl ConnectionConfig {
             role: String::new(),
             schema: String::new(),
             // Kusto signs in with the Azure CLI's account unless told otherwise.
-            auth: if driver == Driver::Kusto { AuthMode::AzureCli } else { AuthMode::default() },
+            auth: if driver == Driver::Kusto {
+                AuthMode::AzureCli
+            } else {
+                AuthMode::default()
+            },
             authenticator: String::new(),
             properties: Vec::new(),
             url_only: false,
@@ -357,7 +432,13 @@ impl ConnectionConfig {
 
     /// Environment and badge colour, if it has one.
     pub fn environment_badge(&self) -> Option<(Environment, [u8; 3])> {
-        (self.environment != Environment::None).then(|| (self.environment, self.environment_color.unwrap_or(self.environment.default_color())))
+        (self.environment != Environment::None).then(|| {
+            (
+                self.environment,
+                self.environment_color
+                    .unwrap_or(self.environment.default_color()),
+            )
+        })
     }
 
     /// Switches the engine: fields still at the old engine's defaults take the new one's, and an
@@ -394,7 +475,8 @@ impl ConnectionConfig {
         {
             cfg.auth = AuthMode::UserPassword;
         }
-        if new == Driver::Kusto && cfg.auth == AuthMode::UserPassword && cfg.user.trim().is_empty() {
+        if new == Driver::Kusto && cfg.auth == AuthMode::UserPassword && cfg.user.trim().is_empty()
+        {
             cfg.auth = AuthMode::AzureCli;
         }
         cfg.driver = new;
@@ -402,12 +484,19 @@ impl ConnectionConfig {
 
     /// Value of a driver property (case-insensitive name), when set and not blank.
     pub fn property(&self, name: &str) -> Option<&str> {
-        self.properties.iter().find(|(k, v)| k.trim().eq_ignore_ascii_case(name) && !v.trim().is_empty()).map(|(_, v)| v.trim())
+        self.properties
+            .iter()
+            .find(|(k, v)| k.trim().eq_ignore_ascii_case(name) && !v.trim().is_empty())
+            .map(|(_, v)| v.trim())
     }
 
     /// Sets a driver property, replacing one with the same name.
     pub fn set_property(&mut self, name: &str, value: &str) {
-        match self.properties.iter_mut().find(|(k, _)| k.trim().eq_ignore_ascii_case(name)) {
+        match self
+            .properties
+            .iter_mut()
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case(name))
+        {
             Some((_, v)) => *v = value.to_string(),
             None => self.properties.push((name.to_string(), value.to_string())),
         }
@@ -415,7 +504,11 @@ impl ConnectionConfig {
 
     /// Driver properties whose values are secrets, with their values (for the keychain).
     pub fn secret_properties(&self) -> Vec<(String, String)> {
-        self.properties.iter().filter(|(k, v)| is_secret_property(k) && !v.is_empty()).cloned().collect()
+        self.properties
+            .iter()
+            .filter(|(k, v)| is_secret_property(k) && !v.is_empty())
+            .cloned()
+            .collect()
     }
 
     /// The config as written to `connections.json`: no password, and secret property values blank
@@ -528,7 +621,10 @@ pub enum CancelHandle {
 impl CancelHandle {
     pub async fn cancel(&self) -> anyhow::Result<()> {
         match self {
-            CancelHandle::Postgres(t, tls) => t.cancel_query(tls.clone()).await.map_err(anyhow::Error::from),
+            CancelHandle::Postgres(t, tls) => t
+                .cancel_query(tls.clone())
+                .await
+                .map_err(anyhow::Error::from),
             CancelHandle::Sqlite(h) => {
                 h.interrupt();
                 Ok(())
@@ -576,15 +672,26 @@ impl std::ops::DerefMut for Session {
 
 impl Session {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Session> {
-        let tunnel = if ssh::tunnels(cfg) { Some(ssh::shared(cfg).await?) } else { None };
+        let tunnel = if ssh::tunnels(cfg) {
+            Some(ssh::shared(cfg).await?)
+        } else {
+            None
+        };
         let engine = Self::open(&through(cfg, tunnel.as_deref()), cfg.read_only).await?;
-        Ok(Session { engine, _tunnel: tunnel })
+        Ok(Session {
+            engine,
+            _tunnel: tunnel,
+        })
     }
 
     /// Test Connection: the server's product and version. Through SSH, a tunnel of its own (so
     /// the bastion's key and sign-in are checked again), named in the result.
     pub async fn test(cfg: &ConnectionConfig) -> anyhow::Result<Option<String>> {
-        let tunnel = if ssh::tunnels(cfg) { Some(ssh::private(cfg).await?) } else { None };
+        let tunnel = if ssh::tunnels(cfg) {
+            Some(ssh::private(cfg).await?)
+        } else {
+            None
+        };
         let mut engine = Self::open(&through(cfg, tunnel.as_ref()), cfg.read_only).await?;
         let version = engine.server_version(cfg.driver).await;
         let mut parts: Vec<String> = version.into_iter().collect();
@@ -593,7 +700,10 @@ impl Session {
             parts.push(tls);
         }
         if tunnel.is_some() {
-            parts.push(trf("through SSH {bastion}", &[("bastion", &cfg.ssh.describe())]));
+            parts.push(trf(
+                "through SSH {bastion}",
+                &[("bastion", &cfg.ssh.describe())],
+            ));
         }
         Ok((!parts.is_empty()).then(|| parts.join(" · ")))
     }
@@ -602,7 +712,11 @@ impl Session {
         // "No auth": the engine's defaults (trust/peer auth…). Snowflake reads its properties.
         let no_auth;
         let cfg = if cfg.auth == AuthMode::NoAuth && cfg.driver != Driver::Snowflake {
-            no_auth = ConnectionConfig { user: String::new(), password: String::new(), ..cfg.clone() };
+            no_auth = ConnectionConfig {
+                user: String::new(),
+                password: String::new(),
+                ..cfg.clone()
+            };
             &no_auth
         } else {
             cfg
@@ -611,13 +725,21 @@ impl Session {
             Driver::Postgres => Engine::Postgres(postgres::PgSession::connect(cfg).await?),
             Driver::Sqlite => Engine::Sqlite(sqlite::SqliteSession::connect(cfg).await?),
             Driver::MsSql => Engine::MsSql(Box::new(mssql::MsSession::connect(cfg).await?)),
-            Driver::MySql | Driver::MariaDb => Engine::MySql(Box::new(mysql::MySession::connect(cfg).await?)),
+            Driver::MySql | Driver::MariaDb => {
+                Engine::MySql(Box::new(mysql::MySession::connect(cfg).await?))
+            }
             Driver::Oracle => Engine::Oracle(Box::new(oracle::OraSession::connect(cfg).await?)),
-            Driver::Snowflake => Engine::Snowflake(Box::new(snowflake::SfSession::connect(cfg).await?)),
-            Driver::ClickHouse => Engine::ClickHouse(Box::new(clickhouse::ChSession::connect(cfg).await?)),
+            Driver::Snowflake => {
+                Engine::Snowflake(Box::new(snowflake::SfSession::connect(cfg).await?))
+            }
+            Driver::ClickHouse => {
+                Engine::ClickHouse(Box::new(clickhouse::ChSession::connect(cfg).await?))
+            }
             Driver::Redis => Engine::Redis(Box::new(redis_db::RedisSession::connect(cfg).await?)),
             Driver::MongoDb => Engine::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
-            Driver::InfluxDb => Engine::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
+            Driver::InfluxDb => {
+                Engine::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?))
+            }
             Driver::Kusto => Engine::Kusto(Box::new(kusto::KustoSession::connect(cfg).await?)),
             Driver::DuckDb => Engine::DuckDb(duckdb::DuckSession::connect(cfg).await?),
         };
@@ -639,24 +761,43 @@ impl Session {
     /// Qualified name quoted for the dialect, e.g. `"public"."users"` or `[dbo].[users]`.
     pub fn quote_table(driver: Driver, schema: &str, table: &str) -> String {
         match driver {
-            Driver::Postgres | Driver::Snowflake | Driver::DuckDb => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
+            Driver::Postgres | Driver::Snowflake | Driver::DuckDb => format!(
+                "\"{}\".\"{}\"",
+                schema.replace('"', "\"\""),
+                table.replace('"', "\"\"")
+            ),
             // No qualified names: a collection, a key pattern or a measurement, as is.
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
             // Kusto: the table of the request's database.
             Driver::Kusto => Driver::Kusto.quote_ident(table),
             Driver::Sqlite => format!("\"{}\"", table.replace('"', "\"\"")),
-            Driver::MsSql => format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]")),
+            Driver::MsSql => format!(
+                "[{}].[{}]",
+                schema.replace(']', "]]"),
+                table.replace(']', "]]")
+            ),
             // MySQL: the schema is the database.
-            Driver::MySql | Driver::MariaDb | Driver::Oracle => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
+            Driver::MySql | Driver::MariaDb | Driver::Oracle => format!(
+                "{}.{}",
+                driver.quote_ident(schema),
+                driver.quote_ident(table)
+            ),
             // ClickHouse: the schema is the database.
-            Driver::ClickHouse => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
+            Driver::ClickHouse => format!(
+                "{}.{}",
+                driver.quote_ident(schema),
+                driver.quote_ident(table)
+            ),
         }
     }
 }
 
 /// The config the driver connects with: through a tunnel, its listener on `127.0.0.1`, and the
 /// database's host kept for TLS (`tunnel_host`).
-fn through<'a>(cfg: &'a ConnectionConfig, tunnel: Option<&ssh::Tunnel>) -> std::borrow::Cow<'a, ConnectionConfig> {
+fn through<'a>(
+    cfg: &'a ConnectionConfig,
+    tunnel: Option<&ssh::Tunnel>,
+) -> std::borrow::Cow<'a, ConnectionConfig> {
     match tunnel {
         None => std::borrow::Cow::Borrowed(cfg),
         Some(t) => {
@@ -713,8 +854,15 @@ impl Engine {
     }
 
     /// Bound SELECTs use native driver parameters; ordinary statements keep their existing path.
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
-        if parameters.is_empty() { return self.execute(sql, max_rows).await; }
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
+        if parameters.is_empty() {
+            return self.execute(sql, max_rows).await;
+        }
         match self {
             Engine::Postgres(s) => s.execute_bound(sql, parameters, max_rows).await,
             Engine::Sqlite(s) => s.execute_bound(sql, parameters, max_rows).await,
@@ -805,7 +953,9 @@ impl Engine {
             Engine::MongoDb(s) => s.apply_changes(statements).await,
             // Points are written with line protocol, which the data editor doesn't produce, and
             // Kusto ingests rows rather than editing them.
-            Engine::InfluxDb(_) | Engine::Kusto(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
+            Engine::InfluxDb(_) | Engine::Kusto(_) => {
+                anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"))
+            }
         }
     }
 
@@ -841,7 +991,10 @@ impl Engine {
     /// Runs the statements in ONE transaction (all or nothing), without the one-row rule of
     /// `apply_changes`. Returns the affected rows when the engine reports them.
     pub async fn run_transaction(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        if matches!(self, Engine::Redis(_) | Engine::MongoDb(_) | Engine::InfluxDb(_) | Engine::Kusto(_)) {
+        if matches!(
+            self,
+            Engine::Redis(_) | Engine::MongoDb(_) | Engine::InfluxDb(_) | Engine::Kusto(_)
+        ) {
             anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"));
         }
         if let Engine::ClickHouse(s) = self {
@@ -853,7 +1006,11 @@ impl Engine {
             return s.run_transaction(statements).await;
         }
         let (begin, commit, rollback) = match self {
-            Engine::MsSql(_) => ("BEGIN TRANSACTION", "COMMIT TRANSACTION", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"),
+            Engine::MsSql(_) => (
+                "BEGIN TRANSACTION",
+                "COMMIT TRANSACTION",
+                "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION",
+            ),
             Engine::MySql(_) => ("START TRANSACTION", "COMMIT", "ROLLBACK"),
             _ => ("BEGIN", "COMMIT", "ROLLBACK"),
         };
@@ -885,8 +1042,12 @@ impl Engine {
             }
             Engine::MsSql(_) => "BEGIN TRANSACTION",
             Engine::MySql(_) => "START TRANSACTION",
-            Engine::Postgres(_) | Engine::Sqlite(_) | Engine::Snowflake(_) | Engine::DuckDb(_) => "BEGIN",
-            _ => anyhow::bail!(crate::i18n::tr("Manual transactions are not available for this engine")),
+            Engine::Postgres(_) | Engine::Sqlite(_) | Engine::Snowflake(_) | Engine::DuckDb(_) => {
+                "BEGIN"
+            }
+            _ => anyhow::bail!(crate::i18n::tr(
+                "Manual transactions are not available for this engine"
+            )),
         };
         self.execute(sql, 0).await.map(|_| ())
     }
@@ -903,7 +1064,9 @@ impl Engine {
             Engine::MySql(_) => self.execute("SET autocommit = 0", 0).await.map(|_| ()),
             Engine::Snowflake(s) => {
                 s.keep_session();
-                self.execute("ALTER SESSION SET AUTOCOMMIT = FALSE", 0).await.map(|_| ())
+                self.execute("ALTER SESSION SET AUTOCOMMIT = FALSE", 0)
+                    .await
+                    .map(|_| ())
             }
             _ => Ok(()),
         }
@@ -926,7 +1089,10 @@ impl Engine {
         match self {
             Engine::Sqlite(s) => s.in_transaction().await.ok().map(|open| (open, false)),
             Engine::MsSql(_) => {
-                let rs = self.execute("SELECT @@TRANCOUNT, XACT_STATE()", 1).await.ok()?;
+                let rs = self
+                    .execute("SELECT @@TRANCOUNT, XACT_STATE()", 1)
+                    .await
+                    .ok()?;
                 let row = rs.into_iter().next()?.rows.into_iter().next()?;
                 let number = |i: usize| row.get(i)?.as_deref()?.trim().parse::<i64>().ok();
                 Some((number(0)? > 0, number(1)? == -1))
@@ -983,14 +1149,23 @@ impl Engine {
             Driver::Postgres => "SHOW server_version",
             Driver::MySql | Driver::MariaDb => "SELECT VERSION()",
             Driver::MsSql => "SELECT CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128))",
-            Driver::Oracle => "SELECT version FROM product_component_version WHERE product LIKE 'Oracle%'",
+            Driver::Oracle => {
+                "SELECT version FROM product_component_version WHERE product LIKE 'Oracle%'"
+            }
             Driver::Sqlite => "SELECT sqlite_version()",
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
             Driver::ClickHouse | Driver::DuckDb => "SELECT version()",
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
-        let v = rs.into_iter().next()?.rows.into_iter().next()?.into_iter().next()??;
+        let v = rs
+            .into_iter()
+            .next()?
+            .rows
+            .into_iter()
+            .next()?
+            .into_iter()
+            .next()??;
         // MariaDB reports itself in its version string ("11.4.2-MariaDB-…").
         let v = v.split(['-', ' ']).next().unwrap_or(&v).to_string();
         let product = match driver {
@@ -1011,7 +1186,10 @@ mod feature_matrix_tests {
     #[test]
     fn readme_feature_matrix_matches_the_drivers() {
         let readme = include_str!("../../README.md");
-        let section = readme.split("### Feature matrix").nth(1).expect("README has a feature matrix");
+        let section = readme
+            .split("### Feature matrix")
+            .nth(1)
+            .expect("README has a feature matrix");
         let rows: Vec<Vec<&str>> = section
             .lines()
             .skip_while(|l| !l.starts_with("| Engine"))
@@ -1025,9 +1203,16 @@ mod feature_matrix_tests {
             let drivers: Vec<Driver> = Driver::ALL
                 .iter()
                 .copied()
-                .filter(|d| engine == d.label() || engine.split(" / ").any(|part| part == d.label()) || engine.starts_with(&format!("{} ", d.label())))
+                .filter(|d| {
+                    engine == d.label()
+                        || engine.split(" / ").any(|part| part == d.label())
+                        || engine.starts_with(&format!("{} ", d.label()))
+                })
                 .collect();
-            assert!(!drivers.is_empty(), "unknown engine in the README matrix: {engine}");
+            assert!(
+                !drivers.is_empty(),
+                "unknown engine in the README matrix: {engine}"
+            );
             for d in drivers {
                 let expected = [
                     true,
@@ -1039,12 +1224,21 @@ mod feature_matrix_tests {
                     d.can_create_databases(),
                 ];
                 let cells: Vec<bool> = row[1..].iter().map(|c| *c == "✅").collect();
-                assert_eq!(cells, expected, "README feature matrix row for {} is out of date", d.label());
+                assert_eq!(
+                    cells,
+                    expected,
+                    "README feature matrix row for {} is out of date",
+                    d.label()
+                );
                 seen.push(d);
             }
         }
         for d in Driver::ALL {
-            assert!(seen.contains(&d), "{} is missing from the README feature matrix", d.label());
+            assert!(
+                seen.contains(&d),
+                "{} is missing from the README feature matrix",
+                d.label()
+            );
         }
     }
 }

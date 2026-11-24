@@ -10,7 +10,8 @@ const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
 pub fn icon_data() -> egui::IconData {
     // The asset is generated and validated in the repository, never supplied by a user.
-    eframe::icon_data::from_png_bytes(WINDOW_ICON_PNG).expect("bundled DataCraft icon is a valid PNG")
+    eframe::icon_data::from_png_bytes(WINDOW_ICON_PNG)
+        .expect("bundled DataCraft icon is a valid PNG")
 }
 
 pub fn paint(ui: &Ui, rect: Rect) {

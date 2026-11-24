@@ -6,8 +6,8 @@ use crate::db::{ConnectionConfig, Environment};
 use crate::i18n::{tr, tr_ctx};
 use crate::ui::icons::{self, Ico};
 use egui::{
-    Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Rect, Response, Sense, Shadow,
-    Stroke, TextStyle, Ui, Vec2, vec2,
+    Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Rect, Response,
+    Sense, Shadow, Stroke, TextStyle, Ui, Vec2, vec2,
 };
 use std::sync::Arc;
 
@@ -250,21 +250,29 @@ const SYSTEM_FONTS: &[&[&str]] = &[
     // Korean (Microsoft YaHei has no Hangul).
     &["%WINDIR%/Fonts/malgun.ttf"],
     // Thai.
-    &["%WINDIR%/Fonts/LeelawUI.ttf", "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"],
+    &[
+        "%WINDIR%/Fonts/LeelawUI.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+    ],
 ];
 
 /// The system fallback fonts found, read once per run.
 fn system_fonts() -> &'static [(String, Arc<FontData>)] {
     static FONTS: std::sync::OnceLock<Vec<(String, Arc<FontData>)>> = std::sync::OnceLock::new();
     FONTS.get_or_init(|| {
-        let windir = std::env::var("WINDIR").or_else(|_| std::env::var("SystemRoot")).unwrap_or_else(|_| r"C:\Windows".into());
+        let windir = std::env::var("WINDIR")
+            .or_else(|_| std::env::var("SystemRoot"))
+            .unwrap_or_else(|_| r"C:\Windows".into());
         SYSTEM_FONTS
             .iter()
             .filter_map(|group| {
                 group.iter().find_map(|path| {
                     let path = path.replace("%WINDIR%", &windir);
                     let bytes = std::fs::read(&path).ok()?;
-                    Some((format!("system:{path}"), Arc::new(FontData::from_owned(bytes))))
+                    Some((
+                        format!("system:{path}"),
+                        Arc::new(FontData::from_owned(bytes)),
+                    ))
                 })
             })
             .collect()
@@ -276,16 +284,46 @@ fn system_fonts() -> &'static [(String, Arc<FontData>)] {
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
-        fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+        fonts
+            .font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
     };
-    add(&mut fonts, "Inter", include_bytes!("../../assets/fonts/Inter-Regular.otf"));
-    add(&mut fonts, "Inter-SemiBold", include_bytes!("../../assets/fonts/Inter-SemiBold.otf"));
-    add(&mut fonts, "JBMono", include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"));
-    add(&mut fonts, "JBMono-Bold", include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf"));
-    add(&mut fonts, "JBMono-Italic", include_bytes!("../../assets/fonts/JetBrainsMono-Italic.ttf"));
+    add(
+        &mut fonts,
+        "Inter",
+        include_bytes!("../../assets/fonts/Inter-Regular.otf"),
+    );
+    add(
+        &mut fonts,
+        "Inter-SemiBold",
+        include_bytes!("../../assets/fonts/Inter-SemiBold.otf"),
+    );
+    add(
+        &mut fonts,
+        "JBMono",
+        include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"),
+    );
+    add(
+        &mut fonts,
+        "JBMono-Bold",
+        include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf"),
+    );
+    add(
+        &mut fonts,
+        "JBMono-Italic",
+        include_bytes!("../../assets/fonts/JetBrainsMono-Italic.ttf"),
+    );
 
-    let mut fallback_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    let mut fallback_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    let mut fallback_prop = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    let mut fallback_mono = fonts
+        .families
+        .get(&FontFamily::Monospace)
+        .cloned()
+        .unwrap_or_default();
     for (name, data) in system_fonts() {
         fonts.font_data.insert(name.clone(), data.clone());
         fallback_prop.push(name.clone());
@@ -296,11 +334,24 @@ pub fn install_fonts(ctx: &egui::Context) {
         v.extend(rest.iter().cloned());
         v
     };
-    fonts.families.insert(FontFamily::Proportional, with("Inter", &fallback_prop));
-    fonts.families.insert(FontFamily::Monospace, with("JBMono", &fallback_mono));
-    fonts.families.insert(FontFamily::Name(FONT_BOLD.into()), with("Inter-SemiBold", &fallback_prop));
-    fonts.families.insert(FontFamily::Name(FONT_MONO_BOLD.into()), with("JBMono-Bold", &fallback_mono));
-    fonts.families.insert(FontFamily::Name(FONT_MONO_ITALIC.into()), with("JBMono-Italic", &fallback_mono));
+    fonts
+        .families
+        .insert(FontFamily::Proportional, with("Inter", &fallback_prop));
+    fonts
+        .families
+        .insert(FontFamily::Monospace, with("JBMono", &fallback_mono));
+    fonts.families.insert(
+        FontFamily::Name(FONT_BOLD.into()),
+        with("Inter-SemiBold", &fallback_prop),
+    );
+    fonts.families.insert(
+        FontFamily::Name(FONT_MONO_BOLD.into()),
+        with("JBMono-Bold", &fallback_mono),
+    );
+    fonts.families.insert(
+        FontFamily::Name(FONT_MONO_ITALIC.into()),
+        with("JBMono-Italic", &fallback_mono),
+    );
     ctx.set_fonts(fonts);
 }
 
@@ -308,7 +359,11 @@ pub fn install_fonts(ctx: &egui::Context) {
 
 pub fn apply(ctx: &egui::Context, dark: bool) {
     let p = palette(dark);
-    let mut v = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     v.panel_fill = p.main_bg;
     v.window_fill = p.popup_bg;
     v.extreme_bg_color = p.control_bg;
@@ -318,8 +373,18 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     v.window_stroke = Stroke::new(1.0, p.popup_border);
     v.window_corner_radius = CornerRadius::same(12);
     v.menu_corner_radius = CornerRadius::same(8);
-    v.window_shadow = Shadow { offset: [0, 8], blur: 28, spread: 0, color: Color32::from_black_alpha(if dark { 110 } else { 38 }) };
-    v.popup_shadow = Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(if dark { 90 } else { 28 }) };
+    v.window_shadow = Shadow {
+        offset: [0, 8],
+        blur: 28,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 110 } else { 38 }),
+    };
+    v.popup_shadow = Shadow {
+        offset: [0, 4],
+        blur: 16,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark { 90 } else { 28 }),
+    };
     v.override_text_color = None;
     v.hyperlink_color = p.accent;
     v.error_fg_color = p.error;
@@ -367,7 +432,11 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     w.open.fg_stroke = Stroke::new(1.0, p.text);
     w.open.corner_radius = r;
 
-    let theme = if dark { egui::Theme::Dark } else { egui::Theme::Light };
+    let theme = if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    };
     ctx.set_theme(theme);
     ctx.set_visuals_of(theme, v);
     ctx.all_styles_mut(|s| {
@@ -424,7 +493,11 @@ pub fn blend(base: Color32, over: Color32) -> Color32 {
     }
     // `over` is premultiplied.
     let mix = |b: u8, o: u8| (b as f32 * (1.0 - a) + o as f32).round().clamp(0.0, 255.0) as u8;
-    Color32::from_rgb(mix(base.r(), over.r()), mix(base.g(), over.g()), mix(base.b(), over.b()))
+    Color32::from_rgb(
+        mix(base.r(), over.r()),
+        mix(base.g(), over.g()),
+        mix(base.b(), over.b()),
+    )
 }
 
 // ------------------------------------------------------------------ widget helpers
@@ -434,22 +507,58 @@ pub fn icon_button(ui: &mut Ui, ico: Ico, enabled: bool, tooltip: &str) -> Respo
     icon_button_sized(ui, ico, enabled, tooltip, 26.0)
 }
 
-pub fn icon_button_sized(ui: &mut Ui, ico: Ico, enabled: bool, tooltip: &str, size: f32) -> Response {
+pub fn icon_button_sized(
+    ui: &mut Ui,
+    ico: Ico,
+    enabled: bool,
+    tooltip: &str,
+    size: f32,
+) -> Response {
     let p = pal(ui);
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), sense);
-    if !tooltip.is_empty() { resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, false, tooltip)); }
+    if !tooltip.is_empty() {
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, false, tooltip)
+        });
+    }
     if enabled && (resp.hovered() || resp.is_pointer_button_down_on()) {
-        let fill = if resp.is_pointer_button_down_on() { p.pressed } else { p.hover };
+        let fill = if resp.is_pointer_button_down_on() {
+            p.pressed
+        } else {
+            p.hover
+        };
         ui.painter().rect_filled(rect, 6.0, fill);
     }
     let color = if enabled { p.icon } else { p.disabled };
-    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(16.0)), ico, color, &p, enabled);
-    if tooltip.is_empty() { resp } else { resp.on_hover_text(tooltip) }
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(16.0)),
+        ico,
+        color,
+        &p,
+        enabled,
+    );
+    if tooltip.is_empty() {
+        resp
+    } else {
+        resp.on_hover_text(tooltip)
+    }
 }
 
 /// Flat text button (with optional chevron) in the MainToolbar.Dropdown style.
-pub fn flat_button(ui: &mut Ui, leading: Option<Ico>, text: &str, font: FontId, chevron: bool, enabled: bool) -> Response {
+pub fn flat_button(
+    ui: &mut Ui,
+    leading: Option<Ico>,
+    text: &str,
+    font: FontId,
+    chevron: bool,
+    enabled: bool,
+) -> Response {
     let p = pal(ui);
     let color = if enabled { p.text } else { p.disabled };
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
@@ -457,19 +566,38 @@ pub fn flat_button(ui: &mut Ui, leading: Option<Ico>, text: &str, font: FontId, 
     let chev_w = if chevron { 16.0 } else { 0.0 };
     let w = 8.0 + lead_w + galley.size().x + chev_w + 8.0;
     let h = 26.0;
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), sense);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
     if enabled && (resp.hovered() || resp.is_pointer_button_down_on()) {
-        let fill = if resp.is_pointer_button_down_on() { p.pressed } else { p.hover };
+        let fill = if resp.is_pointer_button_down_on() {
+            p.pressed
+        } else {
+            p.hover
+        };
         ui.painter().rect_filled(rect, 6.0, fill);
     }
     let mut x = rect.left() + 8.0;
     if let Some(ico) = leading {
-        icons::paint(ui.painter(), Rect::from_min_size(egui::pos2(x, rect.center().y - 8.0), Vec2::splat(16.0)), ico, p.icon, &p, enabled);
+        icons::paint(
+            ui.painter(),
+            Rect::from_min_size(egui::pos2(x, rect.center().y - 8.0), Vec2::splat(16.0)),
+            ico,
+            p.icon,
+            &p,
+            enabled,
+        );
         x += lead_w;
     }
-    ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley.clone(), color);
+    ui.painter().galley(
+        egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+        galley.clone(),
+        color,
+    );
     x += galley.size().x + 2.0;
     if chevron {
         icons::paint(
@@ -493,33 +621,106 @@ pub fn add_button(ui: &mut Ui, icon: Ico, text: &str) -> Response {
     text_tool_button(ui, icon, text, false, true)
 }
 
-fn text_tool_button(ui: &mut Ui, icon: Ico, text: &str, selected: bool, accented: bool) -> Response {
+fn text_tool_button(
+    ui: &mut Ui,
+    icon: Ico,
+    text: &str,
+    selected: bool,
+    accented: bool,
+) -> Response {
     let p = pal(ui);
-    let text_color = if !ui.is_enabled() { p.disabled } else if accented { p.accent } else { p.text };
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(12.5), text_color);
-    let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 32.0, 24.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected, text));
-    if selected {
-        ui.painter().rect(rect, 4.0, p.tab_selected_bg, Stroke::new(1.0, p.tab_selected_border), egui::StrokeKind::Inside);
+    let text_color = if !ui.is_enabled() {
+        p.disabled
     } else if accented {
-        ui.painter().rect(rect, 4.0, blend(p.island_bg, p.accent.gamma_multiply(if response.hovered() { 0.22 } else { 0.12 })), Stroke::new(1.0, p.accent.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+        p.accent
+    } else {
+        p.text
+    };
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), FontId::proportional(12.5), text_color);
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(galley.size().x + 32.0, 24.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            text,
+        )
+    });
+    if selected {
+        ui.painter().rect(
+            rect,
+            4.0,
+            p.tab_selected_bg,
+            Stroke::new(1.0, p.tab_selected_border),
+            egui::StrokeKind::Inside,
+        );
+    } else if accented {
+        ui.painter().rect(
+            rect,
+            4.0,
+            blend(
+                p.island_bg,
+                p.accent
+                    .gamma_multiply(if response.hovered() { 0.22 } else { 0.12 }),
+            ),
+            Stroke::new(1.0, p.accent.gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        );
     } else if response.hovered() {
         ui.painter().rect_filled(rect, 4.0, p.hover);
     }
-    let color = if !ui.is_enabled() { p.disabled } else if selected || accented { p.accent } else { p.icon };
-    icons::paint(ui.painter(), Rect::from_min_size(rect.left_center() + vec2(6.0, -7.0), Vec2::splat(14.0)), icon, color, &p, ui.is_enabled());
-    ui.painter().galley(rect.left_center() + vec2(25.0, -galley.size().y / 2.0), galley, p.text);
+    let color = if !ui.is_enabled() {
+        p.disabled
+    } else if selected || accented {
+        p.accent
+    } else {
+        p.icon
+    };
+    icons::paint(
+        ui.painter(),
+        Rect::from_min_size(rect.left_center() + vec2(6.0, -7.0), Vec2::splat(14.0)),
+        icon,
+        color,
+        &p,
+        ui.is_enabled(),
+    );
+    ui.painter().galley(
+        rect.left_center() + vec2(25.0, -galley.size().y / 2.0),
+        galley,
+        p.text,
+    );
     response
 }
 
 pub fn icon_tab(ui: &mut Ui, icon: Ico, label: &str, selected: bool) -> Response {
     let p = pal(ui);
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), selected, label));
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
     if selected || response.hovered() {
-        ui.painter().rect_filled(rect, 4.0, if selected { p.tab_selected_bg } else { p.hover });
+        ui.painter().rect_filled(
+            rect,
+            4.0,
+            if selected { p.tab_selected_bg } else { p.hover },
+        );
     }
-    icons::paint(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(15.0)), icon, if selected { p.accent } else { p.icon }, &p, ui.is_enabled());
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(15.0)),
+        icon,
+        if selected { p.accent } else { p.icon },
+        &p,
+        ui.is_enabled(),
+    );
     response.on_hover_text(label)
 }
 
@@ -527,7 +728,11 @@ pub fn icon_tab(ui: &mut Ui, icon: Ico, label: &str, selected: bool) -> Response
 pub fn toolbar_separator(ui: &mut Ui) {
     let p = pal(ui);
     let (rect, _) = ui.allocate_exact_size(vec2(9.0, 18.0), Sense::hover());
-    ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0, if p.dark { hex(0x393B40) } else { hex(0xDDDFE4) }));
+    ui.painter().vline(
+        rect.center().x,
+        rect.y_range(),
+        Stroke::new(1.0, if p.dark { hex(0x393B40) } else { hex(0xDDDFE4) }),
+    );
 }
 
 /// Blue primary button (Button.default).
@@ -544,19 +749,29 @@ pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
 
 /// Secondary button (control-border outline).
 pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
-    ui.add(egui::Button::new(text).corner_radius(6).min_size(vec2(72.0, 28.0)))
+    ui.add(
+        egui::Button::new(text)
+            .corner_radius(6)
+            .min_size(vec2(72.0, 28.0)),
+    )
 }
 
 /// Rounded gray badge (List.Tag).
 pub fn paint_badge(ui: &Ui, left_center: egui::Pos2, text: &str) -> Rect {
     let p = pal(ui);
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(11.0), p.badge_fg);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), FontId::proportional(11.0), p.badge_fg);
     let rect = Rect::from_min_size(
         egui::pos2(left_center.x, left_center.y - 9.0),
         vec2(galley.size().x + 12.0, 18.0),
     );
     ui.painter().rect_filled(rect, 5.0, p.badge_bg);
-    ui.painter().galley(egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0), galley, p.badge_fg);
+    ui.painter().galley(
+        egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p.badge_fg,
+    );
     rect
 }
 
@@ -572,24 +787,39 @@ pub fn environment_name(env: Environment) -> &'static str {
 
 /// Environment of a data source and its badge colour, if it has one.
 pub fn environment(cfg: &ConnectionConfig) -> Option<(Environment, Color32)> {
-    cfg.environment_badge().map(|(env, [r, g, b])| (env, Color32::from_rgb(r, g, b)))
+    cfg.environment_badge()
+        .map(|(env, [r, g, b])| (env, Color32::from_rgb(r, g, b)))
 }
 
 /// Pill with the environment's name in its colour.
 pub fn environment_badge(ui: &mut Ui, env: Environment, color: Color32) -> Response {
     let name = environment_name(env);
-    let galley = ui.painter().layout_no_wrap(name.to_owned(), bold(11.0), color);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.to_owned(), bold(11.0), color);
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 14.0, 20.0), Sense::hover());
     // Painted text: spelled out for screen readers (and UI tests).
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
-    ui.painter().rect(rect, 10.0, color.gamma_multiply(0.16), Stroke::new(1.0, color.gamma_multiply(0.7)), egui::StrokeKind::Inside);
-    ui.painter().galley(egui::pos2(rect.left() + 7.0, rect.center().y - galley.size().y / 2.0), galley, color);
+    ui.painter().rect(
+        rect,
+        10.0,
+        color.gamma_multiply(0.16),
+        Stroke::new(1.0, color.gamma_multiply(0.7)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 7.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
     resp
 }
 
 /// "Island" frame: rounded card with the tool window background.
 pub fn island_frame(p: &Palette) -> egui::Frame {
-    egui::Frame::NONE.fill(p.island_bg).corner_radius(CornerRadius::same(10))
+    egui::Frame::NONE
+        .fill(p.island_bg)
+        .corner_radius(CornerRadius::same(10))
 }
 
 /// Island that fills exactly all the available space of `ui` (e.g. a resizable panel):
@@ -597,8 +827,13 @@ pub fn island_frame(p: &Palette) -> egui::Frame {
 /// corners and the gap between islands are kept at any size.
 pub fn fixed_island<R>(ui: &mut Ui, p: &Palette, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let rect = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(rect, CornerRadius::same(10), p.island_bg);
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(10), p.island_bg);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     let r = add_contents(&mut child);
     ui.advance_cursor_after_rect(rect);
@@ -608,8 +843,11 @@ pub fn fixed_island<R>(ui: &mut Ui, p: &Palette, add_contents: impl FnOnce(&mut 
 /// Fixed-height row that cannot widen its parent: whatever does not fit is clipped.
 pub fn clipped_row<R>(ui: &mut Ui, height: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let rect = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width().max(0.0), height));
-    let mut child =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     let r = add_contents(&mut child);
     ui.advance_cursor_after_rect(rect);
@@ -629,15 +867,21 @@ pub enum Side {
 pub fn split_row(ui: &mut Ui, mut add: impl FnMut(&mut Ui, Side)) {
     let rect = ui.available_rect_before_wrap();
     let clip = ui.clip_rect();
-    let mut right =
-        ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    let mut right = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
     right.set_clip_rect(rect.intersect(clip));
     add(&mut right, Side::Right);
     let right_w = right.min_rect().width();
     let left_right = (rect.right() - right_w - 8.0).max(rect.left());
     let left_rect = Rect::from_min_max(rect.min, egui::pos2(left_right, rect.bottom()));
-    let mut left =
-        ui.new_child(egui::UiBuilder::new().max_rect(left_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let mut left = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(left_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
     left.set_clip_rect(left_rect.intersect(clip));
     add(&mut left, Side::Left);
     ui.advance_cursor_after_rect(rect);
@@ -648,7 +892,13 @@ pub const ISLAND_GAP: i8 = 3;
 
 /// Rounded tab (EditorTabs / tool window tabs). Returns the tab's response and whether its
 /// "×" was clicked.
-pub fn tab(ui: &mut Ui, selected: bool, ico: Option<Ico>, text: &str, closable: bool) -> (Response, bool) {
+pub fn tab(
+    ui: &mut Ui,
+    selected: bool,
+    ico: Option<Ico>,
+    text: &str,
+    closable: bool,
+) -> (Response, bool) {
     let p = pal(ui);
     let font = FontId::proportional(13.0);
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, p.text);
@@ -657,18 +907,37 @@ pub fn tab(ui: &mut Ui, selected: bool, ico: Option<Ico>, text: &str, closable: 
     let w = 10.0 + icon_w + galley.size().x + close_w + 10.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
     // The text is painted, so screen readers (and UI tests) need it spelled out.
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, text));
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, text)
+    });
     if selected {
-        ui.painter().rect(rect, 6.0, p.tab_selected_bg, Stroke::new(1.0, p.tab_selected_border), egui::StrokeKind::Inside);
+        ui.painter().rect(
+            rect,
+            6.0,
+            p.tab_selected_bg,
+            Stroke::new(1.0, p.tab_selected_border),
+            egui::StrokeKind::Inside,
+        );
     } else if resp.hovered() {
         ui.painter().rect_filled(rect, 6.0, p.hover);
     }
     let mut x = rect.left() + 10.0;
     if let Some(ico) = ico {
-        icons::paint(ui.painter(), Rect::from_min_size(egui::pos2(x, rect.center().y - 8.0), Vec2::splat(16.0)), ico, p.icon, &p, true);
+        icons::paint(
+            ui.painter(),
+            Rect::from_min_size(egui::pos2(x, rect.center().y - 8.0), Vec2::splat(16.0)),
+            ico,
+            p.icon,
+            &p,
+            true,
+        );
         x += icon_w;
     }
-    ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley.clone(), p.text);
+    ui.painter().galley(
+        egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+        galley.clone(),
+        p.text,
+    );
     x += galley.size().x + 4.0;
     let mut close = false;
     if closable {
@@ -700,10 +969,18 @@ mod tests {
         install_fonts(&ctx);
         let mut out = ctx.run_ui(Default::default(), |_| {});
         out.textures_delta.clear();
-        for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name(FONT_BOLD.into())] {
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name(FONT_BOLD.into()),
+        ] {
             let font = FontId::new(13.0, family);
-            for text in ["中文汉字", "日本語のテキスト", "한국어", "ภาษาไทย"] {
-                assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, text)), "{text} missing in {font:?}");
+            for text in ["中文汉字", "日本語のテキスト", "한국어", "ภาษาไทย"]
+            {
+                assert!(
+                    ctx.fonts_mut(|f| f.has_glyphs(&font, text)),
+                    "{text} missing in {font:?}"
+                );
             }
         }
     }

@@ -22,7 +22,10 @@ pub struct NewColumn {
 pub enum CreateTarget {
     Database,
     /// Table in `db`, inside `schema` (ignored on SQLite).
-    Table { db: String, schema: String },
+    Table {
+        db: String,
+        schema: String,
+    },
 }
 
 pub struct CreateDialog {
@@ -50,35 +53,133 @@ pub enum CreateResult {
 pub(crate) fn common_types(driver: Driver) -> &'static [&'static str] {
     match driver {
         Driver::Postgres => &[
-            "integer", "bigint", "smallint", "serial", "bigserial", "numeric(10,2)", "real", "double precision",
-            "boolean", "varchar(255)", "text", "date", "timestamp", "timestamptz", "uuid", "jsonb", "bytea",
+            "integer",
+            "bigint",
+            "smallint",
+            "serial",
+            "bigserial",
+            "numeric(10,2)",
+            "real",
+            "double precision",
+            "boolean",
+            "varchar(255)",
+            "text",
+            "date",
+            "timestamp",
+            "timestamptz",
+            "uuid",
+            "jsonb",
+            "bytea",
         ],
         Driver::MsSql => &[
-            "int", "bigint", "smallint", "tinyint", "bit", "decimal(18,2)", "float", "money", "nvarchar(255)",
-            "nvarchar(max)", "varchar(255)", "date", "datetime2", "uniqueidentifier", "varbinary(max)",
+            "int",
+            "bigint",
+            "smallint",
+            "tinyint",
+            "bit",
+            "decimal(18,2)",
+            "float",
+            "money",
+            "nvarchar(255)",
+            "nvarchar(max)",
+            "varchar(255)",
+            "date",
+            "datetime2",
+            "uniqueidentifier",
+            "varbinary(max)",
         ],
-        Driver::Sqlite => &["INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "BOOLEAN", "DATE", "DATETIME"],
+        Driver::Sqlite => &[
+            "INTEGER", "TEXT", "REAL", "NUMERIC", "BLOB", "BOOLEAN", "DATE", "DATETIME",
+        ],
         Driver::DuckDb => &[
-            "INTEGER", "BIGINT", "SMALLINT", "HUGEINT", "DECIMAL(18,2)", "DOUBLE", "BOOLEAN", "VARCHAR", "DATE", "TIME",
-            "TIMESTAMP", "TIMESTAMPTZ", "INTERVAL", "UUID", "BLOB", "JSON", "VARCHAR[]",
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "HUGEINT",
+            "DECIMAL(18,2)",
+            "DOUBLE",
+            "BOOLEAN",
+            "VARCHAR",
+            "DATE",
+            "TIME",
+            "TIMESTAMP",
+            "TIMESTAMPTZ",
+            "INTERVAL",
+            "UUID",
+            "BLOB",
+            "JSON",
+            "VARCHAR[]",
         ],
         Driver::MySql | Driver::MariaDb => &[
-            "int", "bigint", "smallint", "tinyint", "decimal(10,2)", "double", "boolean", "varchar(255)", "text",
-            "longtext", "date", "datetime", "timestamp", "json", "blob",
+            "int",
+            "bigint",
+            "smallint",
+            "tinyint",
+            "decimal(10,2)",
+            "double",
+            "boolean",
+            "varchar(255)",
+            "text",
+            "longtext",
+            "date",
+            "datetime",
+            "timestamp",
+            "json",
+            "blob",
         ],
         Driver::Oracle => &[
-            "number", "number(10)", "number(10,2)", "binary_double", "varchar2(255)", "nvarchar2(255)", "char(1)",
-            "clob", "date", "timestamp", "blob", "raw(16)",
+            "number",
+            "number(10)",
+            "number(10,2)",
+            "binary_double",
+            "varchar2(255)",
+            "nvarchar2(255)",
+            "char(1)",
+            "clob",
+            "date",
+            "timestamp",
+            "blob",
+            "raw(16)",
         ],
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => &[],
         Driver::ClickHouse => &[
-            "UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64", "Float32", "Float64",
-            "Decimal(18, 2)", "String", "UUID", "Date", "DateTime", "DateTime64(3)", "Bool", "LowCardinality(String)",
-            "Nullable(String)", "Array(String)",
+            "UInt8",
+            "UInt16",
+            "UInt32",
+            "UInt64",
+            "Int8",
+            "Int16",
+            "Int32",
+            "Int64",
+            "Float32",
+            "Float64",
+            "Decimal(18, 2)",
+            "String",
+            "UUID",
+            "Date",
+            "DateTime",
+            "DateTime64(3)",
+            "Bool",
+            "LowCardinality(String)",
+            "Nullable(String)",
+            "Array(String)",
         ],
         Driver::Snowflake => &[
-            "number(38,0)", "number(10,2)", "float", "boolean", "varchar", "varchar(255)", "date", "time",
-            "timestamp_ntz", "timestamp_ltz", "timestamp_tz", "variant", "object", "array", "binary",
+            "number(38,0)",
+            "number(10,2)",
+            "float",
+            "boolean",
+            "varchar",
+            "varchar(255)",
+            "date",
+            "time",
+            "timestamp_ntz",
+            "timestamp_ltz",
+            "timestamp_tz",
+            "variant",
+            "object",
+            "array",
+            "binary",
         ],
     }
 }
@@ -109,11 +210,21 @@ fn id_column(driver: Driver) -> NewColumn {
         Driver::ClickHouse => "UInt64",
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => "string",
     };
-    NewColumn { name: "id".into(), data_type: data_type.into(), not_null: true, primary_key: true, default: String::new() }
+    NewColumn {
+        name: "id".into(),
+        data_type: data_type.into(),
+        not_null: true,
+        primary_key: true,
+        default: String::new(),
+    }
 }
 
-
-pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[NewColumn]) -> String {
+pub fn create_table_sql(
+    driver: Driver,
+    schema: &str,
+    table: &str,
+    columns: &[NewColumn],
+) -> String {
     let q = |s: &str| quote_ident_if_needed(driver, s.trim());
     let qualified = if driver == Driver::Sqlite || schema.trim().is_empty() {
         q(table)
@@ -124,7 +235,11 @@ pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[Ne
         .iter()
         .map(|c| {
             if driver == Driver::ClickHouse {
-                let mut l = format!("    {} {}", q(&c.name), crate::db::clickhouse::column_type(&c.data_type, c.not_null || c.primary_key));
+                let mut l = format!(
+                    "    {} {}",
+                    q(&c.name),
+                    crate::db::clickhouse::column_type(&c.data_type, c.not_null || c.primary_key)
+                );
                 if !c.default.trim().is_empty() {
                     l.push_str(&format!(" default {}", c.default.trim()));
                 }
@@ -140,7 +255,11 @@ pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[Ne
             l
         })
         .collect();
-    let pk: Vec<String> = columns.iter().filter(|c| c.primary_key).map(|c| q(&c.name)).collect();
+    let pk: Vec<String> = columns
+        .iter()
+        .filter(|c| c.primary_key)
+        .map(|c| q(&c.name))
+        .collect();
     if !pk.is_empty() {
         lines.push(format!("    primary key ({})", pk.join(", ")));
     }
@@ -148,7 +267,11 @@ pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[Ne
     if driver == Driver::ClickHouse {
         // Mandatory: without an ENGINE clause the server uses its `default_table_engine`
         // (Memory: the data would vanish on restart). MergeTree with the PK as ORDER BY.
-        let order = if pk.is_empty() { "tuple()".to_string() } else { pk.join(", ") };
+        let order = if pk.is_empty() {
+            "tuple()".to_string()
+        } else {
+            pk.join(", ")
+        };
         sql.push_str(&format!("\nengine = MergeTree\norder by ({order})"));
     }
     sql
@@ -157,8 +280,20 @@ pub fn create_table_sql(driver: Driver, schema: &str, table: &str, columns: &[Ne
 /// Demo mode: sample columns for the "New Table" dialog.
 pub fn demo_columns() -> Vec<NewColumn> {
     vec![
-        NewColumn { name: "name".into(), data_type: "TEXT".into(), not_null: true, primary_key: false, default: String::new() },
-        NewColumn { name: "active".into(), data_type: "BOOLEAN".into(), not_null: false, primary_key: false, default: "1".into() },
+        NewColumn {
+            name: "name".into(),
+            data_type: "TEXT".into(),
+            not_null: true,
+            primary_key: false,
+            default: String::new(),
+        },
+        NewColumn {
+            name: "active".into(),
+            data_type: "BOOLEAN".into(),
+            not_null: false,
+            primary_key: false,
+            default: "1".into(),
+        },
     ]
 }
 
@@ -197,9 +332,16 @@ impl CreateDialog {
         match &self.target {
             CreateTarget::Database => {
                 let mariadb = self.choices.as_ref().is_some_and(|c| c.mariadb);
-                crate::db::create_db::create_database_sql(self.driver, &self.name, &self.db_options, mariadb)
+                crate::db::create_db::create_database_sql(
+                    self.driver,
+                    &self.name,
+                    &self.db_options,
+                    mariadb,
+                )
             }
-            CreateTarget::Table { schema, .. } => create_table_sql(self.driver, schema, &self.name, &self.columns),
+            CreateTarget::Table { schema, .. } => {
+                create_table_sql(self.driver, schema, &self.name, &self.columns)
+            }
         }
     }
 
@@ -250,56 +392,64 @@ impl CreateDialog {
             .inner_margin(Margin::same(20))
             .stroke(egui::Stroke::new(1.0, p.popup_border));
         let is_table = matches!(self.target, CreateTarget::Table { .. });
-        egui::Modal::new(egui::Id::new("create_dialog")).frame(frame).show(ctx, |ui| {
-            ui.set_width(if is_table { 640.0 } else { 480.0 });
-            ui.horizontal(|ui| {
-                let title = if is_table { tr("New Table") } else { tr("New Database") };
-                ui.label(RichText::new(title).font(theme::bold(15.0)).color(p.text));
-                if let CreateTarget::Table { db, .. } = &self.target {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(trf("in {db}", &[("db", db)])).color(p.muted));
-                }
-            });
-            ui.add_space(14.0);
-            ui.add_enabled_ui(!self.running, |ui| {
-                self.form(ui, schemas);
-                if is_table {
-                    ui.add_space(12.0);
-                    self.columns_editor(ui);
-                }
-            });
-            ui.add_space(12.0);
-            self.preview(ui);
-            if let Some(e) = &self.error {
-                ui.add_space(8.0);
-                ui.add(egui::Label::new(RichText::new(e).monospace().color(p.error)).wrap());
-            }
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                if theme::secondary_button(ui, tr("Copy SQL")).clicked() {
-                    ui.ctx().copy_text(format!("{};", self.sql()));
-                }
-                if self.running {
+        egui::Modal::new(egui::Id::new("create_dialog"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(if is_table { 640.0 } else { 480.0 });
+                ui.horizontal(|ui| {
+                    let title = if is_table {
+                        tr("New Table")
+                    } else {
+                        tr("New Database")
+                    };
+                    ui.label(RichText::new(title).font(theme::bold(15.0)).color(p.text));
+                    if let CreateTarget::Table { db, .. } = &self.target {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(trf("in {db}", &[("db", db)])).color(p.muted));
+                    }
+                });
+                ui.add_space(14.0);
+                ui.add_enabled_ui(!self.running, |ui| {
+                    self.form(ui, schemas);
+                    if is_table {
+                        ui.add_space(12.0);
+                        self.columns_editor(ui);
+                    }
+                });
+                ui.add_space(12.0);
+                self.preview(ui);
+                if let Some(e) = &self.error {
                     ui.add_space(8.0);
-                    ui.add(egui::Spinner::new().size(14.0).color(p.muted));
-                    ui.label(RichText::new(tr("Creating…")).color(p.muted));
+                    ui.add(egui::Label::new(RichText::new(e).monospace().color(p.error)).wrap());
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.add_enabled_ui(!self.running, |ui| {
-                        if theme::primary_button(ui, tr("Create")).clicked() {
-                            match self.validate() {
-                                Ok(statements) => result = Some(CreateResult::Create(statements)),
-                                Err(e) => self.error = Some(e),
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if theme::secondary_button(ui, tr("Copy SQL")).clicked() {
+                        ui.ctx().copy_text(format!("{};", self.sql()));
+                    }
+                    if self.running {
+                        ui.add_space(8.0);
+                        ui.add(egui::Spinner::new().size(14.0).color(p.muted));
+                        ui.label(RichText::new(tr("Creating…")).color(p.muted));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        ui.add_enabled_ui(!self.running, |ui| {
+                            if theme::primary_button(ui, tr("Create")).clicked() {
+                                match self.validate() {
+                                    Ok(statements) => {
+                                        result = Some(CreateResult::Create(statements))
+                                    }
+                                    Err(e) => self.error = Some(e),
+                                }
                             }
-                        }
-                        if theme::secondary_button(ui, tr("Cancel")).clicked() {
-                            result = Some(CreateResult::Cancel);
-                        }
+                            if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                                result = Some(CreateResult::Cancel);
+                            }
+                        });
                     });
                 });
             });
-        });
         if result.is_none() && !self.running && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             result = Some(CreateResult::Cancel);
         }
@@ -308,36 +458,59 @@ impl CreateDialog {
 
     fn form(&mut self, ui: &mut Ui, schemas: &[String]) {
         let driver = self.driver;
-        egui::Grid::new("create_form").num_columns(2).spacing([14.0, 10.0]).min_col_width(80.0).show(ui, |ui| {
-            ui.label(tr("Name:"));
-            let name = ui.add(egui::TextEdit::singleline(&mut self.name).margin(vec2(8.0, 5.0)).desired_width(f32::INFINITY));
-            if std::mem::take(&mut self.focus_name) {
-                name.request_focus();
-            }
-            ui.end_row();
-            if matches!(self.target, CreateTarget::Database) {
-                database_options(ui, driver, &mut self.db_options, self.choices.as_ref());
-            }
-            if let CreateTarget::Table { schema, .. } = &mut self.target
-                && !driver.flat_schema()
-            {
-                ui.label(tr("Schema:"));
-                if schemas.is_empty() {
-                    ui.add(egui::TextEdit::singleline(schema).margin(vec2(8.0, 5.0)).desired_width(220.0));
-                } else {
-                    egui::ComboBox::from_id_salt("create_schema").selected_text(schema.as_str()).width(220.0).show_ui(ui, |ui| {
-                        for s in schemas {
-                            ui.selectable_value(schema, s.clone(), s);
-                        }
-                    });
+        egui::Grid::new("create_form")
+            .num_columns(2)
+            .spacing([14.0, 10.0])
+            .min_col_width(80.0)
+            .show(ui, |ui| {
+                ui.label(tr("Name:"));
+                let name = ui.add(
+                    egui::TextEdit::singleline(&mut self.name)
+                        .margin(vec2(8.0, 5.0))
+                        .desired_width(f32::INFINITY),
+                );
+                if std::mem::take(&mut self.focus_name) {
+                    name.request_focus();
                 }
                 ui.end_row();
-            }
-        });
+                if matches!(self.target, CreateTarget::Database) {
+                    database_options(ui, driver, &mut self.db_options, self.choices.as_ref());
+                }
+                if let CreateTarget::Table { schema, .. } = &mut self.target
+                    && !driver.flat_schema()
+                {
+                    ui.label(tr("Schema:"));
+                    if schemas.is_empty() {
+                        ui.add(
+                            egui::TextEdit::singleline(schema)
+                                .margin(vec2(8.0, 5.0))
+                                .desired_width(220.0),
+                        );
+                    } else {
+                        egui::ComboBox::from_id_salt("create_schema")
+                            .selected_text(schema.as_str())
+                            .width(220.0)
+                            .show_ui(ui, |ui| {
+                                for s in schemas {
+                                    ui.selectable_value(schema, s.clone(), s);
+                                }
+                            });
+                    }
+                    ui.end_row();
+                }
+            });
     }
 
     fn columns_editor(&mut self, ui: &mut Ui) {
-        columns_editor(ui, "create", self.driver, &mut self.columns, |c| c, |c| c, 1);
+        columns_editor(
+            ui,
+            "create",
+            self.driver,
+            &mut self.columns,
+            |c| c,
+            |c| c,
+            1,
+        );
     }
 
     fn preview(&self, ui: &mut Ui) {
@@ -364,58 +537,101 @@ pub(crate) fn columns_editor<T>(
     ui.add_space(6.0);
     let mut remove = None;
     let can_remove = rows.len() > min_rows;
-    egui::ScrollArea::vertical().id_salt((id, "columns")).max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-        egui::Grid::new((id, "columns_grid")).num_columns(6).spacing([8.0, 6.0]).show(ui, |ui| {
-            for h in [tr("Name"), tr("Type"), tr("Not null"), "PK", tr("Default"), ""] {
-                ui.label(RichText::new(h).small().color(p.muted));
-            }
-            ui.end_row();
-            for (i, row) in rows.iter_mut().enumerate() {
-                let c = column(row);
-                ui.add_sized([160.0, 26.0], egui::TextEdit::singleline(&mut c.name).id_salt((id, "col_name", i)).margin(vec2(6.0, 4.0)));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.add_sized(
-                        [150.0, 26.0],
-                        egui::TextEdit::singleline(&mut c.data_type)
-                            .id_salt((id, "col_type", i))
-                            .font(egui::TextStyle::Monospace)
-                            .margin(vec2(6.0, 4.0)),
-                    );
-                    let pick = theme::icon_button(ui, Ico::ChevronDown, true, tr("Choose a type"));
-                    egui::Popup::menu(&pick).show(|ui| {
-                        for t in types {
-                            if ui.button(RichText::new(*t).monospace()).clicked() {
-                                c.data_type = (*t).to_string();
-                                ui.close();
-                            }
+    egui::ScrollArea::vertical()
+        .id_salt((id, "columns"))
+        .max_height(220.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            egui::Grid::new((id, "columns_grid"))
+                .num_columns(6)
+                .spacing([8.0, 6.0])
+                .show(ui, |ui| {
+                    for h in [
+                        tr("Name"),
+                        tr("Type"),
+                        tr("Not null"),
+                        "PK",
+                        tr("Default"),
+                        "",
+                    ] {
+                        ui.label(RichText::new(h).small().color(p.muted));
+                    }
+                    ui.end_row();
+                    for (i, row) in rows.iter_mut().enumerate() {
+                        let c = column(row);
+                        ui.add_sized(
+                            [160.0, 26.0],
+                            egui::TextEdit::singleline(&mut c.name)
+                                .id_salt((id, "col_name", i))
+                                .margin(vec2(6.0, 4.0)),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.add_sized(
+                                [150.0, 26.0],
+                                egui::TextEdit::singleline(&mut c.data_type)
+                                    .id_salt((id, "col_type", i))
+                                    .font(egui::TextStyle::Monospace)
+                                    .margin(vec2(6.0, 4.0)),
+                            );
+                            let pick =
+                                theme::icon_button(ui, Ico::ChevronDown, true, tr("Choose a type"));
+                            egui::Popup::menu(&pick).show(|ui| {
+                                for t in types {
+                                    if ui.button(RichText::new(*t).monospace()).clicked() {
+                                        c.data_type = (*t).to_string();
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        });
+                        ui.add_enabled(
+                            !c.primary_key,
+                            egui::Checkbox::without_text(&mut c.not_null),
+                        );
+                        if ui
+                            .add(egui::Checkbox::without_text(&mut c.primary_key))
+                            .changed()
+                            && c.primary_key
+                        {
+                            c.not_null = true;
                         }
-                    });
+                        ui.add_sized(
+                            [120.0, 26.0],
+                            egui::TextEdit::singleline(&mut c.default)
+                                .id_salt((id, "col_default", i))
+                                .font(egui::TextStyle::Monospace)
+                                .margin(vec2(6.0, 4.0)),
+                        );
+                        if theme::icon_button(ui, Ico::Minus, can_remove, tr("Remove column"))
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                        ui.end_row();
+                    }
                 });
-                ui.add_enabled(!c.primary_key, egui::Checkbox::without_text(&mut c.not_null));
-                if ui.add(egui::Checkbox::without_text(&mut c.primary_key)).changed() && c.primary_key {
-                    c.not_null = true;
-                }
-                ui.add_sized(
-                    [120.0, 26.0],
-                    egui::TextEdit::singleline(&mut c.default)
-                        .id_salt((id, "col_default", i))
-                        .font(egui::TextStyle::Monospace)
-                        .margin(vec2(6.0, 4.0)),
-                );
-                if theme::icon_button(ui, Ico::Minus, can_remove, tr("Remove column")).clicked() {
-                    remove = Some(i);
-                }
-                ui.end_row();
-            }
         });
-    });
     if let Some(i) = remove {
         rows.remove(i);
     }
     ui.add_space(4.0);
-    if theme::flat_button(ui, Some(Ico::Plus), tr("Add Column"), FontId::proportional(13.0), false, true).clicked() {
-        let data_type = types.iter().find(|t| t.contains("varchar") || **t == "TEXT").or(types.first()).copied().unwrap_or_default();
+    if theme::flat_button(
+        ui,
+        Some(Ico::Plus),
+        tr("Add Column"),
+        FontId::proportional(13.0),
+        false,
+        true,
+    )
+    .clicked()
+    {
+        let data_type = types
+            .iter()
+            .find(|t| t.contains("varchar") || **t == "TEXT")
+            .or(types.first())
+            .copied()
+            .unwrap_or_default();
         rows.push(new_row(NewColumn {
             name: String::new(),
             data_type: data_type.to_string(),
@@ -437,31 +653,45 @@ pub(crate) fn sql_preview(ui: &mut Ui, id: &str, text: &str) {
         .corner_radius(6)
         .inner_margin(Margin::same(8))
         .show(ui, |ui| {
-            egui::ScrollArea::both().id_salt((id, "preview")).max_height(160.0).auto_shrink([false, true]).show(ui, |ui| {
-                let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, _w: f32| {
-                    let mut job = sql::highlight(buf.as_str(), dark, FontId::monospace(12.5));
-                    job.wrap.max_width = f32::INFINITY;
-                    ui.fonts_mut(|f| f.layout_job(job))
-                };
-                let mut t = text;
-                ui.add(
-                    egui::TextEdit::multiline(&mut t)
-                        .id(egui::Id::new((id, "preview_sql")))
-                        .code_editor()
-                        .frame(egui::Frame::NONE)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(2)
-                        .layouter(&mut layouter),
-                );
-            });
+            egui::ScrollArea::both()
+                .id_salt((id, "preview"))
+                .max_height(160.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, _w: f32| {
+                        let mut job = sql::highlight(buf.as_str(), dark, FontId::monospace(12.5));
+                        job.wrap.max_width = f32::INFINITY;
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
+                    let mut t = text;
+                    ui.add(
+                        egui::TextEdit::multiline(&mut t)
+                            .id(egui::Id::new((id, "preview_sql")))
+                            .code_editor()
+                            .frame(egui::Frame::NONE)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(2)
+                            .layouter(&mut layouter),
+                    );
+                });
         });
 }
 
 /// "New Database" rows of the form grid, per engine.
-fn database_options(ui: &mut Ui, driver: Driver, o: &mut crate::db::create_db::DatabaseOptions, choices: Option<&crate::db::create_db::DatabaseChoices>) {
+fn database_options(
+    ui: &mut Ui,
+    driver: Driver,
+    o: &mut crate::db::create_db::DatabaseOptions,
+    choices: Option<&crate::db::create_db::DatabaseChoices>,
+) {
     let p = theme::pal(ui);
     let text = |ui: &mut Ui, v: &mut String, hint: &str| {
-        ui.add(egui::TextEdit::singleline(v).margin(vec2(8.0, 5.0)).desired_width(260.0).hint_text(hint));
+        ui.add(
+            egui::TextEdit::singleline(v)
+                .margin(vec2(8.0, 5.0))
+                .desired_width(260.0)
+                .hint_text(hint),
+        );
     };
     let loading = |ui: &mut Ui| {
         ui.horizontal(|ui| {
@@ -480,15 +710,24 @@ fn database_options(ui: &mut Ui, driver: Driver, o: &mut crate::db::create_db::D
                     searchable_combo(ui, "db_charset", &mut o.charset, &names, tr("Default"));
                     // A new character set takes its default collation.
                     if o.charset != before {
-                        o.collation = c.charsets.iter().find(|(n, _)| *n == o.charset).map(|(_, d)| d.clone()).unwrap_or_default();
+                        o.collation = c
+                            .charsets
+                            .iter()
+                            .find(|(n, _)| *n == o.charset)
+                            .map(|(_, d)| d.clone())
+                            .unwrap_or_default();
                     }
                 }
             }
             ui.end_row();
             ui.label(tr("Collation:"));
             if let Some(c) = choices {
-                let names: Vec<String> =
-                    c.collations.iter().filter(|(_, cs)| o.charset.is_empty() || *cs == o.charset).map(|(n, _)| n.clone()).collect();
+                let names: Vec<String> = c
+                    .collations
+                    .iter()
+                    .filter(|(_, cs)| o.charset.is_empty() || *cs == o.charset)
+                    .map(|(n, _)| n.clone())
+                    .collect();
                 searchable_combo(ui, "db_collation", &mut o.collation, &names, tr("Default"));
             }
             ui.end_row();
@@ -502,16 +741,33 @@ fn database_options(ui: &mut Ui, driver: Driver, o: &mut crate::db::create_db::D
             ui.label(tr("Owner:"));
             match choices {
                 None => loading(ui),
-                Some(c) => searchable_combo(ui, "db_owner", &mut o.owner, &c.roles, &c.current_role),
+                Some(c) => {
+                    searchable_combo(ui, "db_owner", &mut o.owner, &c.roles, &c.current_role)
+                }
             }
             ui.end_row();
             ui.label(tr("Encoding:"));
-            let encodings: Vec<String> = crate::db::create_db::PG_ENCODINGS.iter().map(|s| s.to_string()).collect();
-            searchable_combo(ui, "db_encoding", &mut o.encoding, &encodings, tr("Default"));
+            let encodings: Vec<String> = crate::db::create_db::PG_ENCODINGS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            searchable_combo(
+                ui,
+                "db_encoding",
+                &mut o.encoding,
+                &encodings,
+                tr("Default"),
+            );
             ui.end_row();
             ui.label(tr("Template:"));
             let templates = vec!["template1".to_string(), "template0".to_string()];
-            searchable_combo(ui, "db_template", &mut o.template, &templates, tr("Default"));
+            searchable_combo(
+                ui,
+                "db_template",
+                &mut o.template,
+                &templates,
+                tr("Default"),
+            );
             ui.end_row();
             ui.label(tr("Locale:"));
             text(ui, &mut o.locale, "en_US.UTF-8");
@@ -550,21 +806,37 @@ fn database_options(ui: &mut Ui, driver: Driver, o: &mut crate::db::create_db::D
 /// value is shown as `empty`.
 fn searchable_combo(ui: &mut Ui, id: &str, value: &mut String, options: &[String], empty: &str) {
     let filter_id = egui::Id::new((id, "filter"));
-    let shown = if value.is_empty() { empty.to_string() } else { value.clone() };
-    egui::ComboBox::from_id_salt(id).selected_text(shown).width(260.0).height(320.0).show_ui(ui, |ui| {
-        let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id)).unwrap_or_default();
-        ui.add(egui::TextEdit::singleline(&mut filter).hint_text(tr("Filter")).desired_width(240.0));
-        ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
-        if ui.selectable_label(value.is_empty(), empty).clicked() {
-            value.clear();
-        }
-        let f = filter.to_lowercase();
-        for o in options.iter().filter(|o| f.is_empty() || o.to_lowercase().contains(&f)).take(500) {
-            if ui.selectable_label(value == o, o).clicked() {
-                value.clone_from(o);
+    let shown = if value.is_empty() {
+        empty.to_string()
+    } else {
+        value.clone()
+    };
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(shown)
+        .width(260.0)
+        .height(320.0)
+        .show_ui(ui, |ui| {
+            let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id)).unwrap_or_default();
+            ui.add(
+                egui::TextEdit::singleline(&mut filter)
+                    .hint_text(tr("Filter"))
+                    .desired_width(240.0),
+            );
+            ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+            if ui.selectable_label(value.is_empty(), empty).clicked() {
+                value.clear();
             }
-        }
-    });
+            let f = filter.to_lowercase();
+            for o in options
+                .iter()
+                .filter(|o| f.is_empty() || o.to_lowercase().contains(&f))
+                .take(500)
+            {
+                if ui.selectable_label(value == o, o).clicked() {
+                    value.clone_from(o);
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -572,43 +844,96 @@ mod tests {
     use super::*;
 
     fn col(name: &str, ty: &str, not_null: bool, pk: bool, default: &str) -> NewColumn {
-        NewColumn { name: name.into(), data_type: ty.into(), not_null, primary_key: pk, default: default.into() }
+        NewColumn {
+            name: name.into(),
+            data_type: ty.into(),
+            not_null,
+            primary_key: pk,
+            default: default.into(),
+        }
     }
 
     #[test]
     fn database_sql_quotes_when_needed() {
-        assert_eq!(crate::db::create_db::create_database_sql(Driver::Postgres, " shop ", &Default::default(), false), "create database shop");
-        assert_eq!(crate::db::create_db::create_database_sql(Driver::Postgres, "Shop", &Default::default(), false), "create database \"Shop\"");
-        assert_eq!(crate::db::create_db::create_database_sql(Driver::MsSql, "My Shop", &Default::default(), false), "create database [My Shop]");
+        assert_eq!(
+            crate::db::create_db::create_database_sql(
+                Driver::Postgres,
+                " shop ",
+                &Default::default(),
+                false
+            ),
+            "create database shop"
+        );
+        assert_eq!(
+            crate::db::create_db::create_database_sql(
+                Driver::Postgres,
+                "Shop",
+                &Default::default(),
+                false
+            ),
+            "create database \"Shop\""
+        );
+        assert_eq!(
+            crate::db::create_db::create_database_sql(
+                Driver::MsSql,
+                "My Shop",
+                &Default::default(),
+                false
+            ),
+            "create database [My Shop]"
+        );
     }
 
     #[test]
     fn table_sql_per_dialect() {
-        let cols = [col("id", "integer", false, true, ""), col("name", "varchar(255)", true, false, "'n/a'"), col("note", "text", false, false, "")];
+        let cols = [
+            col("id", "integer", false, true, ""),
+            col("name", "varchar(255)", true, false, "'n/a'"),
+            col("note", "text", false, false, ""),
+        ];
         assert_eq!(
             create_table_sql(Driver::Postgres, "public", "items", &cols),
             "create table public.items\n(\n    id integer not null,\n    name varchar(255) not null default 'n/a',\n    note text,\n    primary key (id)\n)"
         );
-        assert!(create_table_sql(Driver::MsSql, "dbo", "Order", &cols).starts_with("create table dbo.[Order]\n"));
-        assert!(create_table_sql(Driver::Sqlite, "main", "items", &cols).starts_with("create table items\n"));
+        assert!(
+            create_table_sql(Driver::MsSql, "dbo", "Order", &cols)
+                .starts_with("create table dbo.[Order]\n")
+        );
+        assert!(
+            create_table_sql(Driver::Sqlite, "main", "items", &cols)
+                .starts_with("create table items\n")
+        );
     }
 
     #[test]
     fn clickhouse_table_sql() {
         // Nullability goes in the type; MergeTree with the PK as ORDER BY (or `tuple()`).
-        let cols = [col("id", "UInt64", false, true, ""), col("name", "String", true, false, "'n/a'"), col("note", "Nullable(String)", false, false, "")];
+        let cols = [
+            col("id", "UInt64", false, true, ""),
+            col("name", "String", true, false, "'n/a'"),
+            col("note", "Nullable(String)", false, false, ""),
+        ];
         assert_eq!(
             create_table_sql(Driver::ClickHouse, "default", "items", &cols),
             "create table `default`.items\n(\n    id UInt64,\n    name String default 'n/a',\n    note Nullable(String),\n    primary key (id)\n)\nengine = MergeTree\norder by (id)"
         );
         let cols = [col("x", "String", false, false, "")];
-        assert!(create_table_sql(Driver::ClickHouse, "db", "t", &cols).ends_with("    x Nullable(String)\n)\nengine = MergeTree\norder by (tuple())"));
+        assert!(
+            create_table_sql(Driver::ClickHouse, "db", "t", &cols)
+                .ends_with("    x Nullable(String)\n)\nengine = MergeTree\norder by (tuple())")
+        );
     }
 
     #[test]
     fn composite_primary_key() {
-        let cols = [col("a", "int", false, true, ""), col("b", "int", false, true, "")];
-        assert!(create_table_sql(Driver::MsSql, "dbo", "t", &cols).ends_with("    primary key (a, b)\n)"));
+        let cols = [
+            col("a", "int", false, true, ""),
+            col("b", "int", false, true, ""),
+        ];
+        assert!(
+            create_table_sql(Driver::MsSql, "dbo", "t", &cols)
+                .ends_with("    primary key (a, b)\n)")
+        );
     }
 
     #[test]
@@ -632,35 +957,56 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dialog-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         let my = DatabaseChoices {
-            charsets: vec![("latin1".into(), "latin1_swedish_ci".into()), ("utf8mb4".into(), "utf8mb4_general_ci".into())],
-            collations: vec![("utf8mb4_bin".into(), "utf8mb4".into()), ("utf8mb4_general_ci".into(), "utf8mb4".into())],
+            charsets: vec![
+                ("latin1".into(), "latin1_swedish_ci".into()),
+                ("utf8mb4".into(), "utf8mb4_general_ci".into()),
+            ],
+            collations: vec![
+                ("utf8mb4_bin".into(), "utf8mb4".into()),
+                ("utf8mb4_general_ci".into(), "utf8mb4".into()),
+            ],
             default_charset: "utf8mb4".into(),
             default_collation: "utf8mb4_general_ci".into(),
             mariadb: true,
             ..Default::default()
         };
-        let pg = DatabaseChoices { roles: vec!["app".into(), "postgres".into()], current_role: "postgres".into(), ..Default::default() };
-        for (name, driver, choices) in [("newdb-mariadb", Driver::MariaDb, my), ("newdb-postgres", Driver::Postgres, pg)] {
+        let pg = DatabaseChoices {
+            roles: vec!["app".into(), "postgres".into()],
+            current_role: "postgres".into(),
+            ..Default::default()
+        };
+        for (name, driver, choices) in [
+            ("newdb-mariadb", Driver::MariaDb, my),
+            ("newdb-postgres", Driver::Postgres, pg),
+        ] {
             let mut d = CreateDialog::database(1, driver);
             d.name = "inventory".into();
             d.set_choices(choices);
             d.db_options.comment = "Stock".into();
-            d.db_options.encoding = if driver == Driver::Postgres { "UTF8".into() } else { String::new() };
+            d.db_options.encoding = if driver == Driver::Postgres {
+                "UTF8".into()
+            } else {
+                String::new()
+            };
             let mut first = true;
-            let mut h = egui_kittest::Harness::builder().with_size(vec2(760.0, 620.0)).build_ui_state(
-                move |ui, d: &mut CreateDialog| {
-                    if std::mem::take(&mut first) {
-                        theme::install_fonts(ui.ctx());
-                        theme::apply(ui.ctx(), false);
-                        return;
-                    }
-                    d.show(ui.ctx(), &[]);
-                },
-                d,
-            );
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(vec2(760.0, 620.0))
+                .build_ui_state(
+                    move |ui, d: &mut CreateDialog| {
+                        if std::mem::take(&mut first) {
+                            theme::install_fonts(ui.ctx());
+                            theme::apply(ui.ctx(), false);
+                            return;
+                        }
+                        d.show(ui.ctx(), &[]);
+                    },
+                    d,
+                );
             h.run_steps(4);
-            h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
         }
     }
-
 }

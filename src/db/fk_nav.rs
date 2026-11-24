@@ -53,50 +53,107 @@ pub struct BoundFilter {
 
 /// `types` are the key columns' data types (empty when unknown).
 #[cfg(test)]
-fn bound_filter(driver: Driver, columns: &[String], types: &[String], values: &[Cell]) -> Option<BoundFilter> {
+fn bound_filter(
+    driver: Driver,
+    columns: &[String],
+    types: &[String],
+    values: &[Cell],
+) -> Option<BoundFilter> {
     bound_filter_at(driver, columns, types, values, 0)
 }
 
 /// OR complete tuples, rather than independent IN lists that could match unrelated rows.
 /// NULL tuples cannot reference a row; duplicate tuples need only one set of bind values.
-pub fn bound_filter_rows(driver: Driver, columns: &[String], types: &[String], rows: &[Vec<Cell>]) -> Option<BoundFilter> {
+pub fn bound_filter_rows(
+    driver: Driver,
+    columns: &[String],
+    types: &[String],
+    rows: &[Vec<Cell>],
+) -> Option<BoundFilter> {
     let mut seen = std::collections::HashSet::new();
     let mut filters = Vec::new();
     let mut parameters = Vec::new();
     for row in rows {
-        if columns.len() != row.len() { return None; }
-        if row.iter().any(|v| v.is_none() || crate::edit::is_lossy_display(v)) || !seen.insert(row) { continue; }
+        if columns.len() != row.len() {
+            return None;
+        }
+        if row
+            .iter()
+            .any(|v| v.is_none() || crate::edit::is_lossy_display(v))
+            || !seen.insert(row)
+        {
+            continue;
+        }
         let filter = bound_filter_at(driver, columns, types, row, parameters.len())?;
         parameters.extend(filter.parameters.clone());
         filters.push(filter);
     }
-    if filters.len() == 1 { return filters.pop(); }
-    if filters.is_empty() { return None; }
-    let display = format!("({})", filters.iter().map(|f| f.display.as_str()).collect::<Vec<_>>().join(" OR "));
+    if filters.len() == 1 {
+        return filters.pop();
+    }
+    if filters.is_empty() {
+        return None;
+    }
+    let display = format!(
+        "({})",
+        filters
+            .iter()
+            .map(|f| f.display.as_str())
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    );
     // Keep expression depth logarithmic for large selections, including SQLite's limit.
     fn disjunction(filters: &[BoundFilter]) -> String {
-        if filters.len() == 1 { return format!("({})", filters[0].sql); }
+        if filters.len() == 1 {
+            return format!("({})", filters[0].sql);
+        }
         let (left, right) = filters.split_at(filters.len() / 2);
         format!("({} OR {})", disjunction(left), disjunction(right))
     }
     let sql = disjunction(&filters);
-    Some(BoundFilter { display, sql, parameters, query: None })
+    Some(BoundFilter {
+        display,
+        sql,
+        parameters,
+        query: None,
+    })
 }
 
-fn bound_filter_at(driver: Driver, columns: &[String], types: &[String], values: &[Cell], offset: usize) -> Option<BoundFilter> {
+fn bound_filter_at(
+    driver: Driver,
+    columns: &[String],
+    types: &[String],
+    values: &[Cell],
+    offset: usize,
+) -> Option<BoundFilter> {
     let display = format!("({})", key_filter(driver, columns, values)?);
-    let sql = columns.iter().enumerate().map(|(i, column)| {
-        let parameter = match driver {
-            Driver::Postgres => format!("${}", offset + i + 1),
-            // Strings are sent as nvarchar: a (var)char key would be converted and scanned.
-            Driver::MsSql if types.get(i).is_some_and(|t| is_ansi_string(t)) => format!("CAST(@P{} AS varchar(8000))", offset + i + 1),
-            Driver::MsSql => format!("@P{}", offset + i + 1),
-            Driver::Oracle => format!(":{}", offset + i + 1),
-            _ => "?".into(),
-        };
-        format!("{} = {parameter}", driver.quote_ident(column))
-    }).collect::<Vec<_>>().join(" AND ");
-    Some(BoundFilter { display, sql, query: None, parameters: values.iter().map(|v| v.clone().unwrap_or_default()).collect() })
+    let sql = columns
+        .iter()
+        .enumerate()
+        .map(|(i, column)| {
+            let parameter = match driver {
+                Driver::Postgres => format!("${}", offset + i + 1),
+                // Strings are sent as nvarchar: a (var)char key would be converted and scanned.
+                Driver::MsSql if types.get(i).is_some_and(|t| is_ansi_string(t)) => {
+                    format!("CAST(@P{} AS varchar(8000))", offset + i + 1)
+                }
+                Driver::MsSql => format!("@P{}", offset + i + 1),
+                Driver::Oracle => format!(":{}", offset + i + 1),
+                _ => "?".into(),
+            };
+            format!("{} = {parameter}", driver.quote_ident(column))
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    Some(BoundFilter {
+        display,
+        sql,
+        query: None,
+        parameters: values
+            .iter()
+            .map(|v| v.clone().unwrap_or_default())
+            .collect(),
+    })
 }
 
 /// SQL Server's single-byte strings: `char(n)`, `varchar(n)` and `varchar(max)`.
@@ -116,10 +173,28 @@ pub struct Probe {
 /// `"a" = '1' AND "b" = '2'`: the rows whose `columns` hold `values`. `None` when a value is
 /// NULL (a key with a NULL column references nothing) or the lists do not pair up.
 pub fn key_filter(driver: Driver, columns: &[String], values: &[Cell]) -> Option<String> {
-    if columns.is_empty() || columns.len() != values.len() || values.iter().any(|v| v.is_none() || crate::edit::is_lossy_display(v)) {
+    if columns.is_empty()
+        || columns.len() != values.len()
+        || values
+            .iter()
+            .any(|v| v.is_none() || crate::edit::is_lossy_display(v))
+    {
         return None;
     }
-    Some(columns.iter().zip(values).map(|(c, v)| format!("{} = {}", driver.quote_ident(c), crate::edit::literal(driver, v))).collect::<Vec<_>>().join(" AND "))
+    Some(
+        columns
+            .iter()
+            .zip(values)
+            .map(|(c, v)| {
+                format!(
+                    "{} = {}",
+                    driver.quote_ident(c),
+                    crate::edit::literal(driver, v)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    )
 }
 
 /// SQLite keys of `main.table`. `pragma_foreign_key_list` keeps the names as written after
@@ -146,24 +221,44 @@ fn keys_sql(driver: Driver, db: &str, schema: &str, table: &str) -> Vec<String> 
         Driver::MySql | Driver::MariaDb => vec![format!(
             "{base} AND ((TABLE_SCHEMA = {s} AND TABLE_NAME = {t}) OR (REFERENCED_TABLE_SCHEMA = {s} AND REFERENCED_TABLE_NAME = {t}))"
         )],
-        Driver::MsSql => vec![format!("{base} WHERE (sch.name = {s} AND t.name = {t}) OR (rsch.name = {s} AND rt.name = {t})")],
+        Driver::MsSql => vec![format!(
+            "{base} WHERE (sch.name = {s} AND t.name = {t}) OR (rsch.name = {s} AND rt.name = {t})"
+        )],
         // The inventory is per owner: references from other owners are not listed.
-        Driver::Oracle => vec![format!("{base} AND (c.table_name = {t} OR (r.owner = {s} AND r.table_name = {t}))")],
+        Driver::Oracle => vec![format!(
+            "{base} AND (c.table_name = {t} OR (r.owner = {s} AND r.table_name = {t}))"
+        )],
         Driver::Sqlite if schema == "main" => vec![sqlite_keys_sql(table)],
         Driver::Snowflake => {
-            let name = format!("{}.{}", Session::quote_table(driver, db, schema), driver.quote_ident(table));
-            vec![format!("SHOW IMPORTED KEYS IN TABLE {name}"), format!("SHOW EXPORTED KEYS IN TABLE {name}")]
+            let name = format!(
+                "{}.{}",
+                Session::quote_table(driver, db, schema),
+                driver.quote_ident(table)
+            );
+            vec![
+                format!("SHOW IMPORTED KEYS IN TABLE {name}"),
+                format!("SHOW EXPORTED KEYS IN TABLE {name}"),
+            ]
         }
         _ => Vec::new(),
     }
 }
 
-pub async fn load(session: &mut Session, driver: Driver, db: &str, schema: &str, table: &str) -> anyhow::Result<TableKeys> {
+pub async fn load(
+    session: &mut Session,
+    driver: Driver,
+    db: &str,
+    schema: &str,
+    table: &str,
+) -> anyhow::Result<TableKeys> {
     anyhow::ensure!(supported(driver), tr("Not available for this engine"));
     let mut keys = Vec::new();
     for sql in keys_sql(driver, db, schema, table) {
         for mut rs in session.execute(&sql, 100_000).await? {
-            anyhow::ensure!(!rs.truncated, tr("The foreign key catalog is too large to model completely"));
+            anyhow::ensure!(
+                !rs.truncated,
+                tr("The foreign key catalog is too large to model completely")
+            );
             if driver == Driver::Snowflake {
                 same_database(&mut rs, db);
             }
@@ -175,23 +270,47 @@ pub async fn load(session: &mut Session, driver: Driver, db: &str, schema: &str,
 
 /// Snowflake: keys from or to other databases would open the wrong table, so they are left out.
 fn same_database(rs: &mut super::ResultSet, db: &str) {
-    let at: Vec<usize> = ["fk_database_name", "pk_database_name"].iter().filter_map(|n| rs.columns.iter().position(|c| c.eq_ignore_ascii_case(n))).collect();
-    rs.rows.retain(|row| at.iter().all(|&i| row.get(i).and_then(Option::as_deref) == Some(db)));
+    let at: Vec<usize> = ["fk_database_name", "pk_database_name"]
+        .iter()
+        .filter_map(|n| rs.columns.iter().position(|c| c.eq_ignore_ascii_case(n)))
+        .collect();
+    rs.rows.retain(|row| {
+        at.iter()
+            .all(|&i| row.get(i).and_then(Option::as_deref) == Some(db))
+    });
 }
 
 /// At most `COUNT_LIMIT + 1` matching rows are counted.
 pub fn count_sql(driver: Driver, probe: &Probe) -> String {
-    let (t, n) = (Session::quote_table(driver, &probe.schema, &probe.table), COUNT_LIMIT + 1);
+    let (t, n) = (
+        Session::quote_table(driver, &probe.schema, &probe.table),
+        COUNT_LIMIT + 1,
+    );
     match driver {
-        Driver::MsSql => format!("SELECT COUNT(*) FROM (SELECT TOP ({n}) 1 AS x FROM {t} WHERE {}) q", probe.filter),
-        Driver::Oracle => format!("SELECT COUNT(*) FROM {t} WHERE ({}) AND ROWNUM <= {n}", probe.filter),
-        _ => format!("SELECT COUNT(*) FROM (SELECT 1 AS x FROM {t} WHERE {} LIMIT {n}) q", probe.filter),
+        Driver::MsSql => format!(
+            "SELECT COUNT(*) FROM (SELECT TOP ({n}) 1 AS x FROM {t} WHERE {}) q",
+            probe.filter
+        ),
+        Driver::Oracle => format!(
+            "SELECT COUNT(*) FROM {t} WHERE ({}) AND ROWNUM <= {n}",
+            probe.filter
+        ),
+        _ => format!(
+            "SELECT COUNT(*) FROM (SELECT 1 AS x FROM {t} WHERE {} LIMIT {n}) q",
+            probe.filter
+        ),
     }
 }
 
 /// Counts one probe at a time, each within `limit`: a probe that times out is interrupted and
 /// reported, and the next one runs (unless the interrupt did not stop it).
-async fn counts(session: &mut Session, driver: Driver, probes: &[Probe], cancel: &AtomicBool, limit: Duration) -> anyhow::Result<Vec<Result<u64, String>>> {
+async fn counts(
+    session: &mut Session,
+    driver: Driver,
+    probes: &[Probe],
+    cancel: &AtomicBool,
+    limit: Duration,
+) -> anyhow::Result<Vec<Result<u64, String>>> {
     let handle = session.cancel_handle();
     let mut out = Vec::with_capacity(probes.len());
     for probe in probes {
@@ -224,13 +343,19 @@ async fn counts(session: &mut Session, driver: Driver, probes: &[Probe], cancel:
 
 /// Runs `work` on a session of its own: `cancel` interrupts the native query before the session
 /// is dropped.
-async fn on_session<T>(mut cfg: ConnectionConfig, db: &str, cancel: &AtomicBool, work: impl AsyncFnOnce(&mut Session) -> anyhow::Result<T>) -> anyhow::Result<T> {
+async fn on_session<T>(
+    mut cfg: ConnectionConfig,
+    db: &str,
+    cancel: &AtomicBool,
+    work: impl AsyncFnOnce(&mut Session) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     anyhow::ensure!(supported(cfg.driver), tr("Not available for this engine"));
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), tr("Cancelled"));
     if !matches!(cfg.driver, Driver::Sqlite | Driver::Oracle) {
         cfg.database = db.into();
     }
-    let mut session = tokio::time::timeout(Duration::from_secs(30), Session::connect(&cfg)).await??;
+    let mut session =
+        tokio::time::timeout(Duration::from_secs(30), Session::connect(&cfg)).await??;
     tokio::time::timeout(Duration::from_secs(30), session.use_database(db)).await??;
     let handle = session.cancel_handle();
     let query = work(&mut session);
@@ -252,34 +377,71 @@ async fn on_session<T>(mut cfg: ConnectionConfig, db: &str, cancel: &AtomicBool,
 }
 
 /// One count per probe, in order, each within `limit`; a failed count does not stop the others.
-pub async fn count(cfg: ConnectionConfig, db: &str, probes: &[Probe], cancel: &AtomicBool, limit: Duration) -> anyhow::Result<Vec<Result<u64, String>>> {
+pub async fn count(
+    cfg: ConnectionConfig,
+    db: &str,
+    probes: &[Probe],
+    cancel: &AtomicBool,
+    limit: Duration,
+) -> anyhow::Result<Vec<Result<u64, String>>> {
     let driver = cfg.driver;
-    on_session(cfg, db, cancel, async |s: &mut Session| counts(s, driver, probes, cancel, limit).await).await
+    on_session(cfg, db, cancel, async |s: &mut Session| {
+        counts(s, driver, probes, cancel, limit).await
+    })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn key(schema: &str, table: &str, columns: &[&str], ref_table: &str, ref_columns: &[&str]) -> ForeignKey {
+    fn key(
+        schema: &str,
+        table: &str,
+        columns: &[&str],
+        ref_table: &str,
+        ref_columns: &[&str],
+    ) -> ForeignKey {
         let v = |c: &[&str]| c.iter().map(|s| s.to_string()).collect();
-        ForeignKey { schema: schema.into(), table: table.into(), columns: v(columns), ref_schema: schema.into(), ref_table: ref_table.into(), ref_columns: v(ref_columns) }
+        ForeignKey {
+            schema: schema.into(),
+            table: table.into(),
+            columns: v(columns),
+            ref_schema: schema.into(),
+            ref_table: ref_table.into(),
+            ref_columns: v(ref_columns),
+        }
     }
 
     #[test]
     fn composite_filters_quote_names_and_values_per_dialect() {
         let cols = ["order id".to_string(), "line\"no".to_string()];
         let vals = [Some("7".to_string()), Some("O'Brien".to_string())];
-        assert_eq!(key_filter(Driver::Postgres, &cols, &vals).unwrap(), "\"order id\" = '7' AND \"line\"\"no\" = 'O''Brien'");
-        assert_eq!(key_filter(Driver::MsSql, &cols, &vals).unwrap(), "[order id] = N'7' AND [line\"no] = N'O''Brien'");
-        assert_eq!(key_filter(Driver::MySql, &cols[..1], &[Some("a\\'b".into())]).unwrap(), "`order id` = 'a\\\\''b'");
-        assert_eq!(key_filter(Driver::Oracle, &cols[..1], &vals[..1]).unwrap(), "\"order id\" = '7'");
+        assert_eq!(
+            key_filter(Driver::Postgres, &cols, &vals).unwrap(),
+            "\"order id\" = '7' AND \"line\"\"no\" = 'O''Brien'"
+        );
+        assert_eq!(
+            key_filter(Driver::MsSql, &cols, &vals).unwrap(),
+            "[order id] = N'7' AND [line\"no] = N'O''Brien'"
+        );
+        assert_eq!(
+            key_filter(Driver::MySql, &cols[..1], &[Some("a\\'b".into())]).unwrap(),
+            "`order id` = 'a\\\\''b'"
+        );
+        assert_eq!(
+            key_filter(Driver::Oracle, &cols[..1], &vals[..1]).unwrap(),
+            "\"order id\" = '7'"
+        );
     }
 
     #[test]
     fn navigation_filters_keep_values_separate_from_dialect_placeholders() {
         let columns = ["order id".to_string(), "region".to_string()];
-        let values = [Some("O'Brien'); DROP TABLE orders; --".into()), Some("north".into())];
+        let values = [
+            Some("O'Brien'); DROP TABLE orders; --".into()),
+            Some("north".into()),
+        ];
         for (driver, placeholders) in [
             (Driver::Postgres, ["$1", "$2"]),
             (Driver::MsSql, ["@P1", "@P2"]),
@@ -290,8 +452,20 @@ mod tests {
             (Driver::Snowflake, ["?", "?"]),
         ] {
             let filter = bound_filter(driver, &columns, &[], &values).unwrap();
-            assert_eq!(filter.sql, format!("{} = {} AND {} = {}", driver.quote_ident(&columns[0]), placeholders[0], driver.quote_ident(&columns[1]), placeholders[1]));
-            assert_eq!(filter.parameters, [values[0].clone().unwrap(), "north".into()]);
+            assert_eq!(
+                filter.sql,
+                format!(
+                    "{} = {} AND {} = {}",
+                    driver.quote_ident(&columns[0]),
+                    placeholders[0],
+                    driver.quote_ident(&columns[1]),
+                    placeholders[1]
+                )
+            );
+            assert_eq!(
+                filter.parameters,
+                [values[0].clone().unwrap(), "north".into()]
+            );
             assert!(!filter.sql.contains("DROP TABLE"));
         }
     }
@@ -299,8 +473,21 @@ mod tests {
     #[test]
     fn multi_row_filters_number_parameters_globally_and_preserve_pairs() {
         let columns = ["id".into(), "shop".into()];
-        let rows = [vec![Some("1".into()), Some("north".into())], vec![Some("2".into()), Some("south".into())], vec![Some("1".into()), Some("north".into())], vec![None, Some("ignored".into())]];
-        for (driver, last) in [(Driver::Postgres, "$4"), (Driver::MsSql, "@P4"), (Driver::Oracle, ":4"), (Driver::Sqlite, "?"), (Driver::MySql, "?"), (Driver::MariaDb, "?"), (Driver::Snowflake, "?")] {
+        let rows = [
+            vec![Some("1".into()), Some("north".into())],
+            vec![Some("2".into()), Some("south".into())],
+            vec![Some("1".into()), Some("north".into())],
+            vec![None, Some("ignored".into())],
+        ];
+        for (driver, last) in [
+            (Driver::Postgres, "$4"),
+            (Driver::MsSql, "@P4"),
+            (Driver::Oracle, ":4"),
+            (Driver::Sqlite, "?"),
+            (Driver::MySql, "?"),
+            (Driver::MariaDb, "?"),
+            (Driver::Snowflake, "?"),
+        ] {
             let filter = bound_filter_rows(driver, &columns, &[], &rows).unwrap();
             assert_eq!(filter.parameters, ["1", "north", "2", "south"]);
             assert!(filter.sql.contains(last));
@@ -309,19 +496,38 @@ mod tests {
             assert!(!filter.sql.contains("north"));
         }
         assert!(bound_filter_rows(Driver::Sqlite, &columns, &[], &rows[3..]).is_none());
-        assert!(bound_filter_rows(Driver::Sqlite, &columns, &[], &[vec![Some("1".into())]]).is_none());
+        assert!(
+            bound_filter_rows(Driver::Sqlite, &columns, &[], &[vec![Some("1".into())]]).is_none()
+        );
     }
 
     #[test]
     fn sql_server_casts_parameters_for_single_byte_string_keys() {
         let columns = ["code".to_string(), "name".to_string(), "id".to_string()];
-        let types = ["varchar(20)".to_string(), "nvarchar(50)".to_string(), "int".to_string()];
+        let types = [
+            "varchar(20)".to_string(),
+            "nvarchar(50)".to_string(),
+            "int".to_string(),
+        ];
         let values = [Some("A".into()), Some("B".into()), Some("1".into())];
         let filter = bound_filter(Driver::MsSql, &columns, &types, &values).unwrap();
-        assert_eq!(filter.sql, "[code] = CAST(@P1 AS varchar(8000)) AND [name] = @P2 AND [id] = @P3");
-        assert!(is_ansi_string("CHAR(3)") && is_ansi_string("varchar(max)") && !is_ansi_string("nchar(3)") && !is_ansi_string("text"));
+        assert_eq!(
+            filter.sql,
+            "[code] = CAST(@P1 AS varchar(8000)) AND [name] = @P2 AND [id] = @P3"
+        );
+        assert!(
+            is_ansi_string("CHAR(3)")
+                && is_ansi_string("varchar(max)")
+                && !is_ansi_string("nchar(3)")
+                && !is_ansi_string("text")
+        );
         // Only SQL Server needs it.
-        assert!(!bound_filter(Driver::MySql, &columns, &types, &values).unwrap().sql.contains("CAST"));
+        assert!(
+            !bound_filter(Driver::MySql, &columns, &types, &values)
+                .unwrap()
+                .sql
+                .contains("CAST")
+        );
     }
 
     #[test]
@@ -343,26 +549,81 @@ mod tests {
             key("s", "other", &["x"], "customers", &["id"]),
         ];
         let k = TableKeys::of(keys, "s", "orders");
-        assert_eq!(k.outgoing.iter().map(|k| k.ref_table.as_str()).collect::<Vec<_>>(), ["customers", "orders"]);
-        assert_eq!(k.incoming.iter().map(|k| k.table.as_str()).collect::<Vec<_>>(), ["lines", "orders"]);
+        assert_eq!(
+            k.outgoing
+                .iter()
+                .map(|k| k.ref_table.as_str())
+                .collect::<Vec<_>>(),
+            ["customers", "orders"]
+        );
+        assert_eq!(
+            k.incoming
+                .iter()
+                .map(|k| k.table.as_str())
+                .collect::<Vec<_>>(),
+            ["lines", "orders"]
+        );
     }
 
     #[test]
     fn catalog_queries_are_narrowed_with_literals_and_counts_are_bounded() {
-        for driver in [Driver::Postgres, Driver::MySql, Driver::MariaDb, Driver::MsSql, Driver::Oracle, Driver::Snowflake] {
+        for driver in [
+            Driver::Postgres,
+            Driver::MySql,
+            Driver::MariaDb,
+            Driver::MsSql,
+            Driver::Oracle,
+            Driver::Snowflake,
+        ] {
             let sql = keys_sql(driver, "db", "s'x", "t'; DROP TABLE x; --").join(";");
-            assert!(sql.contains("t''; DROP TABLE x; --") || driver == Driver::Snowflake, "{driver:?}: {sql}");
+            assert!(
+                sql.contains("t''; DROP TABLE x; --") || driver == Driver::Snowflake,
+                "{driver:?}: {sql}"
+            );
         }
-        assert!(keys_sql(Driver::ClickHouse, "db", "s", "t").is_empty() && keys_sql(Driver::MongoDb, "db", "s", "t").is_empty());
+        assert!(
+            keys_sql(Driver::ClickHouse, "db", "s", "t").is_empty()
+                && keys_sql(Driver::MongoDb, "db", "s", "t").is_empty()
+        );
         // Partition clones are skipped; SQLite reads the main schema only.
-        assert!(keys_sql(Driver::Postgres, "db", "s", "t")[0].contains("'conparentid')::oid, 0) = 0"));
-        assert!(keys_sql(Driver::Sqlite, "main", "aux", "t").is_empty() && keys_sql(Driver::Sqlite, "main", "main", "t'x")[0].contains("'t''x'"));
-        let mut rs = super::super::ResultSet { columns: ["FK_DATABASE_NAME", "PK_DATABASE_NAME", "FK_NAME"].map(String::from).to_vec(), ..Default::default() };
-        rs.rows = [["SHOP", "SHOP", "a"], ["OTHER", "SHOP", "b"], ["SHOP", "OTHER", "c"]].iter().map(|r| r.iter().map(|v| Some(v.to_string())).collect()).collect();
+        assert!(
+            keys_sql(Driver::Postgres, "db", "s", "t")[0].contains("'conparentid')::oid, 0) = 0")
+        );
+        assert!(
+            keys_sql(Driver::Sqlite, "main", "aux", "t").is_empty()
+                && keys_sql(Driver::Sqlite, "main", "main", "t'x")[0].contains("'t''x'")
+        );
+        let mut rs = super::super::ResultSet {
+            columns: ["FK_DATABASE_NAME", "PK_DATABASE_NAME", "FK_NAME"]
+                .map(String::from)
+                .to_vec(),
+            ..Default::default()
+        };
+        rs.rows = [
+            ["SHOP", "SHOP", "a"],
+            ["OTHER", "SHOP", "b"],
+            ["SHOP", "OTHER", "c"],
+        ]
+        .iter()
+        .map(|r| r.iter().map(|v| Some(v.to_string())).collect())
+        .collect();
         same_database(&mut rs, "SHOP");
-        assert_eq!(rs.rows.iter().map(|r| r[2].clone().unwrap()).collect::<Vec<_>>(), ["a"]);
-        let probe = Probe { schema: "s".into(), table: "t".into(), filter: "\"a\" = '1'".into() };
-        assert_eq!(count_sql(Driver::Postgres, &probe), "SELECT COUNT(*) FROM (SELECT 1 AS x FROM \"s\".\"t\" WHERE \"a\" = '1' LIMIT 1001) q");
+        assert_eq!(
+            rs.rows
+                .iter()
+                .map(|r| r[2].clone().unwrap())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+        let probe = Probe {
+            schema: "s".into(),
+            table: "t".into(),
+            filter: "\"a\" = '1'".into(),
+        };
+        assert_eq!(
+            count_sql(Driver::Postgres, &probe),
+            "SELECT COUNT(*) FROM (SELECT 1 AS x FROM \"s\".\"t\" WHERE \"a\" = '1' LIMIT 1001) q"
+        );
         assert!(count_sql(Driver::MsSql, &probe).contains("TOP (1001)"));
         assert!(count_sql(Driver::Oracle, &probe).ends_with("ROWNUM <= 1001"));
     }
@@ -371,12 +632,15 @@ mod tests {
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
         let mut session = Session::connect(&cfg).await.unwrap();
-        load(&mut session, Driver::Sqlite, "main", "main", table).await.unwrap()
+        load(&mut session, Driver::Sqlite, "main", "main", table)
+            .await
+            .unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn sqlite_keys_resolve_names_and_slow_counts_do_not_lose_the_others() {
-        let path = std::env::temp_dir().join(format!("datacraft-fk-nav-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("datacraft-fk-nav-{}.db", uuid::Uuid::new_v4()));
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
             "CREATE TABLE parent(a INTEGER,b TEXT,PRIMARY KEY(b,a)); CREATE TABLE child(id INTEGER PRIMARY KEY,x INTEGER,y TEXT,FOREIGN KEY(X,Y) REFERENCES Parent(A,B));
@@ -389,22 +653,57 @@ mod tests {
         assert!(keys.outgoing.is_empty());
         assert_eq!(keys.incoming.len(), 2);
         // `REFERENCES Parent(A,B)` and `FOREIGN KEY(X,Y)` resolve to the declared names.
-        assert_eq!((keys.incoming[0].columns.clone(), keys.incoming[0].ref_table.as_str(), keys.incoming[0].ref_columns.clone()), (vec!["x".to_string(), "y".to_string()], "parent", vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(
+            (
+                keys.incoming[0].columns.clone(),
+                keys.incoming[0].ref_table.as_str(),
+                keys.incoming[0].ref_columns.clone()
+            ),
+            (
+                vec!["x".to_string(), "y".to_string()],
+                "parent",
+                vec!["a".to_string(), "b".to_string()]
+            )
+        );
         assert_eq!(keys.incoming[1].ref_columns, ["b", "a"]);
-        assert_eq!(sqlite_keys(&path, "child").await.outgoing, keys.incoming[..1]);
+        assert_eq!(
+            sqlite_keys(&path, "child").await.outgoing,
+            keys.incoming[..1]
+        );
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
-        let filter = key_filter(Driver::Sqlite, &keys.incoming[0].columns, &[Some("1".into()), Some("O'x".into())]).unwrap();
+        let filter = key_filter(
+            Driver::Sqlite,
+            &keys.incoming[0].columns,
+            &[Some("1".into()), Some("O'x".into())],
+        )
+        .unwrap();
         let endless = "(WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT max(n) FROM r) > 0";
-        let probe = |filter: &str| Probe { schema: "main".into(), table: "child".into(), filter: filter.into() };
+        let probe = |filter: &str| Probe {
+            schema: "main".into(),
+            table: "child".into(),
+            filter: filter.into(),
+        };
         let probes = [probe(endless), probe(&filter), probe("missing = 1")];
         let started = std::time::Instant::now();
-        let counted = count(cfg.clone(), "main", &probes, &AtomicBool::new(false), Duration::from_millis(300)).await.unwrap();
+        let counted = count(
+            cfg.clone(),
+            "main",
+            &probes,
+            &AtomicBool::new(false),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap();
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(counted[0], Err(tr("Counting timed out").to_string()));
         assert_eq!(counted[1], Ok(2));
         assert!(counted[2].is_err());
-        assert!(count(cfg, "main", &probes, &AtomicBool::new(true), PROBE_TIMEOUT).await.is_err());
+        assert!(
+            count(cfg, "main", &probes, &AtomicBool::new(true), PROBE_TIMEOUT)
+                .await
+                .is_err()
+        );
         std::fs::remove_file(path).unwrap();
     }
 
@@ -417,7 +716,8 @@ mod tests {
             eprintln!("DATACRAFT_PG_HOST not set: skipping the PostgreSQL test");
             return;
         };
-        let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
+        let env =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.into());
         let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
         cfg.host = host;
         cfg.port = env("DATACRAFT_PG_PORT", "5432").parse().unwrap();
@@ -445,30 +745,140 @@ mod tests {
             )
             .await
             .unwrap();
-        let parent = load(&mut session, Driver::Postgres, &db, "dc fk", "Shops").await.unwrap();
+        let parent = load(&mut session, Driver::Postgres, &db, "dc fk", "Shops")
+            .await
+            .unwrap();
         assert!(parent.outgoing.is_empty());
         assert_eq!(parent.incoming.len(), 1);
-        assert_eq!((parent.incoming[0].schema.as_str(), parent.incoming[0].columns.clone()), ("dc_fk_child", vec!["shop".to_string(), "region".to_string()]));
-        let child = load(&mut session, Driver::Postgres, &db, "dc_fk_child", "orders").await.unwrap();
+        assert_eq!(
+            (
+                parent.incoming[0].schema.as_str(),
+                parent.incoming[0].columns.clone()
+            ),
+            (
+                "dc_fk_child",
+                vec!["shop".to_string(), "region".to_string()]
+            )
+        );
+        let child = load(&mut session, Driver::Postgres, &db, "dc_fk_child", "orders")
+            .await
+            .unwrap();
         assert_eq!(child.outgoing[0].ref_columns, ["code", "region"]);
         let key = &child.outgoing[0];
-        let filter = key_filter(Driver::Postgres, &key.ref_columns, &[Some("N'1".into()), Some("north".into())]).unwrap();
-        let rows = session.execute(&format!("SELECT name FROM \"dc fk\".\"Shops\" WHERE {filter}"), 10).await.unwrap();
+        let filter = key_filter(
+            Driver::Postgres,
+            &key.ref_columns,
+            &[Some("N'1".into()), Some("north".into())],
+        )
+        .unwrap();
+        let rows = session
+            .execute(
+                &format!("SELECT name FROM \"dc fk\".\"Shops\" WHERE {filter}"),
+                10,
+            )
+            .await
+            .unwrap();
         assert_eq!(rows[0].rows, [vec![Some("O'Brien".to_string())]]);
-        let probe = Probe { schema: key.schema.clone(), table: key.table.clone(), filter: key_filter(Driver::Postgres, &key.columns, &[Some("N'1".into()), Some("north".into())]).unwrap() };
-        assert_eq!(count(cfg.clone(), &db, &[probe], &AtomicBool::new(false), PROBE_TIMEOUT).await.unwrap(), [Ok(2)]);
+        let probe = Probe {
+            schema: key.schema.clone(),
+            table: key.table.clone(),
+            filter: key_filter(
+                Driver::Postgres,
+                &key.columns,
+                &[Some("N'1".into()), Some("north".into())],
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            count(
+                cfg.clone(),
+                &db,
+                &[probe],
+                &AtomicBool::new(false),
+                PROBE_TIMEOUT
+            )
+            .await
+            .unwrap(),
+            [Ok(2)]
+        );
         // Partitioned tables: one key between the partitioned tables, none per partition.
-        let customers = load(&mut session, Driver::Postgres, &db, "dc fk", "customers").await.unwrap();
-        assert_eq!(customers.incoming.iter().map(|k| k.table.as_str()).collect::<Vec<_>>(), ["invoices"]);
-        let invoices = load(&mut session, Driver::Postgres, &db, "dc_fk_child", "invoices").await.unwrap();
-        assert_eq!(invoices.outgoing.iter().map(|k| k.ref_table.as_str()).collect::<Vec<_>>(), ["customers"]);
-        let probe = Probe { schema: "dc_fk_child".into(), table: "invoices".into(), filter: key_filter(Driver::Postgres, &invoices.outgoing[0].columns, &[Some("7".into()), Some("north".into())]).unwrap() };
-        assert_eq!(count(cfg.clone(), &db, &[probe], &AtomicBool::new(false), PROBE_TIMEOUT).await.unwrap(), [Ok(2)]);
+        let customers = load(&mut session, Driver::Postgres, &db, "dc fk", "customers")
+            .await
+            .unwrap();
+        assert_eq!(
+            customers
+                .incoming
+                .iter()
+                .map(|k| k.table.as_str())
+                .collect::<Vec<_>>(),
+            ["invoices"]
+        );
+        let invoices = load(
+            &mut session,
+            Driver::Postgres,
+            &db,
+            "dc_fk_child",
+            "invoices",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            invoices
+                .outgoing
+                .iter()
+                .map(|k| k.ref_table.as_str())
+                .collect::<Vec<_>>(),
+            ["customers"]
+        );
+        let probe = Probe {
+            schema: "dc_fk_child".into(),
+            table: "invoices".into(),
+            filter: key_filter(
+                Driver::Postgres,
+                &invoices.outgoing[0].columns,
+                &[Some("7".into()), Some("north".into())],
+            )
+            .unwrap(),
+        };
+        assert_eq!(
+            count(
+                cfg.clone(),
+                &db,
+                &[probe],
+                &AtomicBool::new(false),
+                PROBE_TIMEOUT
+            )
+            .await
+            .unwrap(),
+            [Ok(2)]
+        );
         // A slow count is interrupted on the server and the next one still runs.
-        let slow = Probe { schema: "dc fk".into(), table: "Shops".into(), filter: "pg_sleep(30) IS NOT NULL".into() };
-        let quick = Probe { schema: "dc fk".into(), table: "Shops".into(), filter: "code = 'N''1'".into() };
-        let counted = count(cfg.clone(), &db, &[slow, quick], &AtomicBool::new(false), Duration::from_millis(500)).await.unwrap();
+        let slow = Probe {
+            schema: "dc fk".into(),
+            table: "Shops".into(),
+            filter: "pg_sleep(30) IS NOT NULL".into(),
+        };
+        let quick = Probe {
+            schema: "dc fk".into(),
+            table: "Shops".into(),
+            filter: "code = 'N''1'".into(),
+        };
+        let counted = count(
+            cfg.clone(),
+            &db,
+            &[slow, quick],
+            &AtomicBool::new(false),
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap();
         assert_eq!(counted, [Err(tr("Counting timed out").to_string()), Ok(2)]);
-        session.execute("DROP SCHEMA \"dc fk\" CASCADE; DROP SCHEMA dc_fk_child CASCADE;", 0).await.unwrap();
+        session
+            .execute(
+                "DROP SCHEMA \"dc fk\" CASCADE; DROP SCHEMA dc_fk_child CASCADE;",
+                0,
+            )
+            .await
+            .unwrap();
     }
 }

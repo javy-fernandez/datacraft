@@ -17,15 +17,30 @@ pub const VERSION: &str = "2.0.0";
 /// Release asset and its SHA-256 for this platform, None where DuckDB has no build.
 fn asset() -> Option<(&'static str, &'static str)> {
     if cfg!(target_os = "macos") {
-        Some(("duckdb-shared-libs-osx-universal.tar.gz", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d"))
+        Some((
+            "duckdb-shared-libs-osx-universal.tar.gz",
+            "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d",
+        ))
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some(("duckdb-shared-libs-windows-amd64.tar.gz", "2b83169128239de5f45fe21de80f99bf436e53aa4bb24020dd951a1ba8d4b95f"))
+        Some((
+            "duckdb-shared-libs-windows-amd64.tar.gz",
+            "2b83169128239de5f45fe21de80f99bf436e53aa4bb24020dd951a1ba8d4b95f",
+        ))
     } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        Some(("duckdb-shared-libs-windows-arm64.tar.gz", "159ce60eb587112b8c5f290b8beea56af5f13be4d13679de127ad9bfaafb7447"))
+        Some((
+            "duckdb-shared-libs-windows-arm64.tar.gz",
+            "159ce60eb587112b8c5f290b8beea56af5f13be4d13679de127ad9bfaafb7447",
+        ))
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some(("duckdb-shared-libs-linux-amd64.tar.gz", "993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1"))
+        Some((
+            "duckdb-shared-libs-linux-amd64.tar.gz",
+            "993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1",
+        ))
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some(("duckdb-shared-libs-linux-arm64.tar.gz", "c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7"))
+        Some((
+            "duckdb-shared-libs-linux-arm64.tar.gz",
+            "c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7",
+        ))
     } else {
         None
     }
@@ -53,13 +68,20 @@ pub fn download_size_mb() -> u32 {
 
 /// Where the downloaded library lives.
 pub fn library_path() -> PathBuf {
-    crate::config::data_dir().join("drivers").join("duckdb").join(VERSION).join(library_name())
+    crate::config::data_dir()
+        .join("drivers")
+        .join("duckdb")
+        .join(VERSION)
+        .join(library_name())
 }
 
 /// The library to load: `DATACRAFT_DUCKDB_LIB` (a `libduckdb` of the same version installed
 /// elsewhere, also used by the tests) or the downloaded one, when it exists.
 pub fn installed_library() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("DATACRAFT_DUCKDB_LIB").map(PathBuf::from).filter(|p| p.is_file()) {
+    if let Some(p) = std::env::var_os("DATACRAFT_DUCKDB_LIB")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    {
         return Some(p);
     }
     let p = library_path();
@@ -86,15 +108,28 @@ impl Progress {
 
 /// Downloads, checks and installs the library; returns its path.
 pub async fn download(progress: Arc<Progress>) -> anyhow::Result<PathBuf> {
-    let Some((name, sha256)) = asset() else { anyhow::bail!(tr("DuckDB has no build for this platform")) };
+    let Some((name, sha256)) = asset() else {
+        anyhow::bail!(tr("DuckDB has no build for this platform"))
+    };
     let url = format!("https://github.com/duckdb/duckdb/releases/download/v{VERSION}/{name}");
-    let client = reqwest::Client::builder().user_agent(concat!("DataCraft/", env!("CARGO_PKG_VERSION"))).build()?;
-    let mut response = client.get(&url).send().await?.error_for_status().with_context(|| trf("Could not download {url}", &[("url", &url)]))?;
-    progress.total.store(response.content_length().unwrap_or(0), Ordering::Relaxed);
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("DataCraft/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let mut response = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()
+        .with_context(|| trf("Could not download {url}", &[("url", &url)]))?;
+    progress
+        .total
+        .store(response.content_length().unwrap_or(0), Ordering::Relaxed);
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         bytes.extend_from_slice(&chunk);
-        progress.received.store(bytes.len() as u64, Ordering::Relaxed);
+        progress
+            .received
+            .store(bytes.len() as u64, Ordering::Relaxed);
     }
     let target = library_path();
     tokio::task::spawn_blocking(move || install(&bytes, sha256, &target).map(|()| target)).await?
@@ -104,16 +139,25 @@ pub async fn download(progress: Arc<Progress>) -> anyhow::Result<PathBuf> {
 /// so an interrupted install never leaves a half-written library behind).
 fn install(archive: &[u8], sha256: &str, target: &Path) -> anyhow::Result<()> {
     use sha2::Digest as _;
-    let digest: String = sha2::Sha256::digest(archive).iter().map(|b| format!("{b:02x}")).collect();
+    let digest: String = sha2::Sha256::digest(archive)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if digest != sha256 {
-        anyhow::bail!(tr("The downloaded DuckDB driver failed its checksum; nothing was installed"));
+        anyhow::bail!(tr(
+            "The downloaded DuckDB driver failed its checksum; nothing was installed"
+        ));
     }
     let dir = target.parent().context("driver folder")?;
     std::fs::create_dir_all(dir)?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries()? {
         let mut entry = entry?;
-        if entry.path()?.file_name().is_some_and(|n| n == library_name()) {
+        if entry
+            .path()?
+            .file_name()
+            .is_some_and(|n| n == library_name())
+        {
             let mut data = Vec::new();
             entry.read_to_end(&mut data)?;
             let tmp = dir.join(format!(".{}.part", library_name()));
@@ -127,7 +171,10 @@ fn install(archive: &[u8], sha256: &str, target: &Path) -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    anyhow::bail!(trf("The DuckDB archive has no {name}", &[("name", &library_name())]))
+    anyhow::bail!(trf(
+        "The DuckDB archive has no {name}",
+        &[("name", &library_name())]
+    ))
 }
 
 /// Where the driver stands, for the connection dialog.
@@ -148,7 +195,10 @@ struct Download {
     error: Option<String>,
 }
 
-static DOWNLOAD: std::sync::Mutex<Download> = std::sync::Mutex::new(Download { progress: None, error: None });
+static DOWNLOAD: std::sync::Mutex<Download> = std::sync::Mutex::new(Download {
+    progress: None,
+    error: None,
+});
 
 pub fn state() -> State {
     let d = DOWNLOAD.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,7 +237,11 @@ pub fn start_download(ctx: egui::Context) {
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
         });
-        let result = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(anyhow::Error::from).and_then(|rt| rt.block_on(download(Arc::clone(&progress))));
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(download(Arc::clone(&progress))));
         done.store(true, Ordering::Relaxed);
         let mut d = DOWNLOAD.lock().unwrap_or_else(|e| e.into_inner());
         d.progress = None;
@@ -203,7 +257,13 @@ mod tests {
     #[test]
     fn every_supported_platform_has_an_asset() {
         assert!(asset().is_some());
-        assert!(library_path().ends_with(Path::new("drivers/duckdb").join(VERSION).join(library_name())));
+        assert!(
+            library_path().ends_with(
+                Path::new("drivers/duckdb")
+                    .join(VERSION)
+                    .join(library_name())
+            )
+        );
     }
 
     /// The real download from GitHub (network): `cargo test downloads_the_real_driver -- --ignored`.
@@ -220,7 +280,9 @@ mod tests {
 
     #[test]
     fn a_wrong_checksum_installs_nothing() {
-        let target = std::env::temp_dir().join(format!("datacraft-duckdb-{}", uuid::Uuid::new_v4())).join(library_name());
+        let target = std::env::temp_dir()
+            .join(format!("datacraft-duckdb-{}", uuid::Uuid::new_v4()))
+            .join(library_name());
         assert!(install(b"not an archive", "00", &target).is_err());
         assert!(!target.exists());
     }
@@ -228,8 +290,14 @@ mod tests {
     #[test]
     fn installs_the_library_from_a_verified_archive() {
         use sha2::Digest as _;
-        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
-        for (name, data) in [("duckdb.h", &b"header"[..]), (library_name(), &b"library"[..])] {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (name, data) in [
+            ("duckdb.h", &b"header"[..]),
+            (library_name(), &b"library"[..]),
+        ] {
             let mut header = tar::Header::new_gnu();
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
@@ -237,7 +305,10 @@ mod tests {
             builder.append_data(&mut header, name, data).unwrap();
         }
         let archive = builder.into_inner().unwrap().finish().unwrap();
-        let sha: String = sha2::Sha256::digest(&archive).iter().map(|b| format!("{b:02x}")).collect();
+        let sha: String = sha2::Sha256::digest(&archive)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let dir = std::env::temp_dir().join(format!("datacraft-duckdb-{}", uuid::Uuid::new_v4()));
         let target = dir.join(library_name());
         install(&archive, &sha, &target).unwrap();

@@ -212,7 +212,9 @@ pub unsafe fn text(p: *const c_char) -> String {
         return String::new();
     }
     // SAFETY: guaranteed by the caller.
-    unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+    unsafe { std::ffi::CStr::from_ptr(p) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl Api {

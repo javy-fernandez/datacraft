@@ -18,7 +18,19 @@ use super::{Driver, Session};
 use crate::edit::literal;
 use crate::i18n::{tr, trf};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum RoutineKind {
     #[default]
     Procedure,
@@ -36,7 +48,15 @@ impl RoutineKind {
 
 /// Engines with stored procedures and functions.
 pub fn supported(driver: Driver) -> bool {
-    matches!(driver, Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::MsSql | Driver::Oracle | Driver::Snowflake)
+    matches!(
+        driver,
+        Driver::Postgres
+            | Driver::MySql
+            | Driver::MariaDb
+            | Driver::MsSql
+            | Driver::Oracle
+            | Driver::Snowflake
+    )
 }
 
 /// A routine as the explorer lists it.
@@ -65,7 +85,9 @@ impl RoutineInfo {
 }
 
 /// A routine of a connection's database.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RoutineRef {
     pub conn: u64,
     pub db: String,
@@ -78,7 +100,14 @@ pub struct RoutineRef {
 
 impl RoutineRef {
     pub fn new(conn: u64, db: &str, r: &RoutineInfo) -> Self {
-        Self { conn, db: db.to_string(), schema: r.schema.clone(), name: r.name.clone(), kind: r.kind, signature: r.signature.clone() }
+        Self {
+            conn,
+            db: db.to_string(),
+            schema: r.schema.clone(),
+            name: r.name.clone(),
+            kind: r.kind,
+            signature: r.signature.clone(),
+        }
     }
 }
 
@@ -247,7 +276,11 @@ pub struct Original {
 impl RoutineSpec {
     /// Template for a new routine.
     pub fn new(driver: Driver, kind: RoutineKind, schema: String) -> Self {
-        let mut spec = Self { kind, schema, ..Default::default() };
+        let mut spec = Self {
+            kind,
+            schema,
+            ..Default::default()
+        };
         let function = kind == RoutineKind::Function;
         let (language, returns, body) = match driver {
             Driver::Postgres if function => ("plpgsql", "integer", "begin\n    return 0;\nend;"),
@@ -304,24 +337,39 @@ fn text(row: &[super::Cell], i: usize) -> String {
 }
 
 fn kind_of(code: &str) -> RoutineKind {
-    if code.eq_ignore_ascii_case("P") { RoutineKind::Procedure } else { RoutineKind::Function }
+    if code.eq_ignore_ascii_case("P") {
+        RoutineKind::Procedure
+    } else {
+        RoutineKind::Function
+    }
 }
 
 fn string_list(driver: Driver, items: &[&str]) -> String {
-    items.iter().map(|s| literal(driver, &Some((*s).to_string()))).collect::<Vec<_>>().join(", ")
+    items
+        .iter()
+        .map(|s| literal(driver, &Some((*s).to_string())))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `(…)` without its outer parentheses.
 fn strip_parens(text: &str) -> &str {
     let t = text.trim();
-    t.strip_prefix('(').and_then(|t| t.strip_suffix(')')).unwrap_or(t)
+    t.strip_prefix('(')
+        .and_then(|t| t.strip_suffix(')'))
+        .unwrap_or(t)
 }
 
 /// Types of a Snowflake `ARGUMENT_SIGNATURE` (`(A NUMBER, B VARCHAR)` → `NUMBER, VARCHAR`).
 pub(crate) fn snowflake_signature(arguments: &str) -> String {
     parse::split_top_level(strip_parens(arguments))
         .iter()
-        .map(|a| a.trim().split_once(char::is_whitespace).map_or(a.trim(), |(_, t)| t.trim()).to_string())
+        .map(|a| {
+            a.trim()
+                .split_once(char::is_whitespace)
+                .map_or(a.trim(), |(_, t)| t.trim())
+                .to_string()
+        })
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join(", ")
@@ -431,41 +479,82 @@ fn routines_from_rows(driver: Driver, rows: Vec<Vec<super::Cell>>) -> Vec<Routin
 
 impl Session {
     /// Resolve PostgreSQL's canonical overload signature before committing the edit.
-    pub async fn save_postgres_routine(&mut self, statements: &[String], mut identity: RoutineRef) -> anyhow::Result<RoutineRef> {
+    pub async fn save_postgres_routine(
+        &mut self,
+        statements: &[String],
+        mut identity: RoutineRef,
+    ) -> anyhow::Result<RoutineRef> {
         self.execute("BEGIN", 0).await?;
         let result = async {
-            for statement in statements { self.execute(statement, 0).await?; }
-            let name = format!("{}({})", Session::quote_table(Driver::Postgres, &identity.schema, &identity.name), identity.signature);
-            let query = format!("SELECT pg_get_function_identity_arguments(to_regprocedure({}))", literal(Driver::Postgres, &Some(name)));
+            for statement in statements {
+                self.execute(statement, 0).await?;
+            }
+            let name = format!(
+                "{}({})",
+                Session::quote_table(Driver::Postgres, &identity.schema, &identity.name),
+                identity.signature
+            );
+            let query = format!(
+                "SELECT pg_get_function_identity_arguments(to_regprocedure({}))",
+                literal(Driver::Postgres, &Some(name))
+            );
             let rows = self.execute(&query, 1).await?;
-            let Some(signature) = rows.iter().flat_map(|r| &r.rows).find_map(|r| r.first().and_then(|v| v.clone())) else {
-                anyhow::bail!(trf("The definition of “{name}” is not available", &[("name", &identity.name)]));
+            let Some(signature) = rows
+                .iter()
+                .flat_map(|r| &r.rows)
+                .find_map(|r| r.first().and_then(|v| v.clone()))
+            else {
+                anyhow::bail!(trf(
+                    "The definition of “{name}” is not available",
+                    &[("name", &identity.name)]
+                ));
             };
             identity.signature = signature;
             self.execute("COMMIT", 0).await?;
             Ok(identity)
-        }.await;
-        if result.is_err() { let _ = self.execute("ROLLBACK", 0).await; }
+        }
+        .await;
+        if result.is_err() {
+            let _ = self.execute("ROLLBACK", 0).await;
+        }
         result
     }
 
     /// Procedures and functions of database `db` (the session must be on it).
-    pub async fn list_routines(&mut self, driver: Driver, db: &str) -> anyhow::Result<Vec<RoutineInfo>> {
+    pub async fn list_routines(
+        &mut self,
+        driver: Driver,
+        db: &str,
+    ) -> anyhow::Result<Vec<RoutineInfo>> {
         if !supported(driver) {
             return Ok(Vec::new());
         }
-        let rows = match self.execute(&list_query(driver, db, true), usize::MAX).await {
+        let rows = match self
+            .execute(&list_query(driver, db, true), usize::MAX)
+            .await
+        {
             // ORA-00904: invalid identifier (ORACLE_MAINTAINED doesn't exist before 12c).
             Err(e) if driver == Driver::Oracle && e.to_string().contains("ORA-00904") => {
-                self.execute(&list_query(driver, db, false), usize::MAX).await?
+                self.execute(&list_query(driver, db, false), usize::MAX)
+                    .await?
             }
             other => other?,
         };
-        Ok(routines_from_rows(driver, rows.into_iter().next().map(|rs| rs.rows).unwrap_or_default()))
+        Ok(routines_from_rows(
+            driver,
+            rows.into_iter()
+                .next()
+                .map(|rs| rs.rows)
+                .unwrap_or_default(),
+        ))
     }
 
     /// The definition of routine `r` (the session must be on `r.db`).
-    pub async fn routine_definition(&mut self, driver: Driver, r: &RoutineRef) -> anyhow::Result<RoutineDefinition> {
+    pub async fn routine_definition(
+        &mut self,
+        driver: Driver,
+        r: &RoutineRef,
+    ) -> anyhow::Result<RoutineDefinition> {
         let lit = |s: &str| literal(driver, &Some(s.to_string()));
         let kind = r.kind.keyword().to_uppercase();
         let sql = match driver {
@@ -478,20 +567,37 @@ impl Session {
                 lit(&r.name),
                 lit(&r.signature)
             ),
-            Driver::MySql | Driver::MariaDb => format!("SHOW CREATE {kind} {}", Session::quote_table(driver, &r.db, &r.name)),
-            Driver::MsSql => format!("SELECT OBJECT_DEFINITION(OBJECT_ID({0})), (SELECT CONVERT(nvarchar(max), value) FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID({0}) AND minor_id = 0 AND name = N'MS_Description')", lit(&Session::quote_table(driver, &r.schema, &r.name))),
+            Driver::MySql | Driver::MariaDb => format!(
+                "SHOW CREATE {kind} {}",
+                Session::quote_table(driver, &r.db, &r.name)
+            ),
+            Driver::MsSql => format!(
+                "SELECT OBJECT_DEFINITION(OBJECT_ID({0})), (SELECT CONVERT(nvarchar(max), value) FROM sys.extended_properties WHERE class = 1 AND major_id = OBJECT_ID({0}) AND minor_id = 0 AND name = N'MS_Description')",
+                lit(&Session::quote_table(driver, &r.schema, &r.name))
+            ),
             Driver::Oracle => format!(
                 "SELECT TEXT FROM ALL_SOURCE WHERE OWNER = {} AND NAME = {} AND TYPE = '{kind}' ORDER BY LINE",
                 lit(&r.schema),
                 lit(&r.name)
             ),
             Driver::Snowflake => {
-                let name = format!("{}.{}({})", driver.quote_ident(&r.db), Session::quote_table(driver, &r.schema, &r.name), r.signature);
+                let name = format!(
+                    "{}.{}({})",
+                    driver.quote_ident(&r.db),
+                    Session::quote_table(driver, &r.schema, &r.name),
+                    r.signature
+                );
                 format!("SELECT GET_DDL('{kind}', {})", lit(&name))
             }
             _ => anyhow::bail!(tr("Not available for this engine")),
         };
-        let rows = self.execute(&sql, usize::MAX).await?.into_iter().next().map(|rs| rs.rows).unwrap_or_default();
+        let rows = self
+            .execute(&sql, usize::MAX)
+            .await?
+            .into_iter()
+            .next()
+            .map(|rs| rs.rows)
+            .unwrap_or_default();
         let column = match driver {
             // SHOW CREATE PROCEDURE: Procedure, sql_mode, Create Procedure, …
             Driver::MySql | Driver::MariaDb => 2,
@@ -500,10 +606,15 @@ impl Session {
         let source: String = if driver == Driver::Oracle {
             rows.iter().map(|row| text(row, 0)).collect()
         } else {
-            rows.first().map(|row| text(row, column)).unwrap_or_default()
+            rows.first()
+                .map(|row| text(row, column))
+                .unwrap_or_default()
         };
         if source.trim().is_empty() {
-            anyhow::bail!(trf("The definition of “{name}” is not available", &[("name", &r.name)]));
+            anyhow::bail!(trf(
+                "The definition of “{name}” is not available",
+                &[("name", &r.name)]
+            ));
         }
         let mut def = definition_from_text(driver, r, &source);
         // These engines keep the comment apart from the definition.
@@ -516,9 +627,14 @@ impl Session {
         }
         if let Some(query) = comments::query(driver, r) {
             let result = self.execute(&query, usize::MAX).await?;
-            let row = result.iter().flat_map(|rs| &rs.rows).find(|row| driver != Driver::Snowflake || snowflake_signature(&text(row, 0)) == r.signature);
+            let row = result.iter().flat_map(|rs| &rs.rows).find(|row| {
+                driver != Driver::Snowflake || snowflake_signature(&text(row, 0)) == r.signature
+            });
             let Some(row) = row else {
-                anyhow::bail!(trf("The definition of “{name}” is not available", &[("name", &r.name)]));
+                anyhow::bail!(trf(
+                    "The definition of “{name}” is not available",
+                    &[("name", &r.name)]
+                ));
             };
             def.comment = text(row, 1);
             if let Some(spec) = def.spec.as_mut() {
@@ -531,7 +647,11 @@ impl Session {
 }
 
 /// `text` as the server returned it, turned into the console DDL and the dialog's fields.
-pub(crate) fn definition_from_text(driver: Driver, r: &RoutineRef, text: &str) -> RoutineDefinition {
+pub(crate) fn definition_from_text(
+    driver: Driver,
+    r: &RoutineRef,
+    text: &str,
+) -> RoutineDefinition {
     let text = text.trim_end();
     let ddl = match driver {
         // ALL_SOURCE starts at `PROCEDURE name`; SQL*Plus style ends the block with `/`.
@@ -540,7 +660,11 @@ pub(crate) fn definition_from_text(driver: Driver, r: &RoutineRef, text: &str) -
         Driver::Snowflake => format!("{}\n", text),
         _ => format!("{};\n", text.trim_end_matches(';')),
     };
-    let source = if driver == Driver::Oracle { format!("create {}", text.trim_start()) } else { text.to_string() };
+    let source = if driver == Driver::Oracle {
+        format!("create {}", text.trim_start())
+    } else {
+        text.to_string()
+    };
     let spec = parse_definition(driver, &source).map(|mut spec| {
         spec.kind = r.kind;
         spec.schema = r.schema.clone();
@@ -549,7 +673,10 @@ pub(crate) fn definition_from_text(driver: Driver, r: &RoutineRef, text: &str) -
         spec.mark_original(&r.signature);
         spec
     });
-    let comment = spec.as_ref().map(|s| s.options.comment.clone()).unwrap_or_default();
+    let comment = spec
+        .as_ref()
+        .map(|s| s.options.comment.clone())
+        .unwrap_or_default();
     RoutineDefinition { ddl, spec, comment }
 }
 

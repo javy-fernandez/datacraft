@@ -56,11 +56,16 @@ pub struct Performance {
 }
 
 impl Performance {
-    pub fn new(render_state: Option<&egui_wgpu::RenderState>, mode: RenderMode, show_stats: bool) -> Self {
+    pub fn new(
+        render_state: Option<&egui_wgpu::RenderState>,
+        mode: RenderMode,
+        show_stats: bool,
+    ) -> Self {
         let adapter = render_state.map(|rs| {
             let info = rs.adapter.get_info();
             Adapter {
-                software: info.device_type == wgpu::DeviceType::Cpu || info.name.contains("Basic Render"),
+                software: info.device_type == wgpu::DeviceType::Cpu
+                    || info.name.contains("Basic Render"),
                 backend: format!("{:?}", info.backend),
                 name: info.name,
             }
@@ -134,7 +139,11 @@ impl Performance {
         let now = Instant::now();
         self.last_frame = Some(now);
         self.frames.push_back(now);
-        while self.frames.front().is_some_and(|t| now - *t > Duration::from_secs(1)) {
+        while self
+            .frames
+            .front()
+            .is_some_and(|t| now - *t > Duration::from_secs(1))
+        {
             self.frames.pop_front();
         }
     }
@@ -142,7 +151,12 @@ impl Performance {
     /// egui spreads each mouse wheel notch over ~10 frames to animate it. In low-power mode the
     /// notch is split into steps short enough for egui to apply them all in this frame.
     pub fn instant_wheel(&self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        if !self.low_power() || !raw.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })) {
+        if !self.low_power()
+            || !raw
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::MouseWheel { .. }))
+        {
             return;
         }
         let line = ctx.options(|o| o.input_options.line_scroll_speed);
@@ -150,7 +164,12 @@ impl Performance {
         let events = std::mem::take(&mut raw.events);
         for event in events {
             match event {
-                egui::Event::MouseWheel { unit, delta, phase: egui::TouchPhase::Move, modifiers } => {
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    phase: egui::TouchPhase::Move,
+                    modifiers,
+                } => {
                     let delta = match unit {
                         egui::MouseWheelUnit::Point => delta,
                         egui::MouseWheelUnit::Line => delta * line,
@@ -177,14 +196,31 @@ impl Performance {
         if !self.show_stats && !self.env_stats {
             return;
         }
-        let adapter = self.adapter.as_ref().map_or("?".to_string(), |a| format!("{} ({})", a.name, a.backend));
-        let mode = if self.low_power() { "low-power" } else { "full" };
-        let ms = frame_time.map_or("-".to_string(), |s| format!("{:.1} ms", (s - self.prev_slept.as_secs_f32()).max(0.0) * 1000.0));
-        let text = format!("{} fps · frame {ms} · {mode} · {adapter}", self.frames.len());
+        let adapter = self
+            .adapter
+            .as_ref()
+            .map_or("?".to_string(), |a| format!("{} ({})", a.name, a.backend));
+        let mode = if self.low_power() {
+            "low-power"
+        } else {
+            "full"
+        };
+        let ms = frame_time.map_or("-".to_string(), |s| {
+            format!(
+                "{:.1} ms",
+                (s - self.prev_slept.as_secs_f32()).max(0.0) * 1000.0
+            )
+        });
+        let text = format!(
+            "{} fps · frame {ms} · {mode} · {adapter}",
+            self.frames.len()
+        );
         let painter = ctx.layer_painter(LayerId::new(Order::Debug, Id::new("frame_stats")));
         let pos = ctx.content_rect().right_bottom() - egui::vec2(8.0, 36.0);
         let galley = painter.layout_no_wrap(text, FontId::monospace(11.0), Color32::WHITE);
-        let rect = Align2::RIGHT_BOTTOM.anchor_size(pos, galley.size()).expand(4.0);
+        let rect = Align2::RIGHT_BOTTOM
+            .anchor_size(pos, galley.size())
+            .expand(4.0);
         painter.rect_filled(rect, 4.0, Color32::from_black_alpha(190));
         painter.galley(rect.min + egui::vec2(4.0, 4.0), galley, Color32::WHITE);
     }
@@ -194,13 +230,21 @@ impl Performance {
         let muted = pal(ui).muted;
         ui.label(RichText::new(tr("Rendering")).small().color(muted));
         if let Some(a) = &self.adapter {
-            let kind = if a.software { format!(" · {}", tr("software (CPU)")) } else { String::new() };
+            let kind = if a.software {
+                format!(" · {}", tr("software (CPU)"))
+            } else {
+                String::new()
+            };
             ui.label(RichText::new(format!("{} ({}){kind}", a.name, a.backend)).small());
         }
         if self.remote {
             ui.label(RichText::new(tr("Remote Desktop session")).small());
         }
-        let auto = if self.auto_low_power() { tr("Automatic (low-power)") } else { tr("Automatic (full quality)") };
+        let auto = if self.auto_low_power() {
+            tr("Automatic (low-power)")
+        } else {
+            tr("Automatic (full quality)")
+        };
         ui.radio_value(&mut self.mode, RenderMode::Auto, auto);
         ui.radio_value(&mut self.mode, RenderMode::LowPower, tr("Low-power"));
         ui.radio_value(&mut self.mode, RenderMode::Full, tr("Full quality"));
@@ -233,7 +277,11 @@ mod tests {
             mode,
             show_stats: false,
             env_stats: false,
-            adapter: Some(Adapter { name: "Microsoft Basic Render Driver".into(), backend: "Dx12".into(), software }),
+            adapter: Some(Adapter {
+                name: "Microsoft Basic Render Driver".into(),
+                backend: "Dx12".into(),
+                software,
+            }),
             remote,
             applied: None,
             last_frame: None,
@@ -267,7 +315,10 @@ mod tests {
         assert!(perf.style_outdated());
         crate::ui::theme::apply(&ctx, true);
         perf.apply_style(&ctx);
-        assert_eq!(ctx.global_style().visuals.window_shadow, themed.visuals.window_shadow);
+        assert_eq!(
+            ctx.global_style().visuals.window_shadow,
+            themed.visuals.window_shadow
+        );
         assert_eq!(ctx.global_style().animation_time, themed.animation_time);
         assert!(!perf.style_outdated());
     }
@@ -291,7 +342,14 @@ mod tests {
         let line = ctx.options(|o| o.input_options.line_scroll_speed);
         let mut total = 0.0;
         for e in &raw.events[..raw.events.len() - 1] {
-            let egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } = e else { panic!("{e:?}") };
+            let egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta,
+                ..
+            } = e
+            else {
+                panic!("{e:?}")
+            };
             assert!(delta.length() < 8.0);
             total += delta.y;
         }
@@ -306,14 +364,30 @@ mod tests {
     /// Scroll offset after one frame that receives a single wheel notch.
     fn offset_after_one_notch(low_power: bool) -> f32 {
         let ctx = egui::Context::default();
-        let perf = perf(if low_power { RenderMode::LowPower } else { RenderMode::Full }, true, false);
+        let perf = perf(
+            if low_power {
+                RenderMode::LowPower
+            } else {
+                RenderMode::Full
+            },
+            true,
+            false,
+        );
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
         let frame = |events: Vec<egui::Event>| {
-            let mut raw = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut raw = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
             perf.instant_wheel(&ctx, &mut raw);
             let mut offset = 0.0;
             let mut output = ctx.run_ui(raw, |ui| {
-                offset = egui::ScrollArea::vertical().show(ui, |ui| ui.allocate_space(egui::vec2(100.0, 5000.0))).state.offset.y;
+                offset = egui::ScrollArea::vertical()
+                    .show(ui, |ui| ui.allocate_space(egui::vec2(100.0, 5000.0)))
+                    .state
+                    .offset
+                    .y;
             });
             output.textures_delta.clear();
             offset

@@ -57,7 +57,10 @@ pub struct ScriptRun {
 
 impl ScriptRun {
     pub fn snapshot(&self) -> Progress {
-        self.progress.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn decide(&self, d: Decision) {
@@ -74,8 +77,17 @@ pub fn supported(driver: Driver) -> bool {
     !driver.is_nosql()
 }
 
-pub async fn run(cfg: ConnectionConfig, db: Option<String>, files: Vec<PathBuf>, run: Arc<ScriptRun>) {
-    let total = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+pub async fn run(
+    cfg: ConnectionConfig,
+    db: Option<String>,
+    files: Vec<PathBuf>,
+    run: Arc<ScriptRun>,
+) {
+    let total = files
+        .iter()
+        .filter_map(|f| std::fs::metadata(f).ok())
+        .map(|m| m.len())
+        .sum();
     run.update(|p| p.bytes_total = total);
     let stopped = execute(cfg, db, &files, &run).await.err();
     run.update(|p| {
@@ -85,18 +97,29 @@ pub async fn run(cfg: ConnectionConfig, db: Option<String>, files: Vec<PathBuf>,
     });
 }
 
-async fn execute(mut cfg: ConnectionConfig, db: Option<String>, files: &[PathBuf], run: &ScriptRun) -> Result<(), String> {
+async fn execute(
+    mut cfg: ConnectionConfig,
+    db: Option<String>,
+    files: &[PathBuf],
+    run: &ScriptRun,
+) -> Result<(), String> {
     let driver = cfg.driver;
     if let Some(db) = db.as_ref().filter(|_| driver != Driver::Oracle) {
         cfg.database.clone_from(db);
     }
     let mut session = Session::connect(&cfg).await.map_err(|e| format!("{e:#}"))?;
-    session.use_database(db.as_deref().unwrap_or_default()).await.map_err(|e| format!("{e:#}"))?;
+    session
+        .use_database(db.as_deref().unwrap_or_default())
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     let mut skip_all = false;
     let mut done_before = 0u64;
     for (index, path) in files.iter().enumerate() {
         run.update(|p| p.file = index);
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut reader = std::io::BufReader::new(file);
         let mut splitter = Splitter::new(driver);
@@ -115,7 +138,11 @@ async fn execute(mut cfg: ConnectionConfig, db: Option<String>, files: &[PathBuf
                 }
             }
             let read = chunk.len() as u64;
-            let pieces = if eof { splitter.feed_last(&String::from_utf8_lossy(&chunk)) } else { splitter.feed(&String::from_utf8_lossy(&chunk)) };
+            let pieces = if eof {
+                splitter.feed_last(&String::from_utf8_lossy(&chunk))
+            } else {
+                splitter.feed(&String::from_utf8_lossy(&chunk))
+            };
             for piece in pieces {
                 loop {
                     if run.cancel.load(Ordering::SeqCst) {
@@ -131,8 +158,17 @@ async fn execute(mut cfg: ConnectionConfig, db: Option<String>, files: &[PathBuf
                     if session.is_closed() {
                         return Err(tr("Connection lost").into());
                     }
-                    let failure = Failure { file: name.clone(), line: piece.line, statement: piece.text.clone(), error };
-                    let decision = if skip_all { Decision::Skip } else { ask(run, failure.clone()).await };
+                    let failure = Failure {
+                        file: name.clone(),
+                        line: piece.line,
+                        statement: piece.text.clone(),
+                        error,
+                    };
+                    let decision = if skip_all {
+                        Decision::Skip
+                    } else {
+                        ask(run, failure.clone()).await
+                    };
                     match decision {
                         Decision::Retry => continue,
                         Decision::Skip | Decision::SkipAll => {
@@ -162,7 +198,12 @@ async fn ask(run: &ScriptRun, failure: Failure) -> Decision {
         if run.cancel.load(Ordering::SeqCst) {
             break Decision::Stop;
         }
-        if let Some(d) = run.decision.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(d) = run
+            .decision
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             break d;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -193,13 +234,20 @@ struct Splitter {
 
 impl Splitter {
     fn new(driver: Driver) -> Self {
-        Self { driver, buf: String::new(), line: 1, prefix: 0 }
+        Self {
+            driver,
+            buf: String::new(),
+            line: 1,
+            prefix: 0,
+        }
     }
 
     fn feed(&mut self, text: &str) -> Vec<Piece> {
         self.buf.push_str(text);
         let mut stmts = self.statements();
-        let Some(last) = stmts.pop() else { return Vec::new() };
+        let Some(last) = stmts.pop() else {
+            return Vec::new();
+        };
         let pieces = self.pieces(&stmts);
         let cut = last.start.max(self.prefix);
         let consumed = &self.buf[self.prefix..cut];
@@ -212,7 +260,10 @@ impl Splitter {
         }
         let rest = self.buf[cut..].to_string();
         // Text before the kept statement can be a `DELIMITER` line: it is counted above.
-        let prefix = delimiter.filter(|d| d != ";").map(|d| format!("DELIMITER {d}\n")).unwrap_or_default();
+        let prefix = delimiter
+            .filter(|d| d != ";")
+            .map(|d| format!("DELIMITER {d}\n"))
+            .unwrap_or_default();
         self.prefix = prefix.len();
         self.buf = prefix + &rest;
         pieces
@@ -230,7 +281,10 @@ impl Splitter {
         stmts
             .iter()
             .filter(|s| s.start >= self.prefix)
-            .map(|s| Piece { text: s.text.clone(), line: self.line + self.buf[self.prefix..s.start].matches('\n').count() })
+            .map(|s| Piece {
+                text: s.text.clone(),
+                line: self.line + self.buf[self.prefix..s.start].matches('\n').count(),
+            })
             .collect()
     }
 
@@ -302,26 +356,52 @@ mod tests {
     #[test]
     fn pieces_split_like_the_whole_file() {
         let scripts = [
-            (Driver::Postgres, "CREATE TABLE t (s text);\nINSERT INTO t VALUES ('a;b');\n-- c;\nCREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql;\n/* x; */ SELECT 'ñandú';\n"),
-            (Driver::MySql, "CREATE TABLE t (a int);\nDELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND$$\nDELIMITER ;\nINSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);\n"),
-            (Driver::MsSql, "CREATE TABLE t (a int)\nGO\nDECLARE @x int = 1; INSERT INTO t VALUES (@x);\nGO\nSELECT 'GO;'\ngo\n"),
-            (Driver::Oracle, "CREATE TABLE t (a NUMBER);\nCREATE OR REPLACE PROCEDURE p IS\nBEGIN\n  IF 1 = 1 THEN NULL; END IF;\nEND;\n/\nINSERT INTO t VALUES (1);\n"),
-            (Driver::Sqlite, "CREATE TABLE a (x int);\nCREATE TRIGGER tr AFTER INSERT ON a BEGIN UPDATE a SET x = 1; DELETE FROM a WHERE x = 2; END;\nINSERT INTO a VALUES (1);\n"),
+            (
+                Driver::Postgres,
+                "CREATE TABLE t (s text);\nINSERT INTO t VALUES ('a;b');\n-- c;\nCREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql;\n/* x; */ SELECT 'ñandú';\n",
+            ),
+            (
+                Driver::MySql,
+                "CREATE TABLE t (a int);\nDELIMITER $$\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND$$\nDELIMITER ;\nINSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);\n",
+            ),
+            (
+                Driver::MsSql,
+                "CREATE TABLE t (a int)\nGO\nDECLARE @x int = 1; INSERT INTO t VALUES (@x);\nGO\nSELECT 'GO;'\ngo\n",
+            ),
+            (
+                Driver::Oracle,
+                "CREATE TABLE t (a NUMBER);\nCREATE OR REPLACE PROCEDURE p IS\nBEGIN\n  IF 1 = 1 THEN NULL; END IF;\nEND;\n/\nINSERT INTO t VALUES (1);\n",
+            ),
+            (
+                Driver::Sqlite,
+                "CREATE TABLE a (x int);\nCREATE TRIGGER tr AFTER INSERT ON a BEGIN UPDATE a SET x = 1; DELETE FROM a WHERE x = 2; END;\nINSERT INTO a VALUES (1);\n",
+            ),
         ];
         for (driver, script) in scripts {
             let expected = whole(script, driver);
             for size in 1..script.len() {
-                assert_eq!(run_in_pieces(script, driver, size), expected, "{driver:?} in pieces of {size}");
+                assert_eq!(
+                    run_in_pieces(script, driver, size),
+                    expected,
+                    "{driver:?} in pieces of {size}"
+                );
             }
         }
     }
 
     #[test]
     fn statements_keep_their_lines() {
-        let script = "CREATE TABLE t (a int);\n\nINSERT INTO t\nVALUES (1);\nDELIMITER //\nSELECT 2 //\n";
-        let lines: Vec<usize> = run_in_pieces(script, Driver::MySql, 7).iter().map(|p| p.line).collect();
+        let script =
+            "CREATE TABLE t (a int);\n\nINSERT INTO t\nVALUES (1);\nDELIMITER //\nSELECT 2 //\n";
+        let lines: Vec<usize> = run_in_pieces(script, Driver::MySql, 7)
+            .iter()
+            .map(|p| p.line)
+            .collect();
         assert_eq!(lines, [1, 3, 6]);
-        let sqlite = whole("CREATE TABLE a (x int);\nCREATE TRIGGER tr AFTER INSERT ON a BEGIN\n UPDATE a SET x = 1;\nEND;\nSELECT 1;", Driver::Sqlite);
+        let sqlite = whole(
+            "CREATE TABLE a (x int);\nCREATE TRIGGER tr AFTER INSERT ON a BEGIN\n UPDATE a SET x = 1;\nEND;\nSELECT 1;",
+            Driver::Sqlite,
+        );
         assert_eq!(sqlite.len(), 3, "{sqlite:?}");
         assert!(sqlite[1].text.ends_with("END"));
         assert_eq!(sqlite[2].line, 5);
@@ -356,7 +436,15 @@ mod tests {
         }
         task.await.unwrap();
         let p = state.snapshot();
-        assert_eq!((p.statements, p.stopped.as_deref(), p.bytes_done, p.bytes_total), (3001, None, script.len() as u64, script.len() as u64));
+        assert_eq!(
+            (
+                p.statements,
+                p.stopped.as_deref(),
+                p.bytes_done,
+                p.bytes_total
+            ),
+            (3001, None, script.len() as u64, script.len() as u64)
+        );
         let lines: Vec<usize> = p.failed.iter().map(|f| f.line).collect();
         assert_eq!(lines, [2, 3003]);
         assert_eq!(p.failed[0].file, "dump.sql");
@@ -370,7 +458,15 @@ mod tests {
         state.decide(Decision::Stop);
         task.await.unwrap();
         let p = state.snapshot();
-        assert_eq!((p.statements, p.failed.len(), p.failed[0].line, p.stopped.as_deref()), (0, 1, 1, Some(tr("Stopped"))));
+        assert_eq!(
+            (
+                p.statements,
+                p.failed.len(),
+                p.failed[0].line,
+                p.stopped.as_deref()
+            ),
+            (0, 1, 1, Some(tr("Stopped")))
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

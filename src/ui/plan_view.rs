@@ -31,58 +31,104 @@ pub fn show(ui: &mut Ui, plan: &PlanNode, salt: u64) -> bool {
         });
     });
     ui.add_space(4.0);
-    egui::ScrollArea::both().id_salt(("plan", salt)).auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new(("plan_grid", salt)).striped(true).spacing([18.0, 6.0]).show(ui, |ui| {
-            let header = |ui: &mut Ui, text: &str| ui.label(RichText::new(text).strong());
-            header(ui, tr("Operation"));
-            header(ui, tr("Object"));
-            header(ui, tr("Est. rows"));
-            if analyzed {
-                header(ui, tr("Actual rows"));
-                header(ui, tr("Time"));
-            }
-            header(ui, tr("Cost"));
-            header(ui, if analyzed { tr("Share of time") } else { tr("Share of cost") });
-            header(ui, tr("Details"));
-            ui.end_row();
-            for (depth, node) in rows {
-                let share = if total > 0.0 { node.own_weight(analyzed) / total } else { 0.0 };
-                let color = if share >= HEAVY { p.error } else if share >= NOTABLE { p.warn } else { p.text };
-                ui.horizontal(|ui| {
-                    ui.add_space(depth as f32 * 16.0);
-                    if depth > 0 {
-                        ui.label(RichText::new("└").color(p.muted));
+    egui::ScrollArea::both()
+        .id_salt(("plan", salt))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Grid::new(("plan_grid", salt))
+                .striped(true)
+                .spacing([18.0, 6.0])
+                .show(ui, |ui| {
+                    let header = |ui: &mut Ui, text: &str| ui.label(RichText::new(text).strong());
+                    header(ui, tr("Operation"));
+                    header(ui, tr("Object"));
+                    header(ui, tr("Est. rows"));
+                    if analyzed {
+                        header(ui, tr("Actual rows"));
+                        header(ui, tr("Time"));
                     }
-                    let op = RichText::new(&node.op).color(color);
-                    ui.label(if share >= NOTABLE { op.strong() } else { op });
-                });
-                ui.label(&node.object);
-                ui.label(opt(node.est_rows, number));
-                if analyzed {
-                    let actual = ui.label(opt(node.actual_rows, number));
-                    if let Some(loops) = node.loops.filter(|l| *l > 1.0) {
-                        actual.on_hover_text(trf("{loops} loops", &[("loops", &number(loops))]));
+                    header(ui, tr("Cost"));
+                    header(
+                        ui,
+                        if analyzed {
+                            tr("Share of time")
+                        } else {
+                            tr("Share of cost")
+                        },
+                    );
+                    header(ui, tr("Details"));
+                    ui.end_row();
+                    for (depth, node) in rows {
+                        let share = if total > 0.0 {
+                            node.own_weight(analyzed) / total
+                        } else {
+                            0.0
+                        };
+                        let color = if share >= HEAVY {
+                            p.error
+                        } else if share >= NOTABLE {
+                            p.warn
+                        } else {
+                            p.text
+                        };
+                        ui.horizontal(|ui| {
+                            ui.add_space(depth as f32 * 16.0);
+                            if depth > 0 {
+                                ui.label(RichText::new("└").color(p.muted));
+                            }
+                            let op = RichText::new(&node.op).color(color);
+                            ui.label(if share >= NOTABLE { op.strong() } else { op });
+                        });
+                        ui.label(&node.object);
+                        ui.label(opt(node.est_rows, number));
+                        if analyzed {
+                            let actual = ui.label(opt(node.actual_rows, number));
+                            if let Some(loops) = node.loops.filter(|l| *l > 1.0) {
+                                actual.on_hover_text(trf(
+                                    "{loops} loops",
+                                    &[("loops", &number(loops))],
+                                ));
+                            }
+                            ui.label(opt(node.time_ms, ms));
+                        }
+                        ui.label(opt(node.cost, number));
+                        ui.horizontal(|ui| {
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(80.0, 10.0), Sense::hover());
+                            ui.painter().rect_filled(rect, 3.0, p.grid);
+                            let mut fill = rect;
+                            fill.set_width(rect.width() * share.clamp(0.0, 1.0) as f32);
+                            ui.painter().rect_filled(
+                                fill,
+                                3.0,
+                                if share >= HEAVY {
+                                    p.error
+                                } else if share >= NOTABLE {
+                                    p.warn
+                                } else {
+                                    p.accent
+                                },
+                            );
+                            ui.label(
+                                RichText::new(format!("{:.0}%", share * 100.0))
+                                    .size(12.0)
+                                    .color(p.muted),
+                            );
+                        });
+                        if node.detail.is_empty() {
+                            ui.label("");
+                        } else {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&node.detail).size(12.0).color(p.muted),
+                                )
+                                .extend(),
+                            );
+                        }
+                        ui.end_row();
                     }
-                    ui.label(opt(node.time_ms, ms));
-                }
-                ui.label(opt(node.cost, number));
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(vec2(80.0, 10.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 3.0, p.grid);
-                    let mut fill = rect;
-                    fill.set_width(rect.width() * share.clamp(0.0, 1.0) as f32);
-                    ui.painter().rect_filled(fill, 3.0, if share >= HEAVY { p.error } else if share >= NOTABLE { p.warn } else { p.accent });
-                    ui.label(RichText::new(format!("{:.0}%", share * 100.0)).size(12.0).color(p.muted));
                 });
-                if node.detail.is_empty() {
-                    ui.label("");
-                } else {
-                    ui.add(egui::Label::new(RichText::new(&node.detail).size(12.0).color(p.muted)).extend());
-                }
-                ui.end_row();
-            }
         });
-    });
     as_text
 }
 
@@ -115,7 +161,11 @@ fn number(v: f64) -> String {
 }
 
 fn ms(v: f64) -> String {
-    if v >= 1000.0 { format!("{:.2} s", v / 1000.0) } else { format!("{v:.2} ms") }
+    if v >= 1000.0 {
+        format!("{:.2} s", v / 1000.0)
+    } else {
+        format!("{v:.2} ms")
+    }
 }
 
 #[cfg(test)]
@@ -141,25 +191,38 @@ mod tests {
               {"Node Type": "Hash", "Total Cost": 30.0, "Plan Rows": 10, "Actual Rows": 10, "Actual Total Time": 0.6, "Actual Loops": 1,
                "Plans": [{"Node Type": "Index Scan", "Relation Name": "customers", "Index Name": "customers_pkey", "Alias": "c", "Total Cost": 28.0, "Plan Rows": 10, "Actual Rows": 5, "Actual Total Time": 0.25, "Actual Loops": 2, "Index Cond": "(id < 100)"}]}
             ]}]}, "Execution Time": 14.6}]"#;
-        let rs = crate::db::ResultSet { columns: vec!["QUERY PLAN".into()], rows: vec![vec![Some(json.into())]], ..Default::default() };
+        let rs = crate::db::ResultSet {
+            columns: vec!["QUERY PLAN".into()],
+            rows: vec![vec![Some(json.into())]],
+            ..Default::default()
+        };
         let plan = crate::db::plan::detect(&rs).unwrap();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dialog-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         for dark in [true, false] {
             let mut first = true;
             let plan = plan.clone();
-            let mut h = egui_kittest::Harness::builder().with_size(vec2(1100.0, 300.0)).build_ui(move |ui| {
-                if std::mem::take(&mut first) {
-                    crate::ui::theme::install_fonts(ui.ctx());
-                    crate::ui::theme::apply(ui.ctx(), dark);
-                    return;
-                }
-                egui::CentralPanel::default().show(ui, |ui| {
-                    show(ui, &plan, 1);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(vec2(1100.0, 300.0))
+                .build_ui(move |ui| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        crate::ui::theme::apply(ui.ctx(), dark);
+                        return;
+                    }
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        show(ui, &plan, 1);
+                    });
                 });
-            });
             h.run_steps(4);
-            h.render().unwrap().save(dir.join(if dark { "plan_tree_dark.png" } else { "plan_tree_light.png" })).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(if dark {
+                    "plan_tree_dark.png"
+                } else {
+                    "plan_tree_light.png"
+                }))
+                .unwrap();
         }
     }
 }

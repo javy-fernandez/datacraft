@@ -16,7 +16,9 @@ use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde_json::{Value, json};
 
 use super::snowflake::http_error;
-use super::{Cell, ColumnInfo, ConnectionConfig, Driver, ObjectKind, ResultSet, SchemaInfo, TableInfo};
+use super::{
+    Cell, ColumnInfo, ConnectionConfig, Driver, ObjectKind, ResultSet, SchemaInfo, TableInfo,
+};
 use crate::i18n::{tr, trf};
 
 /// Time range of the data editor's query when the filter row doesn't give one.
@@ -39,7 +41,12 @@ pub struct InfluxSession {
 
 /// A `true`/`1`/`yes`/`on` driver property (`tls`, `tls_insecure`).
 fn flag(cfg: &ConnectionConfig, name: &str) -> bool {
-    cfg.property(name).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+    cfg.property(name).is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )
+    })
 }
 
 /// The server's address. A scheme typed in the host field (`https://influx.example.com`) wins
@@ -51,13 +58,22 @@ pub fn base_url(cfg: &ConnectionConfig) -> String {
         None => (flag(cfg, "tls"), host),
     };
     let host = if host.is_empty() { "localhost" } else { host };
-    let port = if cfg.port == 0 { Driver::InfluxDb.default_port() } else { cfg.port };
+    let port = if cfg.port == 0 {
+        Driver::InfluxDb.default_port()
+    } else {
+        cfg.port
+    };
     format!("{}://{host}:{port}", if tls { "https" } else { "http" })
 }
 
 /// A Flux string literal: `"…"` with `\`, `"` and the interpolation `${` escaped.
 pub fn flux_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace("${", "\\${"))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace("${", "\\${")
+    )
 }
 
 /// The error InfluxDB answered with (`{"code": "invalid", "message": "…"}`), or the HTTP status.
@@ -69,9 +85,17 @@ async fn check(resp: reqwest::Response) -> anyhow::Result<reqwest::Response> {
     let body = resp.text().await.unwrap_or_default();
     let message = serde_json::from_str::<Value>(&body)
         .ok()
-        .and_then(|v| v["message"].as_str().or_else(|| v["error"].as_str()).map(str::to_string))
+        .and_then(|v| {
+            v["message"]
+                .as_str()
+                .or_else(|| v["error"].as_str())
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| body.trim().chars().take(300).collect());
-    Err(anyhow!(trf("HTTP {status} from InfluxDB: {message}", &[("status", &status), ("message", &message)])))
+    Err(anyhow!(trf(
+        "HTTP {status} from InfluxDB: {message}",
+        &[("status", &status), ("message", &message)]
+    )))
 }
 
 impl InfluxSession {
@@ -89,7 +113,11 @@ impl InfluxSession {
             .tls_danger_accept_invalid_certs(flag(cfg, "tls_insecure"));
         // HTTPS through an SSH tunnel: the server's own name (for its certificate), resolved to
         // the tunnel's listener; the URL's port is the listener's.
-        if let Some(name) = cfg.tunnel_host.as_deref().filter(|_| base.starts_with("https://")) {
+        if let Some(name) = cfg
+            .tunnel_host
+            .as_deref()
+            .filter(|_| base.starts_with("https://"))
+        {
             base = format!("https://{name}:{}", cfg.port);
             builder = builder.resolve(name, std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port)));
         }
@@ -115,7 +143,9 @@ impl InfluxSession {
     }
 
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
-        self.http.get(format!("{}{path}", self.base)).header(AUTHORIZATION, format!("Token {}", self.token))
+        self.http
+            .get(format!("{}{path}", self.base))
+            .header(AUTHORIZATION, format!("Token {}", self.token))
     }
 
     /// `orgID` for an ID (16 hex digits), `org` for a name.
@@ -139,7 +169,10 @@ impl InfluxSession {
         }
         let orgs: Value = check(resp).await?.json().await.map_err(http_error)?;
         match orgs["orgs"].as_array().map(Vec::as_slice) {
-            Some([org]) => org["name"].as_str().map(str::to_string).ok_or_else(|| anyhow!(tr("Organization is required"))),
+            Some([org]) => org["name"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!(tr("Organization is required"))),
             _ => bail!(tr("Organization is required")),
         }
     }
@@ -154,10 +187,19 @@ impl InfluxSession {
         for page in 0.. {
             let offset = (page * BUCKET_PAGE).to_string();
             let limit = BUCKET_PAGE.to_string();
-            let req = self.get("/api/v2/buckets").query(&[self.org_param(), ("limit", &limit), ("offset", &offset)]);
+            let req = self.get("/api/v2/buckets").query(&[
+                self.org_param(),
+                ("limit", &limit),
+                ("offset", &offset),
+            ]);
             let body = self.json(req).await?;
             let buckets = body["buckets"].as_array().cloned().unwrap_or_default();
-            names.extend(buckets.iter().filter(|b| b["type"] != "system").filter_map(|b| b["name"].as_str().map(str::to_string)));
+            names.extend(
+                buckets
+                    .iter()
+                    .filter(|b| b["type"] != "system")
+                    .filter_map(|b| b["name"].as_str().map(str::to_string)),
+            );
             if buckets.len() < BUCKET_PAGE {
                 break;
             }
@@ -195,25 +237,41 @@ impl InfluxSession {
                 _ => self.flux_measurements().await?,
             }
         };
-        Ok(vec![SchemaInfo { name: self.bucket.clone(), tables }])
+        Ok(vec![SchemaInfo {
+            name: self.bucket.clone(),
+            tables,
+        }])
     }
 
     /// One InfluxQL request: measurements, tag keys and field keys (with types) of the bucket.
     /// These read the index, without a time range (SHOW MEASUREMENTS and SHOW FIELD KEYS take none).
     async fn v1_schema(&self) -> anyhow::Result<Vec<TableInfo>> {
-        let statements = self.influxql_raw("SHOW MEASUREMENTS; SHOW TAG KEYS; SHOW FIELD KEYS", usize::MAX).await?;
+        let statements = self
+            .influxql_raw(
+                "SHOW MEASUREMENTS; SHOW TAG KEYS; SHOW FIELD KEYS",
+                usize::MAX,
+            )
+            .await?;
         let rows = |i: usize| -> Vec<(String, Vec<Cell>)> {
             statements
                 .get(i)
                 .into_iter()
                 .flat_map(|st| &st.series)
-                .flat_map(|s| s.values.iter().map(|v| (s.name.clone(), v.iter().map(cell).collect())))
+                .flat_map(|s| {
+                    s.values
+                        .iter()
+                        .map(|v| (s.name.clone(), v.iter().map(cell).collect()))
+                })
                 .collect()
         };
         let first = |row: &[Cell]| row.first().cloned().flatten().unwrap_or_default();
         let mut tables: Vec<TableInfo> = rows(0)
             .into_iter()
-            .map(|(_, row)| TableInfo { name: first(&row), kind: ObjectKind::Table, columns: vec![time_column()] })
+            .map(|(_, row)| TableInfo {
+                name: first(&row),
+                kind: ObjectKind::Table,
+                columns: vec![time_column()],
+            })
             .collect();
         let mut add = |measurement: &str, column: ColumnInfo| {
             if let Some(t) = tables.iter_mut().find(|t| t.name == measurement) {
@@ -222,37 +280,84 @@ impl InfluxSession {
         };
         // Tags and time identify a point; fields may be missing from it.
         for (measurement, row) in rows(1) {
-            add(&measurement, ColumnInfo { name: first(&row), data_type: "tag".into(), nullable: false, primary_key: true });
+            add(
+                &measurement,
+                ColumnInfo {
+                    name: first(&row),
+                    data_type: "tag".into(),
+                    nullable: false,
+                    primary_key: true,
+                },
+            );
         }
         for (measurement, row) in rows(2) {
-            let data_type = row.get(1).cloned().flatten().unwrap_or_else(|| "field".into());
-            add(&measurement, ColumnInfo { name: first(&row), data_type, nullable: true, primary_key: false });
+            let data_type = row
+                .get(1)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| "field".into());
+            add(
+                &measurement,
+                ColumnInfo {
+                    name: first(&row),
+                    data_type,
+                    nullable: true,
+                    primary_key: false,
+                },
+            );
         }
         Ok(tables)
     }
 
     async fn flux_measurements(&self) -> anyhow::Result<Vec<TableInfo>> {
-        let script = format!("import \"influxdata/influxdb/schema\"\nschema.measurements(bucket: {})", flux_string(&self.bucket));
+        let script = format!(
+            "import \"influxdata/influxdb/schema\"\nschema.measurements(bucket: {})",
+            flux_string(&self.bucket)
+        );
         let sets = self.flux(&script, usize::MAX).await?;
         let mut names: Vec<String> = sets
             .iter()
-            .filter_map(|rs| rs.columns.iter().position(|c| c == "_value").map(|i| (rs, i)))
-            .flat_map(|(rs, i)| rs.rows.iter().filter_map(move |r| r.get(i).cloned().flatten()))
+            .filter_map(|rs| {
+                rs.columns
+                    .iter()
+                    .position(|c| c == "_value")
+                    .map(|i| (rs, i))
+            })
+            .flat_map(|(rs, i)| {
+                rs.rows
+                    .iter()
+                    .filter_map(move |r| r.get(i).cloned().flatten())
+            })
             .collect();
         names.sort();
         names.dedup();
-        Ok(names.into_iter().map(|name| TableInfo { name, kind: ObjectKind::Table, columns: vec![time_column()] }).collect())
+        Ok(names
+            .into_iter()
+            .map(|name| TableInfo {
+                name,
+                kind: ObjectKind::Table,
+                columns: vec![time_column()],
+            })
+            .collect())
     }
 
     /// Runs ONE script: Flux, or an InfluxQL statement against the current bucket.
-    pub async fn execute(&mut self, script: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute(
+        &mut self,
+        script: &str,
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let start = Instant::now();
         let statement = script.trim().trim_end_matches(';').trim().to_string();
         if statement.is_empty() {
             return Ok(Vec::new());
         }
         let mut results = if is_influxql(&statement) {
-            self.influxql_raw(&statement, max_rows).await?.into_iter().map(QlStatement::into_result).collect()
+            self.influxql_raw(&statement, max_rows)
+                .await?
+                .into_iter()
+                .map(QlStatement::into_result)
+                .collect()
         } else {
             self.flux(&statement, max_rows).await?
         };
@@ -321,8 +426,12 @@ impl InfluxSession {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let doc: Value = serde_json::from_str(&line)
-                    .map_err(|e| anyhow!(trf("Unreadable response from InfluxDB: {error}", &[("error", &e)])))?;
+                let doc: Value = serde_json::from_str(&line).map_err(|e| {
+                    anyhow!(trf(
+                        "Unreadable response from InfluxDB: {error}",
+                        &[("error", &e)]
+                    ))
+                })?;
                 if !results.add(&doc)? {
                     return Ok(results.statements);
                 }
@@ -335,7 +444,12 @@ impl InfluxSession {
 }
 
 fn time_column() -> ColumnInfo {
-    ColumnInfo { name: "_time".into(), data_type: "time".into(), nullable: false, primary_key: true }
+    ColumnInfo {
+        name: "_time".into(),
+        data_type: "time".into(),
+        nullable: false,
+        primary_key: true,
+    }
 }
 
 fn cell(v: &Value) -> Cell {
@@ -436,7 +550,12 @@ struct FluxTables {
 
 impl FluxTables {
     fn new(max_rows: usize) -> Self {
-        Self { max_rows, header: None, current: None, done: Vec::new() }
+        Self {
+            max_rows,
+            header: None,
+            current: None,
+            done: Vec::new(),
+        }
     }
 
     /// Takes one record; false once the grid being filled is full (reading can stop there).
@@ -457,20 +576,36 @@ impl FluxTables {
         }
         let has_result = header.get(1).is_some_and(|h| h == "result");
         let skip = if has_result { 2 } else { 1 }.min(header.len());
-        let result = if has_result { fields.get(1).cloned().unwrap_or_default() } else { String::new() };
+        let result = if has_result {
+            fields.get(1).cloned().unwrap_or_default()
+        } else {
+            String::new()
+        };
         let columns = &header[skip..];
         if !matches!(&self.current, Some((r, rs)) if *r == result && rs.columns == columns) {
             if let Some((_, rs)) = self.current.take() {
                 self.done.push(rs);
             }
-            self.current = Some((result, ResultSet { columns: columns.to_vec(), ..Default::default() }));
+            self.current = Some((
+                result,
+                ResultSet {
+                    columns: columns.to_vec(),
+                    ..Default::default()
+                },
+            ));
         }
-        let Some((_, rs)) = self.current.as_mut() else { return Ok(true) };
+        let Some((_, rs)) = self.current.as_mut() else {
+            return Ok(true);
+        };
         if rs.rows.len() >= self.max_rows {
             rs.truncated = true;
             return Ok(false);
         }
-        let mut row: Vec<Cell> = fields.into_iter().skip(skip).map(|v| (!v.is_empty()).then_some(v)).collect();
+        let mut row: Vec<Cell> = fields
+            .into_iter()
+            .skip(skip)
+            .map(|v| (!v.is_empty()).then_some(v))
+            .collect();
         row.resize(rs.columns.len(), None);
         rs.rows.push(row);
         Ok(true)
@@ -482,7 +617,10 @@ impl FluxTables {
             self.done.push(rs);
         }
         if self.done.is_empty() {
-            self.done.push(ResultSet { columns: vec!["result".into()], ..Default::default() });
+            self.done.push(ResultSet {
+                columns: vec!["result".into()],
+                ..Default::default()
+            });
         }
         self.done
     }
@@ -508,7 +646,11 @@ impl QlStatement {
     /// `GROUP BY`, then the columns.
     fn into_result(self) -> ResultSet {
         let several_names = self.series.windows(2).any(|w| w[0].name != w[1].name);
-        let mut tags: Vec<String> = self.series.iter().flat_map(|s| s.tags.iter().map(|(k, _)| k.clone())).collect();
+        let mut tags: Vec<String> = self
+            .series
+            .iter()
+            .flat_map(|s| s.tags.iter().map(|(k, _)| k.clone()))
+            .collect();
         tags.sort();
         tags.dedup();
         let mut columns: Vec<String> = Vec::new();
@@ -528,25 +670,42 @@ impl QlStatement {
         }
         let mut rows = Vec::with_capacity(self.rows);
         for s in &self.series {
-            let index: Vec<Option<usize>> = columns.iter().map(|c| s.columns.iter().position(|x| x == c)).collect();
+            let index: Vec<Option<usize>> = columns
+                .iter()
+                .map(|c| s.columns.iter().position(|x| x == c))
+                .collect();
             for v in &s.values {
                 let mut row: Vec<Cell> = Vec::with_capacity(head.len());
                 if several_names {
                     row.push(Some(s.name.clone()));
                 }
-                row.extend(tags.iter().map(|k| s.tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.clone())));
-                row.extend(index.iter().map(|i| i.and_then(|i| v.get(i)).and_then(cell)));
+                row.extend(
+                    tags.iter()
+                        .map(|k| s.tags.iter().find(|(t, _)| t == k).map(|(_, v)| v.clone())),
+                );
+                row.extend(
+                    index
+                        .iter()
+                        .map(|i| i.and_then(|i| v.get(i)).and_then(cell)),
+                );
                 rows.push(row);
             }
         }
-        ResultSet { columns: head, rows, truncated: self.truncated, ..Default::default() }
+        ResultSet {
+            columns: head,
+            rows,
+            truncated: self.truncated,
+            ..Default::default()
+        }
     }
 }
 
 /// An InfluxQL error. Before 2.4 a bucket has no v1 mapping unless one is created, and the
 /// server only says the database (or its retention policy) doesn't exist.
 fn ql_error(message: &str) -> anyhow::Error {
-    if message.starts_with("database not found") || message.starts_with("default retention policy not set") {
+    if message.starts_with("database not found")
+        || message.starts_with("default retention policy not set")
+    {
         return anyhow!(trf(
             "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.",
             &[("message", &message)]
@@ -564,7 +723,10 @@ struct QlResults {
 
 impl QlResults {
     fn new(max_rows: usize) -> Self {
-        Self { max_rows, statements: Vec::new() }
+        Self {
+            max_rows,
+            statements: Vec::new(),
+        }
     }
 
     /// Takes one JSON document; false once a statement reached `max_rows`.
@@ -585,22 +747,42 @@ impl QlResults {
                 let name = s["name"].as_str().unwrap_or_default().to_string();
                 let mut tags: Vec<(String, String)> = s["tags"]
                     .as_object()
-                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string())).collect())
+                    .map(|o| {
+                        o.iter()
+                            .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 tags.sort();
-                let columns: Vec<String> =
-                    s["columns"].as_array().into_iter().flatten().map(|c| c.as_str().unwrap_or_default().to_string()).collect();
-                let continues = st.series.last().is_some_and(|l| l.name == name && l.tags == tags && l.columns == columns);
+                let columns: Vec<String> = s["columns"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|c| c.as_str().unwrap_or_default().to_string())
+                    .collect();
+                let continues = st
+                    .series
+                    .last()
+                    .is_some_and(|l| l.name == name && l.tags == tags && l.columns == columns);
                 if !continues {
-                    st.series.push(QlSeries { name, tags, columns, values: Vec::new() });
+                    st.series.push(QlSeries {
+                        name,
+                        tags,
+                        columns,
+                        values: Vec::new(),
+                    });
                 }
-                let Some(target) = st.series.last_mut() else { continue };
+                let Some(target) = st.series.last_mut() else {
+                    continue;
+                };
                 for v in s["values"].as_array().into_iter().flatten() {
                     if st.rows >= self.max_rows {
                         st.truncated = true;
                         return Ok(false);
                     }
-                    target.values.push(v.as_array().cloned().unwrap_or_default());
+                    target
+                        .values
+                        .push(v.as_array().cloned().unwrap_or_default());
                     st.rows += 1;
                 }
             }
@@ -615,7 +797,9 @@ impl QlResults {
 
 /// InfluxQL's statements. A Flux script never starts with one of these words followed by a
 /// space (its calls take `(` and its assignments `=`).
-const INFLUXQL: [&str; 10] = ["select", "show", "explain", "drop", "delete", "create", "alter", "grant", "revoke", "kill"];
+const INFLUXQL: [&str; 10] = [
+    "select", "show", "explain", "drop", "delete", "create", "alter", "grant", "revoke", "kill",
+];
 
 /// The text after leading blanks and `//` / `--` comment lines.
 fn skip_comments(s: &str) -> &str {
@@ -628,7 +812,9 @@ fn skip_comments(s: &str) -> &str {
 
 fn first_word(s: &str) -> (&str, &str) {
     let s = skip_comments(s);
-    let end = s.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(s.len());
+    let end = s
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(s.len());
     s.split_at(end)
 }
 
@@ -724,8 +910,13 @@ fn flux_tokens(script: &str) -> Vec<Tok> {
 pub fn is_read_command(statement: &str) -> bool {
     if is_influxql(statement) {
         let (word, rest) = first_word(statement);
-        let into = flux_tokens(rest).iter().any(|t| matches!(t, Tok::Ident(w) if w.eq_ignore_ascii_case("into")));
-        return ["select", "show", "explain"].iter().any(|k| word.eq_ignore_ascii_case(k)) && !into;
+        let into = flux_tokens(rest)
+            .iter()
+            .any(|t| matches!(t, Tok::Ident(w) if w.eq_ignore_ascii_case("into")));
+        return ["select", "show", "explain"]
+            .iter()
+            .any(|k| word.eq_ignore_ascii_case(k))
+            && !into;
     }
     let tokens = flux_tokens(statement);
     // The names the imported packages go by: `import "experimental"` → `experimental`,
@@ -734,7 +925,9 @@ pub fn is_read_command(statement: &str) -> bool {
         .iter()
         .enumerate()
         .filter_map(|(i, t)| match (t, tokens.get(i + 1), tokens.get(i + 2)) {
-            (Tok::Ident(w), Some(Tok::Ident(alias)), Some(Tok::Str(_))) if w == "import" => Some(alias.as_str()),
+            (Tok::Ident(w), Some(Tok::Ident(alias)), Some(Tok::Str(_))) if w == "import" => {
+                Some(alias.as_str())
+            }
             (Tok::Ident(w), Some(Tok::Str(p)), _) if w == "import" => p.rsplit('/').next(),
             _ => None,
         })
@@ -763,7 +956,13 @@ pub fn is_read_command(statement: &str) -> bool {
 /// right side (`-1h` by default; a start such as `-7d` or `2026-10-01T00:00:00Z`, or
 /// `start: …, stop: …`), one row per series and time with a column per field, narrowed by the
 /// predicate on `r` from the left side (`r.host == "web-1" and r.usage > 50`), newest first.
-pub fn table_query(bucket: &str, measurement: &str, filter: &str, range: &str, max_rows: usize) -> String {
+pub fn table_query(
+    bucket: &str,
+    measurement: &str,
+    filter: &str,
+    range: &str,
+    max_rows: usize,
+) -> String {
     let range = range.trim();
     let range = if range.is_empty() {
         format!("start: {DEFAULT_RANGE}")
@@ -811,12 +1010,28 @@ mod tests {
     fn csv_records_survive_chunk_boundaries_and_quoted_line_breaks() {
         let body = ",result,table,_value\r\n,_result,0,\"a, \"\"b\"\"\r\nc\"\r\n\r\n,result,table,x\r\n,_result,1,2";
         let whole = records(&[body]);
-        assert_eq!(whole, [",result,table,_value", ",_result,0,\"a, \"\"b\"\"\r\nc\"", "", ",result,table,x", ",_result,1,2"]);
+        assert_eq!(
+            whole,
+            [
+                ",result,table,_value",
+                ",_result,0,\"a, \"\"b\"\"\r\nc\"",
+                "",
+                ",result,table,x",
+                ",_result,1,2"
+            ]
+        );
         // The same body cut at every byte gives the same records.
         for cut in 1..body.len() {
-            assert_eq!(records(&[&body[..cut], &body[cut..]]), whole, "cut at {cut}");
+            assert_eq!(
+                records(&[&body[..cut], &body[cut..]]),
+                whole,
+                "cut at {cut}"
+            );
         }
-        assert_eq!(split_fields(&whole[1]), ["", "_result", "0", "a, \"b\"\r\nc"]);
+        assert_eq!(
+            split_fields(&whole[1]),
+            ["", "_result", "0", "a, \"b\"\r\nc"]
+        );
     }
 
     fn flux(body: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
@@ -836,12 +1051,18 @@ mod tests {
         let sets = flux(body, 100).unwrap();
         assert_eq!(sets.len(), 3);
         assert_eq!(sets[0].columns, ["table", "_time", "_value", "host"]);
-        assert_eq!(sets[0].rows, [vec![Some("0".into()), Some("t1".into()), Some("1".into()), Some("a".into())], vec![
-            Some("1".into()),
-            Some("t2".into()),
-            None,
-            Some("b".into())
-        ]]);
+        assert_eq!(
+            sets[0].rows,
+            [
+                vec![
+                    Some("0".into()),
+                    Some("t1".into()),
+                    Some("1".into()),
+                    Some("a".into())
+                ],
+                vec![Some("1".into()), Some("t2".into()), None, Some("b".into())]
+            ]
+        );
         assert_eq!(sets[1].rows.len(), 1);
         // Another yield with the same columns is a grid of its own.
         assert_eq!(sets[2].rows, [vec![Some("0".into()), Some("5".into())]]);
@@ -849,7 +1070,11 @@ mod tests {
 
     #[test]
     fn flux_stops_at_max_rows_and_reports_errors() {
-        let sets = flux(",result,table,v\n,_result,0,1\n,_result,0,2\n,_result,0,3\n", 2).unwrap();
+        let sets = flux(
+            ",result,table,v\n,_result,0,1\n,_result,0,2\n,_result,0,3\n",
+            2,
+        )
+        .unwrap();
         assert_eq!((sets[0].rows.len(), sets[0].truncated), (2, true));
         let err = flux(",error,reference\n,\"runtime error: boom\",\n", 10).unwrap_err();
         assert!(err.to_string().contains("runtime error: boom"), "{err}");
@@ -873,7 +1098,14 @@ mod tests {
         let rs = r.statements.remove(0).into_result();
         assert_eq!(rs.columns, ["host", "time", "last"]);
         let s = |v: &str| Some(v.to_string());
-        assert_eq!(rs.rows, [vec![s("a"), s("t1"), s("1.5")], vec![s("b"), s("t1"), s("2")], vec![s("b"), s("t2"), None]]);
+        assert_eq!(
+            rs.rows,
+            [
+                vec![s("a"), s("t1"), s("1.5")],
+                vec![s("b"), s("t1"), s("2")],
+                vec![s("b"), s("t2"), None]
+            ]
+        );
 
         // SHOW TAG KEYS: one series per measurement, so the name is a column.
         let mut r = QlResults::new(1);
@@ -883,9 +1115,16 @@ mod tests {
         ]}]});
         assert!(!r.add(&doc).unwrap(), "stops at max_rows");
         let rs = r.statements.remove(0).into_result();
-        assert_eq!((rs.columns.as_slice(), rs.rows.len(), rs.truncated), (["tagKey".to_string()].as_slice(), 1, true));
+        assert_eq!(
+            (rs.columns.as_slice(), rs.rows.len(), rs.truncated),
+            (["tagKey".to_string()].as_slice(), 1, true)
+        );
 
-        let err = QlResults::new(10).add(&json!({"results": [{"statement_id": 0, "error": "not implemented: SELECT INTO"}]})).unwrap_err();
+        let err = QlResults::new(10)
+            .add(
+                &json!({"results": [{"statement_id": 0, "error": "not implemented: SELECT INTO"}]}),
+            )
+            .unwrap_err();
         assert!(err.to_string().contains("SELECT INTO"));
     }
 
@@ -894,33 +1133,59 @@ mod tests {
         assert!(is_influxql("SELECT * FROM cpu"));
         assert!(is_influxql("-- last values\nshow measurements"));
         assert!(!is_influxql("from(bucket: \"b\") |> range(start: -1h)"));
-        assert!(!is_influxql("import \"influxdata/influxdb/schema\"\nschema.measurements(bucket: \"b\")"));
+        assert!(!is_influxql(
+            "import \"influxdata/influxdb/schema\"\nschema.measurements(bucket: \"b\")"
+        ));
         assert!(!is_influxql("show = 1\nshow"));
         assert!(!is_influxql("// select x\nbuckets()"));
     }
 
     #[test]
     fn read_only_scripts() {
-        assert!(is_read_command("from(bucket: \"b\") |> range(start: -1h) |> filter(fn: (r) => r.to == \"x\")"));
+        assert!(is_read_command(
+            "from(bucket: \"b\") |> range(start: -1h) |> filter(fn: (r) => r.to == \"x\")"
+        ));
         assert!(is_read_command("SHOW TAG KEYS"));
         assert!(is_read_command("select * from cpu"));
         assert!(!is_read_command("select usage into cpu2 from cpu"));
         assert!(!is_read_command("DROP MEASUREMENT cpu"));
-        assert!(!is_read_command("from(bucket: \"a\") |> range(start: -1h) |> to(bucket: \"b\")"));
-        assert!(!is_read_command("import \"experimental\"\nfrom(bucket: \"a\") |> range(start: -1h) |> experimental.to (bucket: \"b\")"));
-        assert!(!is_read_command("import \"influxdata/influxdb\"\ninfluxdb.wideTo(bucket: \"b\")"));
-        assert!(!is_read_command("import h \"http\"\nh.post(url: \"http://x\")"));
+        assert!(!is_read_command(
+            "from(bucket: \"a\") |> range(start: -1h) |> to(bucket: \"b\")"
+        ));
+        assert!(!is_read_command(
+            "import \"experimental\"\nfrom(bucket: \"a\") |> range(start: -1h) |> experimental.to (bucket: \"b\")"
+        ));
+        assert!(!is_read_command(
+            "import \"influxdata/influxdb\"\ninfluxdb.wideTo(bucket: \"b\")"
+        ));
+        assert!(!is_read_command(
+            "import h \"http\"\nh.post(url: \"http://x\")"
+        ));
         assert!(!is_read_command("import \"contrib/sranka/telegram\""));
         // `to` called under another name.
-        assert!(!is_read_command("f = to\nfrom(bucket: \"a\") |> range(start: -1h) |> f(bucket: \"b\")"));
-        assert!(!is_read_command("w = (tables=<-, fn) => tables |> fn(bucket: \"b\")\nfrom(bucket: \"a\") |> w(fn: to)"));
-        assert!(!is_read_command("import e \"experimental\"\nf = e.to\nf(bucket: \"b\")"));
-        assert!(!is_read_command("import \"influxdata/influxdb\"\nf = influxdb.wideTo"));
+        assert!(!is_read_command(
+            "f = to\nfrom(bucket: \"a\") |> range(start: -1h) |> f(bucket: \"b\")"
+        ));
+        assert!(!is_read_command(
+            "w = (tables=<-, fn) => tables |> fn(bucket: \"b\")\nfrom(bucket: \"a\") |> w(fn: to)"
+        ));
+        assert!(!is_read_command(
+            "import e \"experimental\"\nf = e.to\nf(bucket: \"b\")"
+        ));
+        assert!(!is_read_command(
+            "import \"influxdata/influxdb\"\nf = influxdb.wideTo"
+        ));
         // `to:` as a parameter and `r.to` as a column only read.
-        assert!(is_read_command("import \"experimental\"\nexperimental.addDuration(d: 1h, to: now())"));
-        assert!(is_read_command("from(bucket: \"b\") |> range(start: -1h) |> map(fn: (r) => ({r with x: r.to}))"));
+        assert!(is_read_command(
+            "import \"experimental\"\nexperimental.addDuration(d: 1h, to: now())"
+        ));
+        assert!(is_read_command(
+            "from(bucket: \"b\") |> range(start: -1h) |> map(fn: (r) => ({r with x: r.to}))"
+        ));
         // Strings, comments and regular expressions don't count.
-        assert!(is_read_command("// |> to(bucket: \"b\")\nfrom(bucket: \"to(\") |> range(start: -1h) |> filter(fn: (r) => r.host =~ /\"to(/)"));
+        assert!(is_read_command(
+            "// |> to(bucket: \"b\")\nfrom(bucket: \"to(\") |> range(start: -1h) |> filter(fn: (r) => r.host =~ /\"to(/)"
+        ));
     }
 
     #[test]
@@ -934,7 +1199,10 @@ mod tests {
              |> drop(columns: [\"_start\", \"_stop\", \"_measurement\"])\n  |> group()\n  |> sort(columns: [\"_time\"], desc: true)\n  |> limit(n: 100)"
         );
         assert!(table_query("b", "m", "", "-7d", 5).contains("|> range(start: -7d)\n"));
-        assert!(table_query("b", "m", "", "start: -2d, stop: -1d", 5).contains("|> range(start: -2d, stop: -1d)\n"));
+        assert!(
+            table_query("b", "m", "", "start: -2d, stop: -1d", 5)
+                .contains("|> range(start: -2d, stop: -1d)\n")
+        );
     }
 
     #[test]
@@ -979,34 +1247,71 @@ mod live_tests {
         async fn new(big: usize) -> Option<Self> {
             let mut cfg = test_cfg()?;
             let s = InfluxSession::connect(&cfg).await.unwrap();
-            let orgs = s.json(s.get("/api/v2/orgs").query(&[s.org_param()])).await.unwrap();
+            let orgs = s
+                .json(s.get("/api/v2/orgs").query(&[s.org_param()]))
+                .await
+                .unwrap();
             let org_id = orgs["orgs"][0]["id"].as_str().unwrap().to_string();
             cfg.database = format!("dc_test_{}", uuid::Uuid::new_v4().simple());
             let created = s
-                .json(s.http.post(format!("{}/api/v2/buckets", s.base)).header(AUTHORIZATION, format!("Token {}", s.token)).json(
-                    &json!({ "orgID": org_id, "name": cfg.database, "retentionRules": [] }),
-                ))
+                .json(
+                    s.http
+                        .post(format!("{}/api/v2/buckets", s.base))
+                        .header(AUTHORIZATION, format!("Token {}", s.token))
+                        .json(
+                            &json!({ "orgID": org_id, "name": cfg.database, "retentionRules": [] }),
+                        ),
+                )
                 .await
                 .unwrap();
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
             let mut lines = vec![
-                format!("cpu,host=web-1,region=eu usage=12.5,cores=8i,ok=true {}", now - 120),
-                format!("cpu,host=web-1,region=eu usage=13.25,cores=8i,ok=false {}", now - 60),
-                format!("cpu,host=web\\ 2,region=us usage=99.0,cores=16i,ok=true {}", now - 60),
-                format!("log,app=api msg=\"a, \\\"quoted\\\" value\",level=\"warn\" {}", now - 30),
+                format!(
+                    "cpu,host=web-1,region=eu usage=12.5,cores=8i,ok=true {}",
+                    now - 120
+                ),
+                format!(
+                    "cpu,host=web-1,region=eu usage=13.25,cores=8i,ok=false {}",
+                    now - 60
+                ),
+                format!(
+                    "cpu,host=web\\ 2,region=us usage=99.0,cores=16i,ok=true {}",
+                    now - 60
+                ),
+                format!(
+                    "log,app=api msg=\"a, \\\"quoted\\\" value\",level=\"warn\" {}",
+                    now - 30
+                ),
             ];
-            lines.extend((0..big).map(|i| format!("big,series=s{} v={i}i {}", i % 50, now - 3000 + (i as u64 / 50))));
+            lines.extend((0..big).map(|i| {
+                format!(
+                    "big,series=s{} v={i}i {}",
+                    i % 50,
+                    now - 3000 + (i as u64 / 50)
+                )
+            }));
             let resp = s
                 .http
                 .post(format!("{}/api/v2/write", s.base))
                 .header(AUTHORIZATION, format!("Token {}", s.token))
-                .query(&[("orgID", org_id.as_str()), ("bucket", &cfg.database), ("precision", "s")])
+                .query(&[
+                    ("orgID", org_id.as_str()),
+                    ("bucket", &cfg.database),
+                    ("precision", "s"),
+                ])
                 .body(lines.join("\n"))
                 .send()
                 .await
                 .unwrap();
             check(resp).await.unwrap();
-            Some(Self { cfg, http: s.http, bucket_id: created["id"].as_str().unwrap().to_string() })
+            Some(Self {
+                cfg,
+                http: s.http,
+                bucket_id: created["id"].as_str().unwrap().to_string(),
+            })
         }
 
         async fn session(&self) -> InfluxSession {
@@ -1033,36 +1338,79 @@ mod live_tests {
     }
 
     fn column<'a>(rs: &'a ResultSet, name: &str) -> Vec<Option<&'a str>> {
-        let i = rs.columns.iter().position(|c| c == name).unwrap_or_else(|| panic!("no {name} in {:?}", rs.columns));
+        let i = rs
+            .columns
+            .iter()
+            .position(|c| c == name)
+            .unwrap_or_else(|| panic!("no {name} in {:?}", rs.columns));
         rs.rows.iter().map(|r| r[i].as_deref()).collect()
     }
 
     #[tokio::test]
     #[ignore]
     async fn explorer() {
-        let Some(f) = Fixture::new(0).await else { return };
+        let Some(f) = Fixture::new(0).await else {
+            return;
+        };
         let mut s = f.session().await;
         let buckets = s.list_databases().await.unwrap();
         assert!(buckets.contains(&f.cfg.database), "{buckets:?}");
-        assert!(!buckets.iter().any(|b| b.starts_with('_')), "system buckets: {buckets:?}");
+        assert!(
+            !buckets.iter().any(|b| b.starts_with('_')),
+            "system buckets: {buckets:?}"
+        );
         assert!(s.server_version().await.unwrap().starts_with("InfluxDB 2."));
 
         let schema = s.introspect().await.unwrap();
         assert_eq!(schema[0].name, f.cfg.database);
         let describe = |name: &str| -> Vec<String> {
             let t = schema[0].tables.iter().find(|t| t.name == name).unwrap();
-            t.columns.iter().map(|c| format!("{} {}{}", c.name, c.data_type, if c.primary_key { " key" } else { "" })).collect()
+            t.columns
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{} {}{}",
+                        c.name,
+                        c.data_type,
+                        if c.primary_key { " key" } else { "" }
+                    )
+                })
+                .collect()
         };
         if has_v1(&s).await {
-            assert_eq!(describe("cpu"), ["_time time key", "host tag key", "region tag key", "cores integer", "ok boolean", "usage float"]);
-            assert_eq!(describe("log"), ["_time time key", "app tag key", "level string", "msg string"]);
+            assert_eq!(
+                describe("cpu"),
+                [
+                    "_time time key",
+                    "host tag key",
+                    "region tag key",
+                    "cores integer",
+                    "ok boolean",
+                    "usage float"
+                ]
+            );
+            assert_eq!(
+                describe("log"),
+                [
+                    "_time time key",
+                    "app tag key",
+                    "level string",
+                    "msg string"
+                ]
+            );
         } else {
             // Before 2.4, without a mapping: the names, through Flux.
             assert_eq!(describe("cpu"), ["_time time key"]);
         }
 
         // Without a v1 mapping the names still come, through Flux.
-        let names: Vec<String> = s.flux_measurements().await.unwrap().into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = s
+            .flux_measurements()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
         assert_eq!(names, ["cpu", "log"]);
         f.drop_bucket().await;
     }
@@ -1070,7 +1418,9 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn flux_and_influxql() {
-        let Some(f) = Fixture::new(0).await else { return };
+        let Some(f) = Fixture::new(0).await else {
+            return;
+        };
         let mut s = f.session().await;
         let b = flux_string(&f.cfg.database);
 
@@ -1080,21 +1430,45 @@ mod live_tests {
              from(bucket: {b}) |> range(start: -1h) |> filter(fn: (r) => r._field == \"msg\") |> keep(columns: [\"_value\"]) |> yield(name: \"m\")"
         );
         let sets = s.execute(&script, 100).await.unwrap();
-        assert_eq!(sets.len(), 2, "{:?}", sets.iter().map(|r| &r.columns).collect::<Vec<_>>());
-        let (usage, msg) = if sets[0].columns.contains(&"host".to_string()) { (&sets[0], &sets[1]) } else { (&sets[1], &sets[0]) };
-        let mut hosts: Vec<_> = column(usage, "host").into_iter().zip(column(usage, "_value")).collect();
+        assert_eq!(
+            sets.len(),
+            2,
+            "{:?}",
+            sets.iter().map(|r| &r.columns).collect::<Vec<_>>()
+        );
+        let (usage, msg) = if sets[0].columns.contains(&"host".to_string()) {
+            (&sets[0], &sets[1])
+        } else {
+            (&sets[1], &sets[0])
+        };
+        let mut hosts: Vec<_> = column(usage, "host")
+            .into_iter()
+            .zip(column(usage, "_value"))
+            .collect();
         hosts.sort();
-        assert_eq!(hosts, [(Some("web 2"), Some("99")), (Some("web-1"), Some("13.25"))]);
+        assert_eq!(
+            hosts,
+            [(Some("web 2"), Some("99")), (Some("web-1"), Some("13.25"))]
+        );
         assert_eq!(column(msg, "_value"), [Some("a, \"quoted\" value")]);
         assert!(sets.iter().all(|rs| rs.statement == script));
 
         // InfluxQL against the current bucket, one row per GROUP BY series.
-        let ql = s.execute("SELECT last(usage) AS usage FROM cpu WHERE time > now() - 1h GROUP BY host", 100).await;
+        let ql = s
+            .execute(
+                "SELECT last(usage) AS usage FROM cpu WHERE time > now() - 1h GROUP BY host",
+                100,
+            )
+            .await;
         if has_v1(&s).await {
             let rs = ql.unwrap().remove(0);
             assert_eq!(rs.columns, ["host", "time", "usage"]);
             assert_eq!(column(&rs, "host"), [Some("web 2"), Some("web-1")]);
-            let err = s.execute("SELECT usage INTO cpu2 FROM cpu", 10).await.unwrap_err().to_string();
+            let err = s
+                .execute("SELECT usage INTO cpu2 FROM cpu", 10)
+                .await
+                .unwrap_err()
+                .to_string();
             assert!(err.contains("SELECT INTO"), "{err}");
         } else {
             let err = ql.unwrap_err().to_string();
@@ -1102,9 +1476,20 @@ mod live_tests {
         }
 
         // Errors carry InfluxDB's message.
-        let err = s.execute("from(bucket: \"x\" |> range(start: -1h)", 10).await.unwrap_err().to_string();
-        assert!(err.contains("HTTP 400") && err.contains("compilation failed"), "{err}");
-        let err = s.execute("from(bucket: \"no_such_bucket\") |> range(start: -1h)", 10).await.unwrap_err().to_string();
+        let err = s
+            .execute("from(bucket: \"x\" |> range(start: -1h)", 10)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("HTTP 400") && err.contains("compilation failed"),
+            "{err}"
+        );
+        let err = s
+            .execute("from(bucket: \"no_such_bucket\") |> range(start: -1h)", 10)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no_such_bucket"), "{err}");
         // No rows: an empty grid, not a command.
         let rs = s.execute(&format!("from(bucket: {b}) |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"none\")"), 10).await.unwrap();
@@ -1115,15 +1500,24 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn large_results_stop_at_max_rows() {
-        let Some(f) = Fixture::new(20_000).await else { return };
+        let Some(f) = Fixture::new(20_000).await else {
+            return;
+        };
         let mut s = f.session().await;
         let b = flux_string(&f.cfg.database);
         let rs = s.execute(&format!("from(bucket: {b}) |> range(start: -1h) |> filter(fn: (r) => r._measurement == \"big\")"), 100).await.unwrap();
-        assert_eq!((rs.len(), rs[0].rows.len(), rs[0].truncated), (1, 100, true));
+        assert_eq!(
+            (rs.len(), rs[0].rows.len(), rs[0].truncated),
+            (1, 100, true)
+        );
         if has_v1(&s).await {
             let rs = s.execute("SELECT * FROM big", 100).await.unwrap().remove(0);
             assert_eq!((rs.rows.len(), rs.truncated), (100, true));
-            let rs = s.execute("SELECT count(v) FROM big", 100).await.unwrap().remove(0);
+            let rs = s
+                .execute("SELECT count(v) FROM big", 100)
+                .await
+                .unwrap()
+                .remove(0);
             assert_eq!(column(&rs, "count"), [Some("20000")]);
         }
         f.drop_bucket().await;
@@ -1132,9 +1526,18 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn data_editor_and_dispatch() {
-        let Some(f) = Fixture::new(0).await else { return };
+        let Some(f) = Fixture::new(0).await else {
+            return;
+        };
         let mut s = Session::connect(&f.cfg).await.unwrap();
-        let q = crate::app::table_query(Driver::InfluxDb, &f.cfg.database, "cpu", "r.host == \"web-1\"", "", 100);
+        let q = crate::app::table_query(
+            Driver::InfluxDb,
+            &f.cfg.database,
+            "cpu",
+            "r.host == \"web-1\"",
+            "",
+            100,
+        );
         let rs = s.execute(&q, 100).await.unwrap().remove(0);
         for c in ["_time", "host", "region", "cores", "ok", "usage"] {
             assert!(rs.columns.iter().any(|x| x == c), "{c} in {:?}", rs.columns);
@@ -1143,7 +1546,14 @@ mod live_tests {
         assert_eq!(column(&rs, "usage"), [Some("13.25"), Some("12.5")]);
         assert_eq!(column(&rs, "ok"), [Some("false"), Some("true")]);
         // A range of its own in the filter row's right side.
-        let q = crate::app::table_query(Driver::InfluxDb, &f.cfg.database, "cpu", "", "start: -90s", 100);
+        let q = crate::app::table_query(
+            Driver::InfluxDb,
+            &f.cfg.database,
+            "cpu",
+            "",
+            "start: -90s",
+            100,
+        );
         assert_eq!(s.execute(&q, 100).await.unwrap()[0].rows.len(), 2);
 
         assert!(s.apply_changes(&["x".into()]).await.is_err());
@@ -1159,15 +1569,30 @@ mod live_tests {
         cfg.password = "not-a-token".into();
         // Also when the organization is looked up: the token is the problem.
         cfg.user = String::new();
-        let err = InfluxSession::connect(&cfg).await.err().unwrap().to_string();
+        let err = InfluxSession::connect(&cfg)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
         assert!(err.contains("HTTP 401"), "{err}");
         cfg.user = "some-org".into();
-        let err = InfluxSession::connect(&cfg).await.err().unwrap().to_string();
+        let err = InfluxSession::connect(&cfg)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
         assert!(err.contains("HTTP 401"), "{err}");
         let Some(mut cfg) = test_cfg() else { return };
         cfg.user = "no-such-org".into();
-        let err = InfluxSession::connect(&cfg).await.err().unwrap().to_string();
-        assert!(err.contains("HTTP 404") && err.contains("no-such-org"), "{err}");
+        let err = InfluxSession::connect(&cfg)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            err.contains("HTTP 404") && err.contains("no-such-org"),
+            "{err}"
+        );
     }
 
     /// HTTPS (DATACRAFT_INFLUX_TLS_URL, an `https://` URL; skipped without it). The certificate
@@ -1176,7 +1601,10 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn tls() {
-        let (Some(mut cfg), Ok(url)) = (test_cfg(), std::env::var("DATACRAFT_INFLUX_TLS_URL")) else { return };
+        let (Some(mut cfg), Ok(url)) = (test_cfg(), std::env::var("DATACRAFT_INFLUX_TLS_URL"))
+        else {
+            return;
+        };
         assert!(crate::db::url::apply_jdbc_url(&mut cfg, &url), "{url}");
         assert!(flag(&cfg, "tls"), "an https URL turns TLS on");
         let trusted = std::env::var("DATACRAFT_INFLUX_TLS_TRUSTED").is_ok_and(|v| v == "1");
@@ -1191,7 +1619,9 @@ mod live_tests {
             }
         }
         cfg.set_property("tls_insecure", "true");
-        let mut s = InfluxSession::connect(&cfg).await.expect("HTTPS without the certificate check");
+        let mut s = InfluxSession::connect(&cfg)
+            .await
+            .expect("HTTPS without the certificate check");
         assert!(s.server_version().await.is_some());
         // Plain HTTP doesn't talk to the HTTPS port.
         cfg.set_property("tls", "");

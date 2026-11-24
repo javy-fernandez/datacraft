@@ -24,11 +24,20 @@ impl DataCraftApp {
         let Some(target) = self.startup_table.take_if(|t| t.connection == conn) else {
             return;
         };
-        self.open_table(&TableRef { conn, db: target.database, schema: target.schema, table: target.table });
+        self.open_table(&TableRef {
+            conn,
+            db: target.database,
+            schema: target.schema,
+            table: target.table,
+        });
     }
 
     pub(super) fn cancel_startup_table(&mut self, conn: ConnId) {
-        if self.startup_table.as_ref().is_some_and(|target| target.connection == conn) {
+        if self
+            .startup_table
+            .as_ref()
+            .is_some_and(|target| target.connection == conn)
+        {
             self.startup_table = None;
         }
     }
@@ -42,10 +51,15 @@ impl DataCraftApp {
             return;
         }
         let extension = crate::table_shortcut::extension();
-        if let Some(path) =
-            rfd::FileDialog::new().add_filter(tr("Table shortcut"), &[extension]).set_file_name(format!("{}.{}", table.table, extension)).save_file()
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(tr("Table shortcut"), &[extension])
+            .set_file_name(format!("{}.{}", table.table, extension))
+            .save_file()
         {
-            self.worker.send(Request::TableShortcut { path, target: Target::from(&table) });
+            self.worker.send(Request::TableShortcut {
+                path,
+                target: Target::from(&table),
+            });
         }
     }
 }
@@ -60,10 +74,21 @@ mod tests {
         app.start_table_shortcut(Target::from(&table));
         assert!(app.startup_table.is_none());
         assert_eq!(app.consoles[app.active].conn, Some(table.conn));
-        assert_eq!(app.consoles[app.active].db.as_deref(), Some(table.db.as_str()));
-        assert_eq!(app.consoles[app.active].table.as_ref().unwrap().table, table.table);
+        assert_eq!(
+            app.consoles[app.active].db.as_deref(),
+            Some(table.db.as_str())
+        );
+        assert_eq!(
+            app.consoles[app.active].table.as_ref().unwrap().table,
+            table.table
+        );
         let before = app.consoles.len();
-        app.start_table_shortcut(Target { connection: 999, database: "main".into(), schema: "main".into(), table: "notes".into() });
+        app.start_table_shortcut(Target {
+            connection: 999,
+            database: "main".into(),
+            schema: "main".into(),
+            table: "notes".into(),
+        });
         assert!(app.startup_table.is_none());
         assert_eq!(app.consoles.len(), before);
         app.startup_table = Some(Target::from(&table));
@@ -74,10 +99,17 @@ mod tests {
     #[test]
     fn startup_connection_failure_cannot_open_on_later_manual_success() {
         let (mut app, table) = super::super::tests::table_menu_app(Driver::Sqlite, false);
-        app.conns[0].cfg.file_path = std::env::temp_dir().join(format!("dc-missing-startup-{}.db", uuid::Uuid::new_v4())).to_string_lossy().into_owned();
+        app.conns[0].cfg.file_path = std::env::temp_dir()
+            .join(format!("dc-missing-startup-{}.db", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .into_owned();
         app.start_table_shortcut(Target::from(&table));
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        while Instant::now() < deadline && app.conn(7).is_some_and(|connection| connection.status == ConnStatus::Connecting) {
+        while Instant::now() < deadline
+            && app
+                .conn(7)
+                .is_some_and(|connection| connection.status == ConnStatus::Connecting)
+        {
             app.handle_responses();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -97,16 +129,18 @@ mod tests {
         app.start_table_shortcut(Target::from(&table));
         assert!(app.ask_password.is_some());
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
-            move |ui, app: &mut DataCraftApp| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    return;
-                }
-                app.dialogs(ui.ctx());
-            },
-            app,
-        );
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(900.0, 700.0))
+            .build_ui_state(
+                move |ui, app: &mut DataCraftApp| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    app.dialogs(ui.ctx());
+                },
+                app,
+            );
         harness.run_steps(3);
         harness.get_by_label("Cancel").click();
         harness.run_steps(2);
@@ -132,7 +166,12 @@ mod tests {
         app.disconnect(7);
         assert!(app.startup_table.is_none());
         app.startup_table = Some(Target::from(&table));
-        app.start_table_shortcut(Target { connection: 999, database: "main".into(), schema: "main".into(), table: "notes".into() });
+        app.start_table_shortcut(Target {
+            connection: 999,
+            database: "main".into(),
+            schema: "main".into(),
+            table: "notes".into(),
+        });
         assert!(app.startup_table.is_none());
     }
 }

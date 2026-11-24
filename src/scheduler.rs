@@ -37,8 +37,13 @@ pub fn run_background() -> anyhow::Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let path = database_path()?;
-    let lock =
-        std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.with_extension("lock")).context("open scheduler lock")?;
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_extension("lock"))
+        .context("open scheduler lock")?;
     // The GUI may briefly acquire the same lock while checking whether the scheduler is running.
     let mut acquired = false;
     for _ in 0..20 {
@@ -72,14 +77,21 @@ pub fn run_background() -> anyhow::Result<()> {
                     unregister_failed = true;
                 }
                 if !unregister_failed && active.load(Ordering::SeqCst) == 0 {
-                    let deadline = cleanup_deadline.get_or_insert_with(|| std::time::Instant::now() + Duration::from_secs(10));
+                    let deadline = cleanup_deadline
+                        .get_or_insert_with(|| std::time::Instant::now() + Duration::from_secs(10));
                     if execution::active_sessions() != 0 && std::time::Instant::now() < *deadline {
                         drop(_control);
-                        waiter.wait(Some(deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_millis(1))))?;
+                        waiter.wait(Some(
+                            deadline
+                                .saturating_duration_since(std::time::Instant::now())
+                                .max(Duration::from_millis(1)),
+                        ))?;
                         continue;
                     }
                     if execution::active_sessions() != 0 {
-                        eprintln!("timed-out SQL sessions did not finish cleanup before scheduler shutdown");
+                        eprintln!(
+                            "timed-out SQL sessions did not finish cleanup before scheduler shutdown"
+                        );
                     }
                     control::Waiter::clear(&path)?;
                     drop(lock); // Release the instance before a waiting GUI can re-enable it.
@@ -108,36 +120,49 @@ pub fn run_background() -> anyhow::Result<()> {
             let worker_active = Arc::clone(&active);
             let worker_waiter = Arc::clone(&waiter);
             let path = path.clone();
-            let spawned = std::thread::Builder::new().name("sql-scheduled-job".into()).spawn(move || {
-                let (failed, message) = match std::panic::catch_unwind(|| execute(&job, Arc::clone(&worker_waiter))) {
-                    Ok(Ok(destination)) => (false, destination.unwrap_or_default()),
-                    Ok(Err(error)) => (true, format!("{error:#}")),
-                    Err(_) => (true, "Scheduled task stopped unexpectedly".into()),
-                };
-                loop {
-                    match Store::open(&path).and_then(|mut store| store.complete(run_id, now(), failed, &message)) {
-                        Ok(()) => break,
-                        Err(error) => {
-                            eprintln!("could not record SQL job result: {error:#}");
-                            std::thread::sleep(Duration::from_secs(10));
+            let spawned = std::thread::Builder::new()
+                .name("sql-scheduled-job".into())
+                .spawn(move || {
+                    let (failed, message) = match std::panic::catch_unwind(|| {
+                        execute(&job, Arc::clone(&worker_waiter))
+                    }) {
+                        Ok(Ok(destination)) => (false, destination.unwrap_or_default()),
+                        Ok(Err(error)) => (true, format!("{error:#}")),
+                        Err(_) => (true, "Scheduled task stopped unexpectedly".into()),
+                    };
+                    loop {
+                        match Store::open(&path)
+                            .and_then(|mut store| store.complete(run_id, now(), failed, &message))
+                        {
+                            Ok(()) => break,
+                            Err(error) => {
+                                eprintln!("could not record SQL job result: {error:#}");
+                                std::thread::sleep(Duration::from_secs(10));
+                            }
                         }
                     }
-                }
-                worker_active.fetch_sub(1, Ordering::SeqCst);
-                if let Err(error) = worker_waiter.notify() {
-                    eprintln!("could not wake scheduler: {error:#}");
-                }
-            });
+                    worker_active.fetch_sub(1, Ordering::SeqCst);
+                    if let Err(error) = worker_waiter.notify() {
+                        eprintln!("could not wake scheduler: {error:#}");
+                    }
+                });
             if let Err(error) = spawned {
                 active.fetch_sub(1, Ordering::SeqCst);
-                store.finish(run_id, now(), Some(&format!("Could not start SQL task: {error}")))?;
+                store.finish(
+                    run_id,
+                    now(),
+                    Some(&format!("Could not start SQL task: {error}")),
+                )?;
             }
             continue;
         }
         let timeout = if unregister_failed {
             Some(Duration::from_secs(10))
         } else if capacity {
-            next.map(|next| Duration::from_secs(next.saturating_sub(now()).max(1) as u64).min(Duration::from_secs(86_400)))
+            next.map(|next| {
+                Duration::from_secs(next.saturating_sub(now()).max(1) as u64)
+                    .min(Duration::from_secs(86_400))
+            })
         } else {
             None
         };
@@ -172,7 +197,12 @@ pub struct Store(Connection);
 #[cfg(unix)]
 fn create_store_file(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path) {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
         Ok(file) => drop(file),
         // Closing another descriptor to an existing SQLite file drops this process's POSIX locks.
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -187,7 +217,8 @@ impl Store {
         if path != Path::new(":memory:") {
             create_store_file(path)?;
         }
-        let mut db = Connection::open(path).with_context(|| format!("open schedule database {}", path.display()))?;
+        let mut db = Connection::open(path)
+            .with_context(|| format!("open schedule database {}", path.display()))?;
         db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -213,7 +244,11 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS runs_job ON runs(job_id, id DESC);",
         )?;
-        let has_backup: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('jobs') WHERE name='backup_json')", [], |row| row.get(0))?;
+        let has_backup: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('jobs') WHERE name='backup_json')",
+            [],
+            |row| row.get(0),
+        )?;
         if !has_backup {
             tx.execute("ALTER TABLE jobs ADD COLUMN backup_json TEXT", [])?;
         }
@@ -231,8 +266,15 @@ impl Store {
 
     pub fn runs(&self, job_id: i64) -> anyhow::Result<Vec<Run>> {
         let mut stmt = self.0.prepare("SELECT id, job_id, started, finished, status, message FROM runs WHERE job_id = ?1 ORDER BY id DESC LIMIT 100")?;
-        let rows = stmt
-            .query_map([job_id], |row| Ok(Run { id: row.get(0)?, started: row.get(2)?, finished: row.get(3)?, status: row.get(4)?, message: row.get(5)? }))?;
+        let rows = stmt.query_map([job_id], |row| {
+            Ok(Run {
+                id: row.get(0)?,
+                started: row.get(2)?,
+                finished: row.get(3)?,
+                status: row.get(4)?,
+                message: row.get(5)?,
+            })
+        })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -243,8 +285,12 @@ impl Store {
         let backup = job.backup.as_ref().map(serde_json::to_string).transpose()?;
         // Older daemons only understand SQL; a backup must fail harmlessly there.
         let sql = if backup.is_some() { "" } else { &job.sql };
-        let next_run = now.checked_add(job.interval_seconds).context("interval is too large")?;
-        let tx = self.0.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let next_run = now
+            .checked_add(job.interval_seconds)
+            .context("interval is too large")?;
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let id = if job.id == 0 {
             tx.execute("INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", params![job.name, connection, job.database, sql, job.interval_seconds, job.enabled, next_run, backup])?;
             tx.last_insert_rowid()
@@ -269,19 +315,28 @@ impl Store {
 
     /// Prevent future runs without interrupting a statement already sent to a database.
     pub fn pause(&self, id: i64) -> anyhow::Result<()> {
-        if self.0.execute("UPDATE jobs SET enabled=0 WHERE id=?1", [id])? != 1 {
+        if self
+            .0
+            .execute("UPDATE jobs SET enabled=0 WHERE id=?1", [id])?
+            != 1
+        {
             bail!("Job no longer exists");
         }
         Ok(())
     }
 
     pub fn pause_all(&self) -> anyhow::Result<()> {
-        self.0.execute("UPDATE jobs SET enabled=0 WHERE enabled=1", [])?;
+        self.0
+            .execute("UPDATE jobs SET enabled=0 WHERE enabled=1", [])?;
         Ok(())
     }
 
     pub fn has_enabled(&self) -> anyhow::Result<bool> {
-        Ok(self.0.query_row("SELECT EXISTS(SELECT 1 FROM jobs WHERE enabled=1)", [], |row| row.get(0))?)
+        Ok(self.0.query_row(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE enabled=1)",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     fn next_due(&self) -> anyhow::Result<Option<i64>> {
@@ -294,15 +349,25 @@ impl Store {
 
     /// Claim and advance in one transaction. Missed intervals are skipped, never replayed.
     pub fn claim_due(&mut self, now: i64) -> anyhow::Result<Option<(Job, i64)>> {
-        let tx = self.0.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let job = tx.query_row("SELECT id, name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json FROM jobs WHERE enabled=1 AND next_run<=?1 AND NOT EXISTS (SELECT 1 FROM runs WHERE job_id=jobs.id AND status='running') ORDER BY next_run, id LIMIT 1", [now], read_job).optional()?;
         let Some(job) = job else {
             tx.commit()?;
             return Ok(None);
         };
-        let next = now.checked_add(job.interval_seconds).context("next run time overflow")?;
-        tx.execute("UPDATE jobs SET next_run=?1 WHERE id=?2", params![next, job.id])?;
-        tx.execute("INSERT INTO runs(job_id, started, status) VALUES (?1, ?2, 'running')", params![job.id, now])?;
+        let next = now
+            .checked_add(job.interval_seconds)
+            .context("next run time overflow")?;
+        tx.execute(
+            "UPDATE jobs SET next_run=?1 WHERE id=?2",
+            params![next, job.id],
+        )?;
+        tx.execute(
+            "INSERT INTO runs(job_id, started, status) VALUES (?1, ?2, 'running')",
+            params![job.id, now],
+        )?;
         let run_id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(Some((job, run_id)))
@@ -312,11 +377,21 @@ impl Store {
         self.complete(run_id, now, error.is_some(), error.unwrap_or(""))
     }
 
-    fn complete(&mut self, run_id: i64, now: i64, failed: bool, message: &str) -> anyhow::Result<()> {
+    fn complete(
+        &mut self,
+        run_id: i64,
+        now: i64,
+        failed: bool,
+        message: &str,
+    ) -> anyhow::Result<()> {
         let status = if failed { "failed" } else { "succeeded" };
-        let tx = self.0.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed =
-            tx.execute("UPDATE runs SET finished=?1, status=?2, message=?3 WHERE id=?4 AND status='running'", params![now, status, message, run_id])?;
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE runs SET finished=?1, status=?2, message=?3 WHERE id=?4 AND status='running'",
+            params![now, status, message, run_id],
+        )?;
         if changed != 1 {
             bail!("Run is no longer active");
         }
@@ -338,11 +413,16 @@ impl Store {
 }
 
 fn validate(job: &Job, now: i64) -> anyhow::Result<()> {
-    if job.name.trim().is_empty() || (job.backup.is_none() && job.sql.trim().is_empty()) || job.interval_seconds <= 0 || job.connection == 0 {
+    if job.name.trim().is_empty()
+        || (job.backup.is_none() && job.sql.trim().is_empty())
+        || job.interval_seconds <= 0
+        || job.connection == 0
+    {
         bail!("A name, data source, task and a positive interval are required");
     }
     i64::try_from(job.connection).context("connection ID is too large")?;
-    now.checked_add(job.interval_seconds).context("interval is too large")?;
+    now.checked_add(job.interval_seconds)
+        .context("interval is too large")?;
     Ok(())
 }
 
@@ -351,10 +431,21 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
     let backup = backup
         .map(|json| serde_json::from_str(&json))
         .transpose()
-        .map_err(|error| rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error)))?;
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     let connection: i64 = row.get(2)?;
-    let connection =
-        u64::try_from(connection).map_err(|error| rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Integer, Box::new(error)))?;
+    let connection = u64::try_from(connection).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })?;
     Ok(Job {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -374,7 +465,10 @@ mod tests {
 
     #[test]
     fn next_deadline_is_a_read_only_query_and_pausing_keeps_running_history() {
-        let path = std::env::temp_dir().join(format!("datacraft-deadline-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-deadline-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let mut store = Store::open(&path).unwrap();
         let mut task = job();
         task.interval_seconds = 60;
@@ -404,10 +498,17 @@ mod tests {
         let mut task = job();
         task.database = "OTHER".into();
         task.backup = Some(backup::ScheduledBackup::new(crate::db::Driver::Oracle));
-        let error = execute_with_config(&task, cfg.clone()).unwrap_err().to_string();
+        let error = execute_with_config(&task, cfg.clone())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("saved connection service"), "{error}");
         task.database = "XE".into();
-        assert!(execute_with_config(&task, cfg).unwrap_err().to_string().contains("Save the data source password"));
+        assert!(
+            execute_with_config(&task, cfg)
+                .unwrap_err()
+                .to_string()
+                .contains("Save the data source password")
+        );
     }
 
     fn job() -> Job {
@@ -429,7 +530,8 @@ mod tests {
         use crate::db::{ConnectionConfig, Driver};
         use std::sync::mpsc;
 
-        let root = std::env::temp_dir().join(format!("datacraft-scheduler-gate-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("datacraft-scheduler-gate-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("source.sqlite");
         let other = root.join("other.sqlite");
@@ -457,7 +559,10 @@ mod tests {
             let (attempted, attempt) = mpsc::channel();
             workers.push(std::thread::spawn(move || {
                 let gate = sqlite_gate(&cfg).unwrap().unwrap();
-                assert!(matches!(gate.try_lock(), Err(std::sync::TryLockError::WouldBlock)));
+                assert!(matches!(
+                    gate.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
                 attempted.send(()).unwrap();
                 let _held = gate.lock().unwrap();
                 entered.send(()).unwrap();
@@ -488,7 +593,10 @@ mod tests {
     fn sqlite_gate_rejects_missing_files_and_does_not_inspect_other_drivers() {
         use crate::db::{ConnectionConfig, Driver};
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
-        cfg.file_path = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()).to_string_lossy().into_owned();
+        cfg.file_path = std::env::temp_dir()
+            .join(uuid::Uuid::new_v4().to_string())
+            .to_string_lossy()
+            .into_owned();
         assert!(sqlite_gate(&cfg).is_err());
         cfg.driver = Driver::Postgres;
         assert!(sqlite_gate(&cfg).unwrap().is_none());
@@ -497,17 +605,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn initializing_an_existing_store_file_preserves_active_sqlite_locks() {
-        let root = std::env::temp_dir().join(format!("datacraft-scheduler-lock-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("datacraft-scheduler-lock-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("scheduler.sqlite");
         let store = Store::open(&path).unwrap();
         store.0.execute_batch("BEGIN").unwrap();
-        store.0.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get::<_, i64>(0)).unwrap();
+        store
+            .0
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get::<_, i64>(0))
+            .unwrap();
 
         // Probe the initialization boundary before a second SQLite connection can reacquire locks.
         create_store_file(&path).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "scheduler::tests::sqlite_lock_probe", "--ignored", "--nocapture"])
+            .args([
+                "--exact",
+                "scheduler::tests::sqlite_lock_probe",
+                "--ignored",
+                "--nocapture",
+            ])
             .env("DATACRAFT_TEST_SCHEDULER_LOCK_PROBE", &path)
             .output()
             .unwrap();
@@ -526,10 +643,23 @@ mod tests {
     #[test]
     #[ignore = "internal child process lock probe"]
     fn sqlite_lock_probe() {
-        let path = std::path::PathBuf::from(std::env::var_os("DATACRAFT_TEST_SCHEDULER_LOCK_PROBE").unwrap());
+        let path = std::path::PathBuf::from(
+            std::env::var_os("DATACRAFT_TEST_SCHEDULER_LOCK_PROBE").unwrap(),
+        );
         assert!(path.is_file());
-        assert!(path.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));
-        assert!(path.parent().unwrap().file_name().unwrap().to_string_lossy().starts_with("datacraft-scheduler-lock-"));
+        assert!(
+            path.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        assert!(
+            path.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("datacraft-scheduler-lock-")
+        );
         let connection = Connection::open(&path).unwrap();
         connection.busy_timeout(Duration::ZERO).unwrap();
         let result = connection.execute_batch("BEGIN EXCLUSIVE");
@@ -551,7 +681,10 @@ mod tests {
 
     #[test]
     fn legacy_jobs_and_history_migrate_without_changes() {
-        let path = std::env::temp_dir().join(format!("datacraft-scheduler-migration-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-migration-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let legacy = Connection::open(&path).unwrap();
         legacy.execute_batch(
             "CREATE TABLE jobs(id INTEGER PRIMARY KEY, name TEXT NOT NULL, connection INTEGER NOT NULL, database_name TEXT NOT NULL, sql_text TEXT NOT NULL, interval_seconds INTEGER NOT NULL, enabled INTEGER NOT NULL, next_run INTEGER NOT NULL);
@@ -572,7 +705,12 @@ mod tests {
             let runs = store.runs(7).unwrap();
             assert_eq!(runs[0].id, 9);
             assert_eq!(runs[0].message, "original error");
-            let payload: Option<String> = store.0.query_row("SELECT backup_json FROM jobs WHERE id=7", [], |row| row.get(0)).unwrap();
+            let payload: Option<String> = store
+                .0
+                .query_row("SELECT backup_json FROM jobs WHERE id=7", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
             assert_eq!(payload, None);
         }
         assert_eq!(Store::open(&path).unwrap().jobs().unwrap().len(), 1);
@@ -590,15 +728,31 @@ mod tests {
         task.id = id;
         task.sql = "DELETE FROM important_data".into();
         store.save(&task, 0).unwrap();
-        let sql: String = store.0.query_row("SELECT sql_text FROM jobs WHERE id=?1", [id], |row| row.get(0)).unwrap();
-        assert!(sql.is_empty(), "old daemons must never execute stale SQL from backup jobs");
+        let sql: String = store
+            .0
+            .query_row("SELECT sql_text FROM jobs WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            sql.is_empty(),
+            "old daemons must never execute stale SQL from backup jobs"
+        );
         let (claimed, run) = store.claim_due(10).unwrap().unwrap();
         assert_eq!(claimed.backup, task.backup);
-        store.complete(run, 11, false, "backup destination").unwrap();
+        store
+            .complete(run, 11, false, "backup destination")
+            .unwrap();
         let runs = store.runs(id).unwrap();
         assert_eq!(runs[0].status, "succeeded");
         assert_eq!(runs[0].message, "backup destination");
-        store.0.execute("UPDATE jobs SET backup_json='not valid JSON' WHERE id=?1", [id]).unwrap();
+        store
+            .0
+            .execute(
+                "UPDATE jobs SET backup_json='not valid JSON' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
         assert!(store.jobs().is_err());
         assert!(store.claim_due(20).is_err());
     }
@@ -606,11 +760,15 @@ mod tests {
     #[test]
     fn repeated_sqlite_backups_preserve_snapshots_on_read_only_sources() {
         use crate::db::{ConnectionConfig, Driver};
-        let root = std::env::temp_dir().join(format!("datacraft-scheduler-backup-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-backup-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("source.sqlite");
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES(1)").unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES(1)")
+            .unwrap();
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
         cfg.read_only = true;
@@ -627,9 +785,18 @@ mod tests {
         assert_ne!(first, second);
         for (destination, value) in [(&first, 1), (&second, 2)] {
             let snapshot = Connection::open(destination).unwrap();
-            assert_eq!(snapshot.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), value);
+            assert_eq!(
+                snapshot
+                    .query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                value
+            );
         }
-        assert_eq!(db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
         backup.folder = root.join("missing").to_string_lossy().into_owned();
         task.backup = Some(backup);
         assert!(execute_with_config(&task, cfg.clone()).is_err());
@@ -720,9 +887,13 @@ mod tests {
     #[test]
     fn sql_tasks_preserve_sqlite_trigger_bodies() {
         use crate::db::{ConnectionConfig, Driver};
-        let path = std::env::temp_dir().join(format!("datacraft-scheduler-trigger-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-trigger-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE records(value INTEGER); CREATE TABLE audit(value INTEGER)").unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); CREATE TABLE audit(value INTEGER)")
+            .unwrap();
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
         let mut task = job();
@@ -734,8 +905,13 @@ mod tests {
             .into();
 
         let result = execute_with_config(&task, cfg);
-        let values: Vec<i64> =
-            db.prepare("SELECT value FROM audit ORDER BY value").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        let values: Vec<i64> = db
+            .prepare("SELECT value FROM audit ORDER BY value")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
         drop(db);
         std::fs::remove_file(path).unwrap();
 
@@ -754,16 +930,23 @@ mod tests {
             task.sql = "SELECT '--'; UPDATE records SET value = 2;".into();
 
             let error = execute_with_config(&task, cfg).unwrap_err();
-            assert!(format!("{error:#}").contains("A read-only data source cannot run"), "{driver:?}: {error:#}");
+            assert!(
+                format!("{error:#}").contains("A read-only data source cannot run"),
+                "{driver:?}: {error:#}"
+            );
         }
     }
 
     #[test]
     fn sql_tasks_stop_at_errors_beyond_the_preview_row_limit() {
         use crate::db::{ConnectionConfig, Driver};
-        let path = std::env::temp_dir().join(format!("datacraft-scheduler-late-error-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-late-error-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES (1)").unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES (1)")
+            .unwrap();
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
         let mut task = job();
@@ -773,7 +956,9 @@ mod tests {
             .into();
 
         let result = execute_with_config(&task, cfg);
-        let value: i64 = db.query_row("SELECT value FROM records", [], |row| row.get(0)).unwrap();
+        let value: i64 = db
+            .query_row("SELECT value FROM records", [], |row| row.get(0))
+            .unwrap();
         drop(db);
         std::fs::remove_file(path).unwrap();
 
@@ -785,19 +970,31 @@ mod tests {
     #[test]
     fn executes_sql_and_refuses_writes_on_read_only_connections() {
         use crate::db::{ConnectionConfig, Driver};
-        let path = std::env::temp_dir().join(format!("datacraft-scheduler-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES (1)").unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES (1)")
+            .unwrap();
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
         let mut task = job();
         task.sql = "UPDATE records SET value = value + 1".into();
         cfg.read_only = true;
         assert!(execute_with_config(&task, cfg.clone()).is_err());
-        assert_eq!(db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(
+            db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
         cfg.read_only = false;
         execute_with_config(&task, cfg).unwrap();
-        assert_eq!(db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

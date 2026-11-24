@@ -72,7 +72,11 @@ impl SshSettings {
 
     /// "user@bastion" (with the port when it isn't 22), for messages.
     pub fn describe(&self) -> String {
-        let at = if self.user.trim().is_empty() { String::new() } else { format!("{}@", self.user.trim()) };
+        let at = if self.user.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{}@", self.user.trim())
+        };
         match self.port() {
             22 => format!("{at}{}", self.host()),
             port => format!("{at}{}:{port}", self.host()),
@@ -110,10 +114,18 @@ static TUNNELS: LazyLock<Mutex<HashMap<u64, Weak<Tunnel>>>> = LazyLock::new(Defa
 
 /// The database's address as the bastion reaches it.
 fn destination(cfg: &ConnectionConfig) -> anyhow::Result<(String, u16)> {
-    if cfg.driver == Driver::MongoDb && super::mongo::connection_string(cfg).starts_with("mongodb+srv://") {
-        bail!(tr("A mongodb+srv address can't go through an SSH tunnel: use the host and port of a server"));
+    if cfg.driver == Driver::MongoDb
+        && super::mongo::connection_string(cfg).starts_with("mongodb+srv://")
+    {
+        bail!(tr(
+            "A mongodb+srv address can't go through an SSH tunnel: use the host and port of a server"
+        ));
     }
-    let port = if cfg.port == 0 { cfg.driver.default_port() } else { cfg.port };
+    let port = if cfg.port == 0 {
+        cfg.driver.default_port()
+    } else {
+        cfg.port
+    };
     Ok((bare_host(&cfg.host).to_string(), port))
 }
 
@@ -155,7 +167,9 @@ pub async fn private(cfg: &ConnectionConfig) -> anyhow::Result<Tunnel> {
 
 async fn open(settings: &SshSettings, to: (String, u16)) -> anyhow::Result<Tunnel> {
     // Connecting first reports a wrong host, key or password now, not at the first query.
-    let ssh = Arc::new(tokio::sync::Mutex::new(Some(Arc::new(connect(settings).await?))));
+    let ssh = Arc::new(tokio::sync::Mutex::new(Some(Arc::new(
+        connect(settings).await?,
+    ))));
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let settings = settings.clone();
@@ -195,18 +209,31 @@ async fn forward(
                 }
             }
         };
-        match handle.channel_open_direct_tcpip(to.0.as_str(), u32::from(to.1), "127.0.0.1", u32::from(local_port)).await {
+        match handle
+            .channel_open_direct_tcpip(
+                to.0.as_str(),
+                u32::from(to.1),
+                "127.0.0.1",
+                u32::from(local_port),
+            )
+            .await
+        {
             Ok(c) => {
                 channel = Some(c);
                 break;
             }
             Err(e) if attempt == 1 || !handle.is_closed() => {
-                bail!(trf("The SSH server could not reach {host}:{port}: {error}", &[("host", &to.0), ("port", &to.1), ("error", &e)]))
+                bail!(trf(
+                    "The SSH server could not reach {host}:{port}: {error}",
+                    &[("host", &to.0), ("port", &to.1), ("error", &e)]
+                ))
             }
             Err(_) => {}
         }
     }
-    let mut remote = channel.ok_or_else(|| anyhow!(tr("The SSH connection was closed")))?.into_stream();
+    let mut remote = channel
+        .ok_or_else(|| anyhow!(tr("The SSH connection was closed")))?
+        .into_stream();
     tokio::io::copy_bidirectional(&mut stream, &mut remote).await?;
     Ok(())
 }
@@ -226,22 +253,45 @@ async fn connect(s: &SshSettings) -> anyhow::Result<Handle> {
         ..Default::default()
     });
     let refused = Arc::new(Mutex::new(None));
-    let handler = Client { host: host.to_string(), port, refused: refused.clone() };
-    let mut handle = match tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, (host, port), handler)).await {
-        Err(_) => bail!(trf("Timed out connecting to the SSH server {host}:{port}", &[("host", &host), ("port", &port)])),
+    let handler = Client {
+        host: host.to_string(),
+        port,
+        refused: refused.clone(),
+    };
+    let mut handle = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect(config, (host, port), handler),
+    )
+    .await
+    {
+        Err(_) => bail!(trf(
+            "Timed out connecting to the SSH server {host}:{port}",
+            &[("host", &host), ("port", &port)]
+        )),
         Ok(Err(e)) => {
             if let Some(reason) = refused.lock().unwrap().take() {
                 return Err(reason);
             }
-            bail!(trf("Could not connect to the SSH server {host}:{port}: {error}", &[("host", &host), ("port", &port), ("error", &e)]))
+            bail!(trf(
+                "Could not connect to the SSH server {host}:{port}: {error}",
+                &[("host", &host), ("port", &port), ("error", &e)]
+            ))
         }
         Ok(Ok(h)) => h,
     };
     let signed_in = tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, s))
         .await
-        .map_err(|_| anyhow!(trf("Timed out signing in to the SSH server {host}", &[("host", &host)])))??;
+        .map_err(|_| {
+            anyhow!(trf(
+                "Timed out signing in to the SSH server {host}",
+                &[("host", &host)]
+            ))
+        })??;
     if !signed_in {
-        bail!(trf("The SSH server {host} refused to sign in {user}", &[("host", &host), ("user", &s.user.trim())]));
+        bail!(trf(
+            "The SSH server {host} refused to sign in {user}",
+            &[("host", &host), ("user", &s.user.trim())]
+        ));
     }
     Ok(handle)
 }
@@ -250,7 +300,10 @@ async fn connect(s: &SshSettings) -> anyhow::Result<Handle> {
 async fn authenticate(handle: &mut Handle, s: &SshSettings) -> anyhow::Result<bool> {
     let user = s.user.trim();
     match s.auth {
-        SshAuth::Password => Ok(handle.authenticate_password(user, s.password.as_str()).await?.success()),
+        SshAuth::Password => Ok(handle
+            .authenticate_password(user, s.password.as_str())
+            .await?
+            .success()),
         SshAuth::KeyPair => {
             let file = key_path(&s.key_file);
             if s.key_file.trim().is_empty() {
@@ -258,15 +311,29 @@ async fn authenticate(handle: &mut Handle, s: &SshSettings) -> anyhow::Result<bo
             }
             let passphrase = (!s.passphrase.is_empty()).then_some(s.passphrase.as_str());
             let key = russh::keys::load_secret_key(&file, passphrase).map_err(|e| match e {
-                russh::keys::Error::KeyIsEncrypted => anyhow!(tr("The SSH private key is protected by a passphrase: enter it")),
+                russh::keys::Error::KeyIsEncrypted => anyhow!(tr(
+                    "The SSH private key is protected by a passphrase: enter it"
+                )),
                 russh::keys::Error::IO(io) => {
-                    anyhow!(trf("Could not read the SSH private key {file}: {error}", &[("file", &file.display()), ("error", &io)]))
+                    anyhow!(trf(
+                        "Could not read the SSH private key {file}: {error}",
+                        &[("file", &file.display()), ("error", &io)]
+                    ))
                 }
-                other if passphrase.is_some() => anyhow!(trf("Could not open the SSH private key: {error} (is the passphrase right?)", &[("error", &other)])),
-                other => anyhow!(trf("Could not open the SSH private key: {error}", &[("error", &other)])),
+                other if passphrase.is_some() => anyhow!(trf(
+                    "Could not open the SSH private key: {error} (is the passphrase right?)",
+                    &[("error", &other)]
+                )),
+                other => anyhow!(trf(
+                    "Could not open the SSH private key: {error}",
+                    &[("error", &other)]
+                )),
             })?;
             let hash = handle.best_supported_rsa_hash().await?.flatten();
-            Ok(handle.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await?.success())
+            Ok(handle
+                .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+                .await?
+                .success())
         }
         SshAuth::Agent => agent_sign_in(handle, user).await,
     }
@@ -275,7 +342,10 @@ async fn authenticate(handle: &mut Handle, s: &SshSettings) -> anyhow::Result<bo
 /// `~/…` is the home folder, as in OpenSSH.
 fn key_path(file: &str) -> PathBuf {
     let file = file.trim();
-    match (file.strip_prefix("~/").or_else(|| file.strip_prefix("~\\")), dirs::home_dir()) {
+    match (
+        file.strip_prefix("~/").or_else(|| file.strip_prefix("~\\")),
+        dirs::home_dir(),
+    ) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(file),
     }
@@ -283,7 +353,9 @@ fn key_path(file: &str) -> PathBuf {
 
 #[cfg(unix)]
 async fn agent_sign_in(handle: &mut Handle, user: &str) -> anyhow::Result<bool> {
-    let agent = AgentClient::connect_env().await.map_err(|_| anyhow!(tr("No SSH agent is running (SSH_AUTH_SOCK is not set)")))?;
+    let agent = AgentClient::connect_env()
+        .await
+        .map_err(|_| anyhow!(tr("No SSH agent is running (SSH_AUTH_SOCK is not set)")))?;
     sign_in_with_agent(handle, user, agent).await
 }
 
@@ -293,7 +365,11 @@ async fn agent_sign_in(handle: &mut Handle, user: &str) -> anyhow::Result<bool> 
     if let Ok(agent) = AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
         return sign_in_with_agent(handle, user, agent).await;
     }
-    let agent = AgentClient::connect_pageant().await.map_err(|_| anyhow!(tr("No SSH agent is running (OpenSSH Authentication Agent or Pageant)")))?;
+    let agent = AgentClient::connect_pageant().await.map_err(|_| {
+        anyhow!(tr(
+            "No SSH agent is running (OpenSSH Authentication Agent or Pageant)"
+        ))
+    })?;
     sign_in_with_agent(handle, user, agent).await
 }
 
@@ -310,7 +386,11 @@ async fn sign_in_with_agent<R: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let hash = handle.best_supported_rsa_hash().await?.flatten();
     for identity in identities {
         let key = identity.public_key().into_owned();
-        if handle.authenticate_publickey_with(user, key, hash, &mut agent).await.is_ok_and(|r| r.success()) {
+        if handle
+            .authenticate_publickey_with(user, key, hash, &mut agent)
+            .await
+            .is_ok_and(|r| r.success())
+        {
             return Ok(true);
         }
     }
@@ -331,7 +411,10 @@ struct Client {
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
         let key = match key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
             PublicKeyOrCertificate::Certificate(cert) => PublicKey::from(cert.public_key().clone()),
@@ -347,7 +430,8 @@ impl client::Handler for Client {
 }
 
 /// Server keys seen but not trusted yet, by host and port.
-static UNKNOWN: LazyLock<Mutex<HashMap<(String, u16), PublicKey>>> = LazyLock::new(Default::default);
+static UNKNOWN: LazyLock<Mutex<HashMap<(String, u16), PublicKey>>> =
+    LazyLock::new(Default::default);
 
 pub fn fingerprint(key: &PublicKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
@@ -359,7 +443,10 @@ fn known_hosts_files() -> Vec<PathBuf> {
     if let Some(file) = tests::KNOWN_HOSTS.lock().unwrap().clone() {
         return vec![file];
     }
-    let mut files: Vec<PathBuf> = dirs::home_dir().map(|h| h.join(".ssh").join("known_hosts")).into_iter().collect();
+    let mut files: Vec<PathBuf> = dirs::home_dir()
+        .map(|h| h.join(".ssh").join("known_hosts"))
+        .into_iter()
+        .collect();
     files.push(datacraft_known_hosts());
     files
 }
@@ -377,18 +464,29 @@ fn datacraft_known_hosts() -> PathBuf {
 fn check_host_key(host: &str, port: u16, key: &PublicKey, files: &[PathBuf]) -> anyhow::Result<()> {
     for file in files {
         // A file that can't be read (missing, or with a key type it doesn't know) is skipped.
-        let Ok(known) = russh::keys::known_hosts::known_host_keys_path(host, port, file) else { continue };
+        let Ok(known) = russh::keys::known_hosts::known_host_keys_path(host, port, file) else {
+            continue;
+        };
         if known.iter().any(|(_, k)| k.key_data() == key.key_data()) {
             return Ok(());
         }
         if let Some((line, old)) = known.iter().find(|(_, k)| k.algorithm() == key.algorithm()) {
             bail!(trf(
                 "The SSH server {host} has a different key than before: {old} was trusted, now it is {new}. If the server was reinstalled, remove line {line} of {file}",
-                &[("host", &host), ("old", &fingerprint(old)), ("new", &fingerprint(key)), ("line", &line), ("file", &file.display())]
+                &[
+                    ("host", &host),
+                    ("old", &fingerprint(old)),
+                    ("new", &fingerprint(key)),
+                    ("line", &line),
+                    ("file", &file.display())
+                ]
             ));
         }
     }
-    UNKNOWN.lock().unwrap().insert((host.to_string(), port), key.clone());
+    UNKNOWN
+        .lock()
+        .unwrap()
+        .insert((host.to_string(), port), key.clone());
     bail!(trf(
         "The SSH server {host} is not trusted yet. Its key is {fingerprint}: check it, then choose Trust in the data source's SSH tab",
         &[("host", &host), ("fingerprint", &fingerprint(key))]
@@ -397,23 +495,36 @@ fn check_host_key(host: &str, port: u16, key: &PublicKey, files: &[PathBuf]) -> 
 
 /// The fingerprint of the key the bastion showed and that isn't trusted yet.
 pub fn unknown_key(s: &SshSettings) -> Option<String> {
-    UNKNOWN.lock().unwrap().get(&(s.host().to_string(), s.port())).map(fingerprint)
+    UNKNOWN
+        .lock()
+        .unwrap()
+        .get(&(s.host().to_string(), s.port()))
+        .map(fingerprint)
 }
 
 /// Trusts the key the bastion showed: it goes to DataCraft's `ssh_known_hosts`.
 pub fn trust(s: &SshSettings) -> anyhow::Result<()> {
-    let key = UNKNOWN.lock().unwrap().remove(&(s.host().to_string(), s.port())).ok_or_else(|| anyhow!(tr("Test the connection first")))?;
-    russh::keys::known_hosts::learn_known_hosts_path(s.host(), s.port(), &key, datacraft_known_hosts())?;
+    let key = UNKNOWN
+        .lock()
+        .unwrap()
+        .remove(&(s.host().to_string(), s.port()))
+        .ok_or_else(|| anyhow!(tr("Test the connection first")))?;
+    russh::keys::known_hosts::learn_known_hosts_path(
+        s.host(),
+        s.port(),
+        &key,
+        datacraft_known_hosts(),
+    )?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use russh::Channel;
     use russh::keys::PrivateKey;
     use russh::keys::ssh_key::private::Ed25519Keypair;
     use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session as ServerSession};
-    use russh::Channel;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// The known hosts file of the end-to-end test, instead of the user's.
@@ -423,8 +534,10 @@ mod tests {
         russh::keys::parse_public_key_base64(line.split(' ').nth(1).unwrap()).unwrap()
     }
 
-    const ED_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFYt3+wLax7smKipHBpACNp0QkTx5I3tOdNsz1XbCUuf";
-    const ED_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILw6T0013JNbmIcLlRrqUZ29R+h373hBqwizbG8QIHqI";
+    const ED_A: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFYt3+wLax7smKipHBpACNp0QkTx5I3tOdNsz1XbCUuf";
+    const ED_B: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILw6T0013JNbmIcLlRrqUZ29R+h373hBqwizbG8QIHqI";
 
     #[test]
     fn known_unknown_and_changed_keys() {
@@ -432,24 +545,44 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let openssh = dir.join("known_hosts");
         let ours = dir.join("ssh_known_hosts");
-        std::fs::write(&openssh, format!("bastion.example {ED_A}\n[other.example]:2222 {ED_A}\n")).unwrap();
+        std::fs::write(
+            &openssh,
+            format!("bastion.example {ED_A}\n[other.example]:2222 {ED_A}\n"),
+        )
+        .unwrap();
         let files = [openssh.clone(), dir.join("missing"), ours.clone()];
 
         assert!(check_host_key("bastion.example", 22, &key(ED_A), &files).is_ok());
         assert!(check_host_key("other.example", 2222, &key(ED_A), &files).is_ok());
 
         // Same type, another key: refused with both fingerprints and where the old one is.
-        let err = check_host_key("bastion.example", 22, &key(ED_B), &files).unwrap_err().to_string();
-        assert!(err.contains(&fingerprint(&key(ED_A))) && err.contains(&fingerprint(&key(ED_B))), "{err}");
+        let err = check_host_key("bastion.example", 22, &key(ED_B), &files)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&fingerprint(&key(ED_A))) && err.contains(&fingerprint(&key(ED_B))),
+            "{err}"
+        );
         assert!(err.contains("line 1"), "{err}");
 
         // Unknown (also on another port): refused and kept until it is trusted.
-        let s = SshSettings { host: "new.example".into(), port: 2200, ..Default::default() };
-        let err = check_host_key("new.example", 2200, &key(ED_B), &files).unwrap_err().to_string();
+        let s = SshSettings {
+            host: "new.example".into(),
+            port: 2200,
+            ..Default::default()
+        };
+        let err = check_host_key("new.example", 2200, &key(ED_B), &files)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains(&fingerprint(&key(ED_B))), "{err}");
         assert_eq!(unknown_key(&s), Some(fingerprint(&key(ED_B))));
-        let pending = UNKNOWN.lock().unwrap().remove(&("new.example".to_string(), 2200)).unwrap();
-        russh::keys::known_hosts::learn_known_hosts_path("new.example", 2200, &pending, &ours).unwrap();
+        let pending = UNKNOWN
+            .lock()
+            .unwrap()
+            .remove(&("new.example".to_string(), 2200))
+            .unwrap();
+        russh::keys::known_hosts::learn_known_hosts_path("new.example", 2200, &pending, &ours)
+            .unwrap();
         assert!(check_host_key("new.example", 2200, &key(ED_B), &files).is_ok());
         assert_eq!(unknown_key(&s), None);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -464,10 +597,17 @@ mod tests {
     #[test]
     fn key_paths_and_descriptions() {
         if let Some(home) = dirs::home_dir() {
-            assert_eq!(key_path("~/.ssh/id_ed25519"), home.join(".ssh").join("id_ed25519"));
+            assert_eq!(
+                key_path("~/.ssh/id_ed25519"),
+                home.join(".ssh").join("id_ed25519")
+            );
         }
         assert_eq!(key_path(" /keys/id "), PathBuf::from("/keys/id"));
-        let mut s = SshSettings { host: " bastion ".into(), user: "deploy".into(), ..Default::default() };
+        let mut s = SshSettings {
+            host: " bastion ".into(),
+            user: "deploy".into(),
+            ..Default::default()
+        };
         assert_eq!(s.describe(), "deploy@bastion");
         s.port = 2222;
         assert_eq!(s.describe(), "deploy@bastion:2222");
@@ -488,7 +628,10 @@ mod tests {
         cfg.driver = Driver::InfluxDb;
         cfg.host = "https://influx.example/".into();
         cfg.port = 8086;
-        assert_eq!(destination(&cfg).unwrap(), ("influx.example".to_string(), 8086));
+        assert_eq!(
+            destination(&cfg).unwrap(),
+            ("influx.example".to_string(), 8086)
+        );
         let mut mongo = ConnectionConfig::new(2, Driver::MongoDb);
         mongo.host = "cluster0.abcde.mongodb.net".into();
         assert!(destination(&mongo).is_err());
@@ -509,11 +652,25 @@ mod tests {
         type Error = russh::Error;
 
         async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
-            Ok(if user == "deploy" && password == "secret" { Auth::Accept } else { Auth::reject() })
+            Ok(if user == "deploy" && password == "secret" {
+                Auth::Accept
+            } else {
+                Auth::reject()
+            })
         }
 
-        async fn auth_publickey(&mut self, user: &str, key: server::VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
-            Ok(if user == "deploy" && key.public_key.key_data() == self.client_key.key_data() { Auth::Accept } else { Auth::reject() })
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            key: server::VerifiedPublicKey<'_>,
+        ) -> Result<Auth, Self::Error> {
+            Ok(
+                if user == "deploy" && key.public_key.key_data() == self.client_key.key_data() {
+                    Auth::Accept
+                } else {
+                    Auth::reject()
+                },
+            )
         }
 
         async fn channel_open_direct_tcpip(
@@ -526,7 +683,9 @@ mod tests {
             reply: ChannelOpenHandle,
             _: &mut ServerSession,
         ) -> Result<(), Self::Error> {
-            let Ok(mut tcp) = TcpStream::connect((host, port as u16)).await else { return Ok(()) };
+            let Ok(mut tcp) = TcpStream::connect((host, port as u16)).await else {
+                return Ok(());
+            };
             reply.accept().await;
             tokio::spawn(async move {
                 let mut stream = channel.into_stream();
@@ -538,12 +697,18 @@ mod tests {
 
     /// The bastion's port, serving until the runtime ends.
     async fn bastion(host_key: PrivateKey, client_key: PublicKey) -> u16 {
-        let config = Arc::new(server::Config { keys: vec![host_key], auth_rejection_time: Duration::ZERO, ..Default::default() });
+        let config = Arc::new(server::Config {
+            keys: vec![host_key],
+            auth_rejection_time: Duration::ZERO,
+            ..Default::default()
+        });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
-                let handler = Bastion { client_key: client_key.clone() };
+                let handler = Bastion {
+                    client_key: client_key.clone(),
+                };
                 let config = config.clone();
                 tokio::spawn(async move {
                     if let Ok(session) = server::run_stream(config, socket, handler).await {
@@ -627,7 +792,14 @@ mod tests {
 
         // A key file.
         let key_file = dir.join("id_ed25519");
-        std::fs::write(&key_file, client_key.to_openssh(russh::keys::ssh_key::LineEnding::LF).unwrap().as_bytes()).unwrap();
+        std::fs::write(
+            &key_file,
+            client_key
+                .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
         let mut by_key = cfg.clone();
         by_key.ssh.auth = SshAuth::KeyPair;
         by_key.ssh.key_file = key_file.to_string_lossy().into_owned();
@@ -643,13 +815,24 @@ mod tests {
         wrong.ssh.password = "nope".into();
         let err = private(&wrong).await.err().unwrap().to_string();
         assert!(err.contains("refused") && err.contains("deploy"), "{err}");
-        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap().port();
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         let mut unreachable = cfg.clone();
         unreachable.port = closed;
         let tunnel = private(&unreachable).await.unwrap();
-        let mut tcp = TcpStream::connect(("127.0.0.1", tunnel.port)).await.unwrap();
+        let mut tcp = TcpStream::connect(("127.0.0.1", tunnel.port))
+            .await
+            .unwrap();
         let mut buf = [0; 1];
-        assert_eq!(tcp.read(&mut buf).await.unwrap_or(0), 0, "closed when the bastion can't reach it");
+        assert_eq!(
+            tcp.read(&mut buf).await.unwrap_or(0),
+            0,
+            "closed when the bastion can't reach it"
+        );
 
         *KNOWN_HOSTS.lock().unwrap() = None;
         std::fs::remove_dir_all(&dir).unwrap();

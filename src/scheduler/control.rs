@@ -77,7 +77,14 @@ impl Waiter {
         self.socket.set_read_timeout(timeout)?;
         match self.socket.recv(&mut [0; 1]) {
             Ok(_) => Ok(()),
-            Err(error) if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Ok(())
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -89,12 +96,21 @@ mod tests {
 
     #[test]
     fn a_wakeup_sent_before_waiting_is_not_lost() {
-        let path = std::env::temp_dir().join(format!("datacraft-wakeup-{}.sqlite", uuid::Uuid::new_v4()));
-        let file = OpenOptions::new().read(true).write(true).create_new(true).open(path.with_extension("lock")).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("datacraft-wakeup-{}.sqlite", uuid::Uuid::new_v4()));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path.with_extension("lock"))
+            .unwrap();
         file.lock().unwrap();
         let waiter = Waiter::new(&path).unwrap();
         wake(&path).unwrap();
-        waiter.socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        waiter
+            .socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         assert_eq!(waiter.socket.recv(&mut [0; 1]).unwrap(), 1);
         waiter.notify().unwrap();
         assert_eq!(waiter.socket.recv(&mut [0; 1]).unwrap(), 1);

@@ -75,9 +75,15 @@ impl BackupDialog {
     pub fn show(&mut self, ctx: &egui::Context, history: &[BackupRecord]) -> Option<BackupAction> {
         let mut action = None;
         let subtitle = format!("{} · {}", self.driver.label(), self.request.db);
-        super::workflow_dialog::show(ctx, egui::Id::new("database_backup"), tr("Back up database"), &subtitle, egui::vec2(680.0, 620.0), |root, regions| {
-            let mut body = regions.body_ui(root);
-            egui::ScrollArea::vertical().id_salt("backup_body").auto_shrink([false, false]).show(&mut body, |ui| {
+        super::workflow_dialog::show(
+            ctx,
+            egui::Id::new("database_backup"),
+            tr("Back up database"),
+            &subtitle,
+            egui::vec2(680.0, 620.0),
+            |root, regions| {
+                let mut body = regions.body_ui(root);
+                egui::ScrollArea::vertical().id_salt("backup_body").auto_shrink([false, false]).show(&mut body, |ui| {
                     ui.add_enabled_ui(!self.running, |ui| {
                         let before = self.request.mode;
                         ui.horizontal(|ui| {
@@ -163,33 +169,43 @@ impl BackupDialog {
                         });
                     });
                 });
-            let mut footer = regions.footer_ui(root);
-            if self.running {
-                footer.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(tr("Creating backup…"));
-                });
-            }
-            footer.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let validation = self.request.validate(self.driver);
-                let valid = validation.is_ok() && (!self.read_only || BackupRequest::local(self.driver));
-                let start = ui.add_enabled_ui(!self.running && valid, |ui| crate::ui::theme::primary_button(ui, tr("Start backup"))).inner;
-                let start = if let Err(error) = validation { start.on_disabled_hover_text(error.to_string()) } else { start };
-                if start.clicked() {
-                    self.cancel = Arc::new(AtomicBool::new(false));
-                    self.running = true;
-                    self.result = None;
-                    action = Some(BackupAction::Start(self.request.clone()));
-                }
+                let mut footer = regions.footer_ui(root);
                 if self.running {
-                    if crate::ui::theme::secondary_button(ui, tr("Cancel")).clicked() {
-                        self.cancel.store(true, Ordering::Relaxed);
-                    }
-                } else if crate::ui::theme::secondary_button(ui, tr("Close")).clicked() {
-                    action = Some(BackupAction::Close);
+                    footer.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(tr("Creating backup…"));
+                    });
                 }
-            });
-        });
+                footer.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let validation = self.request.validate(self.driver);
+                    let valid = validation.is_ok()
+                        && (!self.read_only || BackupRequest::local(self.driver));
+                    let start = ui
+                        .add_enabled_ui(!self.running && valid, |ui| {
+                            crate::ui::theme::primary_button(ui, tr("Start backup"))
+                        })
+                        .inner;
+                    let start = if let Err(error) = validation {
+                        start.on_disabled_hover_text(error.to_string())
+                    } else {
+                        start
+                    };
+                    if start.clicked() {
+                        self.cancel = Arc::new(AtomicBool::new(false));
+                        self.running = true;
+                        self.result = None;
+                        action = Some(BackupAction::Start(self.request.clone()));
+                    }
+                    if self.running {
+                        if crate::ui::theme::secondary_button(ui, tr("Cancel")).clicked() {
+                            self.cancel.store(true, Ordering::Relaxed);
+                        }
+                    } else if crate::ui::theme::secondary_button(ui, tr("Close")).clicked() {
+                        action = Some(BackupAction::Close);
+                    }
+                });
+            },
+        );
         action
     }
     pub fn completed(&mut self, result: &Result<Option<u64>, String>) {
@@ -219,23 +235,30 @@ mod tests {
         for size in [egui::vec2(780.0, 560.0), egui::vec2(400.0, 300.0)] {
             for dark in [false, true] {
                 let mut dialog = BackupDialog::new(1, Driver::MariaDb, "shop_".repeat(50), false);
-                dialog.result = Some(Err("Backup failed with additional diagnostic context.\n".repeat(80)));
+                dialog.result = Some(Err(
+                    "Backup failed with additional diagnostic context.\n".repeat(80)
+                ));
                 let mut first = true;
-                let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
-                    move |ui, dialog: &mut BackupDialog| {
-                        if std::mem::take(&mut first) {
-                            theme::install_fonts(ui.ctx());
-                            theme::apply(ui.ctx(), dark);
-                        } else {
-                            dialog.show(ui.ctx(), &[]);
-                        }
-                    },
-                    dialog,
-                );
+                let mut h = egui_kittest::Harness::builder()
+                    .with_size(size)
+                    .build_ui_state(
+                        move |ui, dialog: &mut BackupDialog| {
+                            if std::mem::take(&mut first) {
+                                theme::install_fonts(ui.ctx());
+                                theme::apply(ui.ctx(), dark);
+                            } else {
+                                dialog.show(ui.ctx(), &[]);
+                            }
+                        },
+                        dialog,
+                    );
                 h.run_steps(3);
                 let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
                 for label in ["Start backup", "Close"] {
-                    assert!(screen.contains_rect(h.get_by_label(label).rect()), "{label}");
+                    assert!(
+                        screen.contains_rect(h.get_by_label(label).rect()),
+                        "{label}"
+                    );
                 }
                 h.state_mut().running = true;
                 h.run_steps(2);
@@ -287,7 +310,12 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/workspace-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         for dark in [false, true] {
-            for driver in [Driver::MariaDb, Driver::MsSql, Driver::Oracle, Driver::Snowflake] {
+            for driver in [
+                Driver::MariaDb,
+                Driver::MsSql,
+                Driver::Oracle,
+                Driver::Snowflake,
+            ] {
                 let mut dialog = BackupDialog::new(1, driver, "shop".into(), false);
                 dialog.request.destination = match driver {
                     Driver::MsSql => "D:\\Backups\\shop.bak",
@@ -300,21 +328,30 @@ mod tests {
                     dialog.request.directory = "DATA_PUMP_DIR".into();
                 }
                 let mut first = true;
-                let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(780.0, 560.0)).build_ui_state(
-                    move |ui, dialog: &mut BackupDialog| {
-                        if std::mem::take(&mut first) {
-                            theme::install_fonts(ui.ctx());
-                            theme::apply(ui.ctx(), dark);
-                            return;
-                        }
-                        dialog.show(ui.ctx(), &[]);
-                    },
-                    dialog,
-                );
+                let mut h = egui_kittest::Harness::builder()
+                    .with_size(egui::vec2(780.0, 560.0))
+                    .build_ui_state(
+                        move |ui, dialog: &mut BackupDialog| {
+                            if std::mem::take(&mut first) {
+                                theme::install_fonts(ui.ctx());
+                                theme::apply(ui.ctx(), dark);
+                                return;
+                            }
+                            dialog.show(ui.ctx(), &[]);
+                        },
+                        dialog,
+                    );
                 h.run_steps(3);
                 h.get_by_label("Options").click();
                 h.run_steps(3);
-                h.render().unwrap().save(dir.join(format!("backup-{}-{}.png", driver.label().replace('/', "-"), if dark { "dark" } else { "light" }))).unwrap();
+                h.render()
+                    .unwrap()
+                    .save(dir.join(format!(
+                        "backup-{}-{}.png",
+                        driver.label().replace('/', "-"),
+                        if dark { "dark" } else { "light" }
+                    )))
+                    .unwrap();
             }
         }
     }

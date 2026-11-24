@@ -36,7 +36,10 @@ async fn latest() -> anyhow::Result<Release> {
     struct Latest {
         tag_name: String,
     }
-    let api = format!("{}/releases/latest", REPOSITORY.replace("https://github.com/", "https://api.github.com/repos/"));
+    let api = format!(
+        "{}/releases/latest",
+        REPOSITORY.replace("https://github.com/", "https://api.github.com/repos/")
+    );
     let latest: Latest = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .user_agent(concat!("DataCraft/", env!("CARGO_PKG_VERSION")))
@@ -48,7 +51,8 @@ async fn latest() -> anyhow::Result<Release> {
         .error_for_status()?
         .json()
         .await?;
-    release(&latest.tag_name).ok_or_else(|| anyhow::anyhow!("unexpected release tag {:?}", latest.tag_name))
+    release(&latest.tag_name)
+        .ok_or_else(|| anyhow::anyhow!("unexpected release tag {:?}", latest.tag_name))
 }
 
 /// The release of a `v0.11.0` tag. The page is built here, not taken from the response, so the
@@ -56,7 +60,10 @@ async fn latest() -> anyhow::Result<Release> {
 fn release(tag: &str) -> Option<Release> {
     let version = tag.trim().trim_start_matches('v');
     parse(version)?;
-    Some(Release { version: version.to_string(), url: format!("{REPOSITORY}/releases/tag/{}", tag.trim()) })
+    Some(Release {
+        version: version.to_string(),
+        url: format!("{REPOSITORY}/releases/tag/{}", tag.trim()),
+    })
 }
 
 /// `major.minor.patch`; a pre-release suffix (`-beta.1`) is not a newer version.

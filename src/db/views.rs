@@ -64,7 +64,8 @@ fn qualified(driver: Driver, schema: &str, name: &str) -> String {
 
 /// The SELECT without surrounding blanks or trailing semicolons.
 pub fn clean_body(body: &str) -> &str {
-    body.trim().trim_end_matches(|c: char| c == ';' || c.is_whitespace())
+    body.trim()
+        .trim_end_matches(|c: char| c == ';' || c.is_whitespace())
 }
 
 /// `create [or replace …] view <name> [(cols)] as <body>`.
@@ -79,47 +80,82 @@ pub fn create_view_sql(driver: Driver, spec: &ViewSpec, name: &str, replace: boo
     }
     if matches!(driver, Driver::MySql | Driver::MariaDb) {
         if !spec.algorithm.trim().is_empty() {
-            head.push_str(&format!(" algorithm = {}", spec.algorithm.trim().to_lowercase()));
+            head.push_str(&format!(
+                " algorithm = {}",
+                spec.algorithm.trim().to_lowercase()
+            ));
         }
         if !spec.security.trim().is_empty() {
-            head.push_str(&format!(" sql security {}", spec.security.trim().to_lowercase()));
+            head.push_str(&format!(
+                " sql security {}",
+                spec.security.trim().to_lowercase()
+            ));
         }
     }
     if driver == Driver::Oracle && spec.force {
         head.push_str(" force");
     }
     let columns = spec.columns.trim();
-    let columns = if columns.is_empty() { String::new() } else { format!(" ({columns})") };
-    format!("{head} view {}{columns} as\n{}", qualified(driver, &spec.schema, name), clean_body(&spec.body))
+    let columns = if columns.is_empty() {
+        String::new()
+    } else {
+        format!(" ({columns})")
+    };
+    format!(
+        "{head} view {}{columns} as\n{}",
+        qualified(driver, &spec.schema, name),
+        clean_body(&spec.body)
+    )
 }
 
 /// Statements that create the view or, when editing, replace (and maybe rename) it.
 pub fn view_statements(driver: Driver, spec: &ViewSpec) -> ViewStatements {
     let name = spec.name.trim();
     let drop = |n: &str, if_exists: bool| {
-        format!("drop view {}{}", if if_exists { "if exists " } else { "" }, qualified(driver, &spec.schema, n))
+        format!(
+            "drop view {}{}",
+            if if_exists { "if exists " } else { "" },
+            qualified(driver, &spec.schema, n)
+        )
     };
     let (statements, transaction) = match spec.original.as_deref().map(str::trim) {
         // New view.
-        None if driver == Driver::Sqlite && spec.or_replace => {
-            (vec![drop(name, true), create_view_sql(driver, spec, name, false)], true)
-        }
-        None => (vec![create_view_sql(driver, spec, name, spec.or_replace)], false),
+        None if driver == Driver::Sqlite && spec.or_replace => (
+            vec![drop(name, true), create_view_sql(driver, spec, name, false)],
+            true,
+        ),
+        None => (
+            vec![create_view_sql(driver, spec, name, spec.or_replace)],
+            false,
+        ),
         // SQLite has no OR REPLACE: drop and create in one transaction.
-        Some(old) if driver == Driver::Sqlite => (vec![drop(old, false), create_view_sql(driver, spec, name, false)], true),
+        Some(old) if driver == Driver::Sqlite => (
+            vec![drop(old, false), create_view_sql(driver, spec, name, false)],
+            true,
+        ),
         Some(old) if old == name => (vec![create_view_sql(driver, spec, name, true)], false),
         // PostgreSQL: replace and rename in one transaction (keeps grants and dependent views).
         Some(old) if driver == Driver::Postgres => (
             vec![
                 create_view_sql(driver, spec, old, true),
-                format!("alter view {} rename to {}", qualified(driver, &spec.schema, old), quote_ident_if_needed(driver, name)),
+                format!(
+                    "alter view {} rename to {}",
+                    qualified(driver, &spec.schema, old),
+                    quote_ident_if_needed(driver, name)
+                ),
             ],
             true,
         ),
         // The rest: create the new one first, so a failure leaves the old view untouched.
-        Some(old) => (vec![create_view_sql(driver, spec, name, false), drop(old, false)], false),
+        Some(old) => (
+            vec![create_view_sql(driver, spec, name, false), drop(old, false)],
+            false,
+        ),
     };
-    ViewStatements { statements, transaction }
+    ViewStatements {
+        statements,
+        transaction,
+    }
 }
 
 /// Lexical token of a `CREATE VIEW` statement.
@@ -188,7 +224,11 @@ fn tokens(sql: &str) -> Vec<(Tok<'_>, usize, usize)> {
             continue;
         }
         if c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'@' || c >= 0x80 {
-            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'$' | b'@' | b'#') || bytes[i] >= 0x80) {
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric()
+                    || matches!(bytes[i], b'_' | b'$' | b'@' | b'#')
+                    || bytes[i] >= 0x80)
+            {
                 i += 1;
             }
             out.push((Tok::Word(&sql[start..i]), start, i));
@@ -245,7 +285,10 @@ pub fn parse_create_view(sql: &str) -> Option<ViewDefinition> {
                 if depth == 0
                     && let Some(open) = columns_open.take()
                 {
-                    def.columns = sql[open..*start].split_whitespace().collect::<Vec<_>>().join(" ");
+                    def.columns = sql[open..*start]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
                 }
             }
             Tok::Word(w) if depth == 0 && w.eq_ignore_ascii_case("as") => {
@@ -270,16 +313,26 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             lit(schema),
             lit(view)
         ),
-        Driver::MySql | Driver::MariaDb => format!("SHOW CREATE VIEW {}", Session::quote_table(driver, schema, view)),
+        Driver::MySql | Driver::MariaDb => format!(
+            "SHOW CREATE VIEW {}",
+            Session::quote_table(driver, schema, view)
+        ),
         // The CREATE VIEW statement (same shape MySQL's SHOW returns).
         Driver::ClickHouse => format!(
             "SELECT create_table_query FROM system.tables WHERE database = {} AND name = {} AND engine = 'View'",
             lit(schema),
             lit(view)
         ),
-        Driver::MsSql => format!("SELECT OBJECT_DEFINITION(OBJECT_ID({}))", lit(&Session::quote_table(driver, schema, view))),
+        Driver::MsSql => format!(
+            "SELECT OBJECT_DEFINITION(OBJECT_ID({}))",
+            lit(&Session::quote_table(driver, schema, view))
+        ),
         // TEXT is a LONG: fetched as text, one row.
-        Driver::Oracle => format!("SELECT text FROM all_views WHERE owner = {} AND view_name = {}", lit(schema), lit(view)),
+        Driver::Oracle => format!(
+            "SELECT text FROM all_views WHERE owner = {} AND view_name = {}",
+            lit(schema),
+            lit(view)
+        ),
         Driver::Sqlite => format!(
             "SELECT sql FROM {}.sqlite_master WHERE type = 'view' AND name = {}",
             driver.quote_ident(if schema.is_empty() { "main" } else { schema }),
@@ -305,31 +358,65 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
 pub fn parse_definition(driver: Driver, text: &str) -> ViewDefinition {
     match driver {
         // Only the SELECT.
-        Driver::Postgres | Driver::Oracle => ViewDefinition { body: clean_body(text).to_string(), ..Default::default() },
-        _ => parse_create_view(text).unwrap_or_else(|| ViewDefinition { body: clean_body(text).to_string(), ..Default::default() }),
+        Driver::Postgres | Driver::Oracle => ViewDefinition {
+            body: clean_body(text).to_string(),
+            ..Default::default()
+        },
+        _ => parse_create_view(text).unwrap_or_else(|| ViewDefinition {
+            body: clean_body(text).to_string(),
+            ..Default::default()
+        }),
     }
 }
 
 impl Session {
     /// The definition of `schema.view` as the server keeps it. The session must be on `db`.
-    pub async fn view_definition(&mut self, driver: Driver, db: &str, schema: &str, view: &str) -> anyhow::Result<ViewDefinition> {
+    pub async fn view_definition(
+        &mut self,
+        driver: Driver,
+        db: &str,
+        schema: &str,
+        view: &str,
+    ) -> anyhow::Result<ViewDefinition> {
         if driver.is_nosql() {
             anyhow::bail!(crate::i18n::tr("Not available for this engine"));
         }
         let first_text = |rs: Vec<super::ResultSet>, column: usize| -> Option<String> {
-            rs.into_iter().next()?.rows.into_iter().next()?.into_iter().nth(column)?.filter(|s| !s.trim().is_empty())
+            rs.into_iter()
+                .next()?
+                .rows
+                .into_iter()
+                .next()?
+                .into_iter()
+                .nth(column)?
+                .filter(|s| !s.trim().is_empty())
         };
         // SHOW CREATE VIEW: View, Create View, character_set_client, collation_connection.
-        let column = if matches!(driver, Driver::MySql | Driver::MariaDb) { 1 } else { 0 };
-        let mut text = first_text(self.execute(&definition_query(driver, db, schema, view), 1).await?, column);
+        let column = if matches!(driver, Driver::MySql | Driver::MariaDb) {
+            1
+        } else {
+            0
+        };
+        let mut text = first_text(
+            self.execute(&definition_query(driver, db, schema, view), 1)
+                .await?,
+            column,
+        );
         // Snowflake hides the text of secure views from non-owners in INFORMATION_SCHEMA.
         if text.is_none() && driver == Driver::Snowflake {
-            let name = format!("{}.{}", driver.quote_ident(db), Session::quote_table(driver, schema, view));
+            let name = format!(
+                "{}.{}",
+                driver.quote_ident(db),
+                Session::quote_table(driver, schema, view)
+            );
             let sql = format!("SELECT GET_DDL('VIEW', {})", literal(driver, &Some(name)));
             text = first_text(self.execute(&sql, 1).await?, 0);
         }
         let Some(text) = text else {
-            anyhow::bail!(trf("The definition of view “{name}” is not available", &[("name", &view)]));
+            anyhow::bail!(trf(
+                "The definition of view “{name}” is not available",
+                &[("name", &view)]
+            ));
         };
         Ok(parse_definition(driver, &text))
     }
@@ -358,47 +445,97 @@ mod tests {
     fn new_view_per_engine() {
         let body = "select id, name from users where active";
         let mut s = spec("active_users", None);
-        assert_eq!(run(Driver::Postgres, &s), (vec![format!("create view app.active_users as\n{body}")], false));
+        assert_eq!(
+            run(Driver::Postgres, &s),
+            (
+                vec![format!("create view app.active_users as\n{body}")],
+                false
+            )
+        );
         s.or_replace = true;
-        assert_eq!(run(Driver::Postgres, &s).0, vec![format!("create or replace view app.active_users as\n{body}")]);
-        assert_eq!(run(Driver::MsSql, &s).0, vec![format!("create or alter view app.active_users as\n{body}")]);
+        assert_eq!(
+            run(Driver::Postgres, &s).0,
+            vec![format!(
+                "create or replace view app.active_users as\n{body}"
+            )]
+        );
+        assert_eq!(
+            run(Driver::MsSql, &s).0,
+            vec![format!("create or alter view app.active_users as\n{body}")]
+        );
         // Snowflake and Oracle fold unquoted names to uppercase: lowercase ones are quoted.
-        assert_eq!(run(Driver::Snowflake, &s).0, vec![format!("create or replace view \"app\".\"active_users\" as\n{body}")]);
+        assert_eq!(
+            run(Driver::Snowflake, &s).0,
+            vec![format!(
+                "create or replace view \"app\".\"active_users\" as\n{body}"
+            )]
+        );
         s.force = true;
-        assert_eq!(run(Driver::Oracle, &s).0, vec![format!("create or replace force view \"app\".\"active_users\" as\n{body}")]);
+        assert_eq!(
+            run(Driver::Oracle, &s).0,
+            vec![format!(
+                "create or replace force view \"app\".\"active_users\" as\n{body}"
+            )]
+        );
         s.algorithm = "MERGE".into();
         s.security = "INVOKER".into();
         assert_eq!(
             run(Driver::MariaDb, &s).0,
-            vec![format!("create or replace algorithm = merge sql security invoker view app.active_users as\n{body}")]
+            vec![format!(
+                "create or replace algorithm = merge sql security invoker view app.active_users as\n{body}"
+            )]
         );
         // SQLite: no OR REPLACE, so drop it first in the same transaction.
         s.schema = "main".into();
         assert_eq!(
             run(Driver::Sqlite, &s),
-            (vec!["drop view if exists active_users".into(), format!("create view active_users as\n{body}")], true)
+            (
+                vec![
+                    "drop view if exists active_users".into(),
+                    format!("create view active_users as\n{body}")
+                ],
+                true
+            )
         );
         s.or_replace = false;
-        assert_eq!(run(Driver::Sqlite, &s), (vec![format!("create view active_users as\n{body}")], false));
+        assert_eq!(
+            run(Driver::Sqlite, &s),
+            (vec![format!("create view active_users as\n{body}")], false)
+        );
     }
 
     #[test]
     fn quotes_names_and_keeps_the_column_list() {
         let mut s = spec("Active Users", None);
         s.columns = "a, b".into();
-        assert!(create_view_sql(Driver::MsSql, &s, "Active Users", false).starts_with("create view app.[Active Users] (a, b) as\n"));
-        assert!(create_view_sql(Driver::Postgres, &s, "Active Users", false).starts_with("create view app.\"Active Users\" (a, b) as\n"));
+        assert!(
+            create_view_sql(Driver::MsSql, &s, "Active Users", false)
+                .starts_with("create view app.[Active Users] (a, b) as\n")
+        );
+        assert!(
+            create_view_sql(Driver::Postgres, &s, "Active Users", false)
+                .starts_with("create view app.\"Active Users\" (a, b) as\n")
+        );
     }
 
     #[test]
     fn editing_replaces_and_renames() {
         let same = spec("v", Some("v"));
-        assert_eq!(run(Driver::Postgres, &same).0, vec!["create or replace view app.v as\nselect id, name from users where active"]);
+        assert_eq!(
+            run(Driver::Postgres, &same).0,
+            vec!["create or replace view app.v as\nselect id, name from users where active"]
+        );
         assert!(run(Driver::MsSql, &same).0[0].starts_with("create or alter view app.v as"));
         assert!(run(Driver::MySql, &same).0[0].starts_with("create or replace view app.v as"));
-        assert!(run(Driver::Oracle, &same).0[0].starts_with("create or replace view \"app\".\"v\" as"));
+        assert!(
+            run(Driver::Oracle, &same).0[0].starts_with("create or replace view \"app\".\"v\" as")
+        );
         let sqlite = run(Driver::Sqlite, &same);
-        assert!(sqlite.1 && sqlite.0[0] == "drop view app.v" && sqlite.0[1].starts_with("create view app.v as"));
+        assert!(
+            sqlite.1
+                && sqlite.0[0] == "drop view app.v"
+                && sqlite.0[1].starts_with("create view app.v as")
+        );
 
         let renamed = spec("w", Some("v"));
         let pg = run(Driver::Postgres, &renamed);
@@ -420,7 +557,10 @@ mod tests {
         assert_eq!(d.columns, "id, total");
         assert_eq!(d.body, "SELECT id, total FROM orders WHERE total > 100");
         let d = parse_create_view("create view if not exists v as select (1) as one").unwrap();
-        assert_eq!((d.columns.as_str(), d.body.as_str()), ("", "select (1) as one"));
+        assert_eq!(
+            (d.columns.as_str(), d.body.as_str()),
+            ("", "select (1) as one")
+        );
     }
 
     #[test]
@@ -437,21 +577,45 @@ mod tests {
     fn parses_sql_server_and_snowflake_definitions() {
         let text = "-- active users\n/* AS */ CREATE   VIEW [dbo].[Active AS Users]\nWITH SCHEMABINDING\nAS\nSELECT id FROM dbo.users WHERE note = 'as'\nWITH CHECK OPTION";
         let d = parse_definition(Driver::MsSql, text);
-        assert_eq!(d.body, "SELECT id FROM dbo.users WHERE note = 'as'\nWITH CHECK OPTION");
-        let d = parse_definition(Driver::Snowflake, "create or replace view DB.S.V(\n\tID,\n\tNAME\n) as select id, name from t;");
+        assert_eq!(
+            d.body,
+            "SELECT id FROM dbo.users WHERE note = 'as'\nWITH CHECK OPTION"
+        );
+        let d = parse_definition(
+            Driver::Snowflake,
+            "create or replace view DB.S.V(\n\tID,\n\tNAME\n) as select id, name from t;",
+        );
         assert_eq!(d.columns, "ID, NAME");
         assert_eq!(d.body, "select id, name from t");
         // Engines that only return the SELECT.
-        assert_eq!(parse_definition(Driver::Postgres, " SELECT users.id\n   FROM users;").body, "SELECT users.id\n   FROM users");
-        assert_eq!(parse_definition(Driver::Oracle, "select 1 from dual ").body, "select 1 from dual");
+        assert_eq!(
+            parse_definition(Driver::Postgres, " SELECT users.id\n   FROM users;").body,
+            "SELECT users.id\n   FROM users"
+        );
+        assert_eq!(
+            parse_definition(Driver::Oracle, "select 1 from dual ").body,
+            "select 1 from dual"
+        );
     }
 
     #[test]
     fn definition_queries_escape_names() {
-        assert!(definition_query(Driver::Postgres, "db", "public", "o'v").contains("c.relname = 'o''v'"));
-        assert_eq!(definition_query(Driver::MySql, "shop", "shop", "v"), "SHOW CREATE VIEW `shop`.`v`");
-        assert_eq!(definition_query(Driver::MsSql, "db", "dbo", "v"), "SELECT OBJECT_DEFINITION(OBJECT_ID(N'[dbo].[v]'))");
-        assert!(definition_query(Driver::Sqlite, "main", "main", "v").starts_with("SELECT sql FROM \"main\".sqlite_master"));
+        assert!(
+            definition_query(Driver::Postgres, "db", "public", "o'v")
+                .contains("c.relname = 'o''v'")
+        );
+        assert_eq!(
+            definition_query(Driver::MySql, "shop", "shop", "v"),
+            "SHOW CREATE VIEW `shop`.`v`"
+        );
+        assert_eq!(
+            definition_query(Driver::MsSql, "db", "dbo", "v"),
+            "SELECT OBJECT_DEFINITION(OBJECT_ID(N'[dbo].[v]'))"
+        );
+        assert!(
+            definition_query(Driver::Sqlite, "main", "main", "v")
+                .starts_with("SELECT sql FROM \"main\".sqlite_master")
+        );
     }
 
     mod live {
@@ -475,24 +639,62 @@ mod tests {
 
         fn run(w: &Worker, conn: ConnId, db: &str, driver: Driver, spec: &ViewSpec) {
             let v = view_statements(driver, spec);
-            w.send(Request::RunDdl { conn, db: Some(db.into()), statements: v.statements, close_db: None, transaction: v.transaction });
-            let Response::DdlDone { result, .. } = wait_for(w, |r| matches!(r, Response::DdlDone { .. })) else { unreachable!() };
+            w.send(Request::RunDdl {
+                conn,
+                db: Some(db.into()),
+                statements: v.statements,
+                close_db: None,
+                transaction: v.transaction,
+            });
+            let Response::DdlDone { result, .. } =
+                wait_for(w, |r| matches!(r, Response::DdlDone { .. }))
+            else {
+                unreachable!()
+            };
             result.unwrap();
         }
 
-        fn definition(w: &Worker, conn: ConnId, db: &str, schema: &str, view: &str, request_id: u64) -> Result<ViewDefinition, String> {
-            w.send(Request::ViewDefinition { conn, db: db.into(), schema: schema.into(), view: view.into(), request_id });
-            let r = wait_for(w, |r| matches!(r, Response::ViewDefinition { request_id: id, .. } if *id == request_id));
-            let Response::ViewDefinition { result, .. } = r else { unreachable!() };
+        fn definition(
+            w: &Worker,
+            conn: ConnId,
+            db: &str,
+            schema: &str,
+            view: &str,
+            request_id: u64,
+        ) -> Result<ViewDefinition, String> {
+            w.send(Request::ViewDefinition {
+                conn,
+                db: db.into(),
+                schema: schema.into(),
+                view: view.into(),
+                request_id,
+            });
+            let r = wait_for(
+                w,
+                |r| matches!(r, Response::ViewDefinition { request_id: id, .. } if *id == request_id),
+            );
+            let Response::ViewDefinition { result, .. } = r else {
+                unreachable!()
+            };
             result
         }
 
         fn views_in(w: &Worker, conn: ConnId, db: &str) -> Vec<String> {
-            w.send(Request::LoadDatabase { conn, db: db.into() });
+            w.send(Request::LoadDatabase {
+                conn,
+                db: db.into(),
+            });
             let r = wait_for(w, |r| matches!(r, Response::DatabaseLoaded { .. }));
-            let Response::DatabaseLoaded { result, .. } = r else { unreachable!() };
-            let mut names: Vec<String> =
-                result.unwrap().into_iter().flat_map(|s| s.tables).filter(|t| t.kind == ObjectKind::View && t.name.starts_with("dc_")).map(|t| t.name).collect();
+            let Response::DatabaseLoaded { result, .. } = r else {
+                unreachable!()
+            };
+            let mut names: Vec<String> = result
+                .unwrap()
+                .into_iter()
+                .flat_map(|s| s.tables)
+                .filter(|t| t.kind == ObjectKind::View && t.name.starts_with("dc_"))
+                .map(|t| t.name)
+                .collect();
             names.sort();
             names
         }
@@ -512,26 +714,45 @@ mod tests {
             };
             run(&w, conn, db, driver, &spec);
             let def = definition(&w, conn, db, schema, "dc_big_orders", 1).unwrap();
-            assert!(def.body.to_lowercase().contains("dc_orders") && def.body.contains("10"), "{def:?}");
+            assert!(
+                def.body.to_lowercase().contains("dc_orders") && def.body.contains("10"),
+                "{def:?}"
+            );
             assert!(!def.body.trim_end().ends_with(';'));
 
             // Edit: new body, same name.
             spec.original = Some(spec.name.clone());
             spec.body = "select id from dc_orders where total > 50".into();
             run(&w, conn, db, driver, &spec);
-            assert!(definition(&w, conn, db, schema, "dc_big_orders", 2).unwrap().body.contains("50"));
+            assert!(
+                definition(&w, conn, db, schema, "dc_big_orders", 2)
+                    .unwrap()
+                    .body
+                    .contains("50")
+            );
 
             // Edit and rename.
             spec.name = "dc_huge_orders".into();
             spec.body = "select id from dc_orders where total > 99".into();
             run(&w, conn, db, driver, &spec);
             assert_eq!(views_in(&w, conn, db), vec!["dc_huge_orders".to_string()]);
-            assert!(definition(&w, conn, db, schema, "dc_huge_orders", 3).unwrap().body.contains("99"));
+            assert!(
+                definition(&w, conn, db, schema, "dc_huge_orders", 3)
+                    .unwrap()
+                    .body
+                    .contains("99")
+            );
             assert!(definition(&w, conn, db, schema, "dc_big_orders", 4).is_err());
 
             spec.original = None;
             spec.name = "dc_huge_orders".into();
-            w.send(Request::RunDdl { conn, db: Some(db.into()), statements: vec!["drop view dc_huge_orders".into()], close_db: None, transaction: false });
+            w.send(Request::RunDdl {
+                conn,
+                db: Some(db.into()),
+                statements: vec!["drop view dc_huge_orders".into()],
+                close_db: None,
+                transaction: false,
+            });
             wait_for(&w, |r| matches!(r, Response::DdlDone { .. }));
             w.send(Request::Disconnect(conn));
             wait_for(&w, |r| matches!(r, Response::Disconnected(_)));
@@ -539,7 +760,8 @@ mod tests {
 
         #[test]
         fn sqlite_views_are_created_loaded_and_replaced() {
-            let path = std::env::temp_dir().join(format!("datacraft-views-{}.db", uuid::Uuid::new_v4()));
+            let path =
+                std::env::temp_dir().join(format!("datacraft-views-{}.db", uuid::Uuid::new_v4()));
             rusqlite::Connection::open(&path)
                 .unwrap()
                 .execute_batch("create table dc_orders(id integer primary key, total real); insert into dc_orders values (1, 5), (2, 100);")
@@ -573,8 +795,18 @@ mod tests {
                     "create table dc_orders(id int primary key, total decimal(10,2))",
                     "insert into dc_orders values (1, 5), (2, 100)",
                 ];
-                w.send(Request::RunDdl { conn: 42, db: Some(db.clone()), statements: setup.map(String::from).to_vec(), close_db: None, transaction: false });
-                let Response::DdlDone { result, .. } = wait_for(&w, |r| matches!(r, Response::DdlDone { .. })) else { unreachable!() };
+                w.send(Request::RunDdl {
+                    conn: 42,
+                    db: Some(db.clone()),
+                    statements: setup.map(String::from).to_vec(),
+                    close_db: None,
+                    transaction: false,
+                });
+                let Response::DdlDone { result, .. } =
+                    wait_for(&w, |r| matches!(r, Response::DdlDone { .. }))
+                else {
+                    unreachable!()
+                };
                 result.unwrap();
             }
             create_load_replace(cfg, &db, &db);

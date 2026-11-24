@@ -17,7 +17,9 @@ pub(crate) fn data_dir() -> PathBuf {
     #[cfg(test)]
     return std::env::temp_dir().join(format!("datacraft-test-{}", std::process::id()));
     #[cfg(not(test))]
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("DataCraft")
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("DataCraft")
 }
 
 fn connections_file() -> PathBuf {
@@ -33,7 +35,9 @@ fn entry(user: &str) -> Option<keyring::Entry> {
 
 #[cfg(test)]
 fn entry(_user: &str) -> Option<keyring::Entry> {
-    Some(keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default()))
+    Some(keyring::Entry::new_with_credential(Box::<
+        keyring::mock::MockCredential,
+    >::default()))
 }
 
 fn keychain_entry(id: u64) -> Option<keyring::Entry> {
@@ -70,7 +74,10 @@ pub fn load_connections() -> Vec<ConnectionConfig> {
             // Don't lose the connections: set the unreadable file aside before it gets overwritten.
             let backup = file.with_extension("json.bak");
             let _ = std::fs::copy(&file, &backup);
-            eprintln!("unreadable connections.json ({e}); copy at {}", backup.display());
+            eprintln!(
+                "unreadable connections.json ({e}); copy at {}",
+                backup.display()
+            );
             Vec::new()
         }
     };
@@ -80,8 +87,13 @@ pub fn load_connections() -> Vec<ConnectionConfig> {
         c.migrate();
         if !c.secret_properties().is_empty() {
             leaked = true;
-            let password = keychain_entry(c.id).and_then(|e| e.get_password().ok()).unwrap_or_default();
-            store_secrets(&ConnectionConfig { password, ..c.clone() });
+            let password = keychain_entry(c.id)
+                .and_then(|e| e.get_password().ok())
+                .unwrap_or_default();
+            store_secrets(&ConnectionConfig {
+                password,
+                ..c.clone()
+            });
         }
         if let Some(pw) = keychain_entry(c.id).and_then(|e| e.get_password().ok()) {
             c.password = pw;
@@ -92,9 +104,12 @@ pub fn load_connections() -> Vec<ConnectionConfig> {
             .unwrap_or_default();
         fill_secret_properties(c, &secrets);
         if (c.ssh.enabled || !c.tls.key_file.trim().is_empty())
-            && let Some(ssh) = ssh_entry(c.id).and_then(|e| e.get_password().ok()).and_then(|json| serde_json::from_str::<SshSecrets>(&json).ok())
+            && let Some(ssh) = ssh_entry(c.id)
+                .and_then(|e| e.get_password().ok())
+                .and_then(|json| serde_json::from_str::<SshSecrets>(&json).ok())
         {
-            (c.ssh.password, c.ssh.passphrase, c.tls.key_passphrase) = (ssh.password, ssh.passphrase, ssh.tls_key_passphrase);
+            (c.ssh.password, c.ssh.passphrase, c.tls.key_passphrase) =
+                (ssh.password, ssh.passphrase, ssh.tls_key_passphrase);
         }
     }
     if leaked && let Err(e) = save_connections(&list) {
@@ -104,7 +119,10 @@ pub fn load_connections() -> Vec<ConnectionConfig> {
 }
 
 /// Puts the keychain's values back into their (blank) property rows.
-fn fill_secret_properties(c: &mut ConnectionConfig, secrets: &std::collections::HashMap<String, String>) {
+fn fill_secret_properties(
+    c: &mut ConnectionConfig,
+    secrets: &std::collections::HashMap<String, String>,
+) {
     for (k, v) in &mut c.properties {
         if let Some(secret) = secrets.get(k.trim()) {
             *v = secret.clone();
@@ -114,10 +132,12 @@ fn fill_secret_properties(c: &mut ConnectionConfig, secrets: &std::collections::
 
 /// Keep this process-wide guard alive only in the separate scheduler process.
 #[cfg(target_os = "macos")]
-pub fn disable_background_keychain_interaction() -> anyhow::Result<security_framework::os::macos::keychain::KeychainUserInteractionLock> {
+pub fn disable_background_keychain_interaction()
+-> anyhow::Result<security_framework::os::macos::keychain::KeychainUserInteractionLock> {
     use anyhow::Context;
-    security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
-        .context(crate::i18n::tr("Could not disable Keychain prompts for the background scheduler"))
+    security_framework::os::macos::keychain::SecKeychain::disable_user_interaction().context(
+        crate::i18n::tr("Could not disable Keychain prompts for the background scheduler"),
+    )
 }
 
 fn read_background_secret(entry: Option<keyring::Entry>) -> anyhow::Result<Option<String>> {
@@ -134,26 +154,43 @@ fn read_background_secret(entry: Option<keyring::Entry>) -> anyhow::Result<Optio
 pub fn load_background_connection(id: u64) -> anyhow::Result<ConnectionConfig> {
     use anyhow::Context;
     let text = std::fs::read_to_string(connections_file()).context("read saved data sources")?;
-    let list: Vec<ConnectionConfig> = serde_json::from_str(&text).context("parse saved data sources")?;
-    let mut cfg = list.into_iter().find(|cfg| cfg.id == id).context("The data source no longer exists")?;
+    let list: Vec<ConnectionConfig> =
+        serde_json::from_str(&text).context("parse saved data sources")?;
+    let mut cfg = list
+        .into_iter()
+        .find(|cfg| cfg.id == id)
+        .context("The data source no longer exists")?;
     cfg.migrate();
     if !cfg.secret_properties().is_empty() {
-        anyhow::bail!("Open DataCraft to migrate this data source's credentials before scheduling it");
+        anyhow::bail!(
+            "Open DataCraft to migrate this data source's credentials before scheduling it"
+        );
     }
-    if cfg.driver != crate::db::Driver::Sqlite && cfg.auth != crate::db::AuthMode::NoAuth
+    if cfg.driver != crate::db::Driver::Sqlite
+        && cfg.auth != crate::db::AuthMode::NoAuth
         && let Some(password) = read_background_secret(keychain_entry(id))?
     {
         cfg.password = password;
     }
-    if cfg.properties.iter().any(|(name, _)| crate::db::is_secret_property(name))
+    if cfg
+        .properties
+        .iter()
+        .any(|(name, _)| crate::db::is_secret_property(name))
         && let Some(json) = read_background_secret(properties_entry(id))?
     {
         let secrets = serde_json::from_str(&json).context("parse saved secret properties")?;
         fill_secret_properties(&mut cfg, &secrets);
     }
-    if (cfg.ssh.enabled || !cfg.tls.key_file.trim().is_empty()) && let Some(json) = read_background_secret(ssh_entry(id))? {
-        let secrets: SshSecrets = serde_json::from_str(&json).context("parse saved SSH credentials")?;
-        (cfg.ssh.password, cfg.ssh.passphrase, cfg.tls.key_passphrase) = (secrets.password, secrets.passphrase, secrets.tls_key_passphrase);
+    if (cfg.ssh.enabled || !cfg.tls.key_file.trim().is_empty())
+        && let Some(json) = read_background_secret(ssh_entry(id))?
+    {
+        let secrets: SshSecrets =
+            serde_json::from_str(&json).context("parse saved SSH credentials")?;
+        (cfg.ssh.password, cfg.ssh.passphrase, cfg.tls.key_passphrase) = (
+            secrets.password,
+            secrets.passphrase,
+            secrets.tls_key_passphrase,
+        );
     }
     Ok(cfg)
 }
@@ -173,9 +210,16 @@ pub fn save_connections(list: &[ConnectionConfig]) -> anyhow::Result<()> {
 /// removes its entry).
 pub fn store_secrets(cfg: &ConnectionConfig) {
     store(keychain_entry(cfg.id), &cfg.password);
-    let secrets: std::collections::HashMap<String, String> =
-        cfg.secret_properties().into_iter().map(|(k, v)| (k.trim().to_string(), v)).collect();
-    let json = if secrets.is_empty() { String::new() } else { serde_json::to_string(&secrets).unwrap_or_default() };
+    let secrets: std::collections::HashMap<String, String> = cfg
+        .secret_properties()
+        .into_iter()
+        .map(|(k, v)| (k.trim().to_string(), v))
+        .collect();
+    let json = if secrets.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&secrets).unwrap_or_default()
+    };
     store(properties_entry(cfg.id), &json);
     let ssh = SshSecrets {
         password: cfg.ssh.password.clone(),
@@ -183,7 +227,11 @@ pub fn store_secrets(cfg: &ConnectionConfig) {
         tls_key_passphrase: cfg.tls.key_passphrase.clone(),
     };
     let any = cfg.ssh.has_secrets() || !cfg.tls.key_passphrase.is_empty();
-    let json = if any { serde_json::to_string(&ssh).unwrap_or_default() } else { String::new() };
+    let json = if any {
+        serde_json::to_string(&ssh).unwrap_or_default()
+    } else {
+        String::new()
+    };
     store(ssh_entry(cfg.id), &json);
 }
 
@@ -204,16 +252,27 @@ pub fn masking_key() -> String {
         return "datacraft-demo".into();
     }
     let entry = entry("masking-key");
-    if let Some(key) = entry.as_ref().and_then(|e| e.get_password().ok()).filter(|k| !k.is_empty()) {
+    if let Some(key) = entry
+        .as_ref()
+        .and_then(|e| e.get_password().ok())
+        .filter(|k| !k.is_empty())
+    {
         return key;
     }
-    let key = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let key = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
     store(entry, &key);
     key
 }
 
 pub fn delete_secrets(id: u64) {
-    for entry in [keychain_entry(id), properties_entry(id), ssh_entry(id)].into_iter().flatten() {
+    for entry in [keychain_entry(id), properties_entry(id), ssh_entry(id)]
+        .into_iter()
+        .flatten()
+    {
         let _ = entry.delete_credential();
     }
 }
@@ -225,21 +284,28 @@ mod tests {
 
     #[test]
     fn background_credential_reads_preserve_missing_values_and_access_errors() {
-        let missing = keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
+        let missing =
+            keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
         assert!(read_background_secret(Some(missing)).unwrap().is_none());
 
-        let saved = keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
+        let saved =
+            keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
         saved.set_password("test-password").unwrap();
-        assert_eq!(read_background_secret(Some(saved)).unwrap().as_deref(), Some("test-password"));
+        assert_eq!(
+            read_background_secret(Some(saved)).unwrap().as_deref(),
+            Some("test-password")
+        );
 
         let denied = keyring::mock::MockCredential::default();
-        denied.set_error(keyring::Error::PlatformFailure(Box::new(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "test access denied",
-        ))));
+        denied.set_error(keyring::Error::PlatformFailure(Box::new(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "test access denied"),
+        )));
         let entry = keyring::Entry::new_with_credential(Box::new(denied));
         let error = read_background_secret(Some(entry)).unwrap_err();
-        assert!(matches!(error.downcast_ref::<keyring::Error>(), Some(keyring::Error::PlatformFailure(_))));
+        assert!(matches!(
+            error.downcast_ref::<keyring::Error>(),
+            Some(keyring::Error::PlatformFailure(_))
+        ));
         assert!(error.to_string().contains("DataCraft"));
         assert!(format!("{error:#}").contains("test access denied"));
     }
@@ -255,7 +321,12 @@ mod tests {
             assert!(SecKeychain::user_interaction_allowed().unwrap());
             let guard = disable_background_keychain_interaction().unwrap();
             assert!(!SecKeychain::user_interaction_allowed().unwrap());
-            assert!(!std::thread::spawn(SecKeychain::user_interaction_allowed).join().unwrap().unwrap());
+            assert!(
+                !std::thread::spawn(SecKeychain::user_interaction_allowed)
+                    .join()
+                    .unwrap()
+                    .unwrap()
+            );
             println!("keychain-interaction-disabled");
             std::io::stdout().flush().unwrap();
             std::io::stdin().read_line(&mut String::new()).unwrap();
@@ -266,14 +337,20 @@ mod tests {
         // Inspect interaction metadata only; never read or modify the user's credentials.
         let before = SecKeychain::user_interaction_allowed().unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "config::tests::background_keychain_interaction_is_process_local", "--nocapture"])
+            .args([
+                "--exact",
+                "config::tests::background_keychain_interaction_is_process_local",
+                "--nocapture",
+            ])
             .env(PROBE, "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
         let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
-        let ready = (&mut output).lines().any(|line| line.unwrap().ends_with("keychain-interaction-disabled"));
+        let ready = (&mut output)
+            .lines()
+            .any(|line| line.unwrap().ends_with("keychain-interaction-disabled"));
         let during = SecKeychain::user_interaction_allowed().unwrap();
         drop(child.stdin.take());
         assert!(child.wait().unwrap().success());
@@ -291,7 +368,10 @@ mod tests {
         cfg.set_property("token", "TOKEN-VALUE");
         let json = serde_json::to_string(&cfg.without_secrets()).unwrap();
         for secret in ["PASSPHRASE-VALUE", "TOKEN-VALUE", "PASSWORD-VALUE"] {
-            assert!(!json.contains(secret), "{secret} written to the file: {json}");
+            assert!(
+                !json.contains(secret),
+                "{secret} written to the file: {json}"
+            );
         }
         assert!(json.contains("/k.p8"));
 
@@ -317,26 +397,62 @@ mod tests {
         cfg.tls.key_file = "~/certs/client.key".into();
         cfg.tls.key_passphrase = "TLS-PASSPHRASE".into();
         let json = serde_json::to_string(&cfg.without_secrets()).unwrap();
-        assert!(!json.contains("SSH-PASSWORD") && !json.contains("SSH-PASSPHRASE") && !json.contains("TLS-PASSPHRASE"), "{json}");
+        assert!(
+            !json.contains("SSH-PASSWORD")
+                && !json.contains("SSH-PASSPHRASE")
+                && !json.contains("TLS-PASSPHRASE"),
+            "{json}"
+        );
         let loaded: ConnectionConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!((loaded.ssh.host.as_str(), loaded.ssh.key_file.as_str()), ("bastion.example", "~/.ssh/id_ed25519"));
+        assert_eq!(
+            (loaded.ssh.host.as_str(), loaded.ssh.key_file.as_str()),
+            ("bastion.example", "~/.ssh/id_ed25519")
+        );
         // Files from before the SSH tab load without one.
-        let old: ConnectionConfig = serde_json::from_str(r#"{"id": 3, "driver": "Postgres", "host": "db"}"#).unwrap();
+        let old: ConnectionConfig =
+            serde_json::from_str(r#"{"id": 3, "driver": "Postgres", "host": "db"}"#).unwrap();
         assert!(!old.ssh.enabled);
     }
 
     #[test]
     fn environment_and_guard_round_trip_and_default_for_old_files() {
-        let old: ConnectionConfig = serde_json::from_str(r#"{"id": 3, "driver": "MySql", "host": "db", "read_only": false}"#).unwrap();
-        assert_eq!((old.environment, old.environment_color, old.confirm_dangerous), (crate::db::Environment::None, None, true));
+        let old: ConnectionConfig = serde_json::from_str(
+            r#"{"id": 3, "driver": "MySql", "host": "db", "read_only": false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                old.environment,
+                old.environment_color,
+                old.confirm_dangerous
+            ),
+            (crate::db::Environment::None, None, true)
+        );
         assert_eq!(old.environment_badge(), None);
         let mut cfg = ConnectionConfig::new(4, crate::db::Driver::Postgres);
         cfg.environment = crate::db::Environment::Production;
         cfg.confirm_dangerous = false;
-        assert_eq!(cfg.environment_badge(), Some((crate::db::Environment::Production, crate::db::Environment::Production.default_color())));
+        assert_eq!(
+            cfg.environment_badge(),
+            Some((
+                crate::db::Environment::Production,
+                crate::db::Environment::Production.default_color()
+            ))
+        );
         cfg.environment_color = Some([1, 2, 3]);
-        let loaded: ConnectionConfig = serde_json::from_str(&serde_json::to_string(&cfg.without_secrets()).unwrap()).unwrap();
-        assert_eq!((loaded.environment, loaded.environment_color, loaded.confirm_dangerous), (crate::db::Environment::Production, Some([1, 2, 3]), false));
-        assert_eq!(loaded.environment_badge(), Some((crate::db::Environment::Production, [1, 2, 3])));
+        let loaded: ConnectionConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg.without_secrets()).unwrap()).unwrap();
+        assert_eq!(
+            (
+                loaded.environment,
+                loaded.environment_color,
+                loaded.confirm_dangerous
+            ),
+            (crate::db::Environment::Production, Some([1, 2, 3]), false)
+        );
+        assert_eq!(
+            loaded.environment_badge(),
+            Some((crate::db::Environment::Production, [1, 2, 3]))
+        );
     }
 }

@@ -28,7 +28,8 @@ pub struct ColumnFilter {
 
 impl ColumnFilter {
     fn matches(&self, v: &Cell) -> bool {
-        self.allowed.as_ref().is_none_or(|a| a.contains(v)) && (self.text.is_empty() || matches_text(v, &self.text.to_lowercase()))
+        self.allowed.as_ref().is_none_or(|a| a.contains(v))
+            && (self.text.is_empty() || matches_text(v, &self.text.to_lowercase()))
     }
 
     fn is_empty(&self) -> bool {
@@ -78,14 +79,26 @@ fn distinct_values(rows: &[Vec<Cell>], col: usize) -> Vec<(Cell, usize)> {
 }
 
 /// Visible original rows: those passing every filter, in the requested order.
-fn compute_order(rows: &[Vec<Cell>], sort: Option<(usize, SortDir)>, filters: &BTreeMap<usize, ColumnFilter>) -> Vec<usize> {
+fn compute_order(
+    rows: &[Vec<Cell>],
+    sort: Option<(usize, SortDir)>,
+    filters: &BTreeMap<usize, ColumnFilter>,
+) -> Vec<usize> {
     let mut order: Vec<usize> = (0..rows.len())
-        .filter(|&r| filters.iter().all(|(c, f)| rows[r].get(*c).is_some_and(|v| f.matches(v))))
+        .filter(|&r| {
+            filters
+                .iter()
+                .all(|(c, f)| rows[r].get(*c).is_some_and(|v| f.matches(v)))
+        })
         .collect();
     if let Some((c, dir)) = sort {
         order.sort_by(|&a, &b| {
             let ord = compare_cells(rows[a].get(c), rows[b].get(c));
-            if dir == SortDir::Desc { ord.reverse() } else { ord }
+            if dir == SortDir::Desc {
+                ord.reverse()
+            } else {
+                ord
+            }
         });
     }
     order
@@ -188,10 +201,15 @@ pub struct ResultView {
 impl ResultView {
     /// Focus a real result column without changing filters, order or staged edits.
     pub fn focus_column(&mut self, name: &str) -> bool {
-        let Some(col) = self.rs.columns.iter().position(|c| c == name) else { return false };
+        let Some(col) = self.rs.columns.iter().position(|c| c == name) else {
+            return false;
+        };
         self.commit_edit();
         if self.n_view_rows() > 0 {
-            let row = self.selected.map_or(0, |(r, _)| r).min(self.n_view_rows() - 1);
+            let row = self
+                .selected
+                .map_or(0, |(r, _)| r)
+                .min(self.n_view_rows() - 1);
             self.select_cell(row, col, Modifiers::NONE);
             self.scroll_to = Some(row);
         }
@@ -205,7 +223,9 @@ impl ResultView {
         self.filters.clear();
         self.sort = None;
         self.order = (0..self.rs.rows.len()).collect();
-        if self.order.is_empty() { return false; }
+        if self.order.is_empty() {
+            return false;
+        }
         self.select_cell(0, 0, Modifiers::NONE);
         self.selected_rows = BTreeSet::from([0]);
         self.scroll_to = Some(0);
@@ -217,56 +237,134 @@ impl ResultView {
         Some((r, c, self.display_value(self.row_ref(r)?, c).flatten()))
     }
 
-    pub fn row_position(&self) -> Option<(usize, usize)> { self.selected.map(|(r, _)| (r + 1, self.n_view_rows())) }
+    pub fn row_position(&self) -> Option<(usize, usize)> {
+        self.selected.map(|(r, _)| (r + 1, self.n_view_rows()))
+    }
 
     pub fn selected_record(&self) -> Option<(usize, Vec<(&str, Cell)>)> {
         let (r, _) = self.selected?;
         let row = self.row_ref(r)?;
-        Some((r + 1, self.rs.columns.iter().enumerate().map(|(c, name)| (name.as_str(), self.display_value(row, c).flatten())).collect()))
+        Some((
+            r + 1,
+            self.rs
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(c, name)| (name.as_str(), self.display_value(row, c).flatten()))
+                .collect(),
+        ))
     }
 
     fn commit_cell_editor(&mut self) {
         if let Some(editor) = self.cell_editor.take().filter(|e| e.changed) {
-            let value = if editor.null { None } else { Some(editor.buffer) };
-            self.apply_cell_values(editor.targets.into_iter().map(|(r, c)| (r, c, value.clone())).collect());
+            let value = if editor.null {
+                None
+            } else {
+                Some(editor.buffer)
+            };
+            self.apply_cell_values(
+                editor
+                    .targets
+                    .into_iter()
+                    .map(|(r, c)| (r, c, value.clone()))
+                    .collect(),
+            );
         }
     }
 
     pub fn show_cell_editor(&mut self, ui: &mut Ui) {
-        let Some((r, col, value)) = self.selected_cell() else { ui.label(tr("Select a cell to edit its value")); return; };
-        let Some(row) = self.row_ref(r) else { return; };
-        if self.cell_editor.as_ref().is_none_or(|e| e.row != row || e.col != col) {
+        let Some((r, col, value)) = self.selected_cell() else {
+            ui.label(tr("Select a cell to edit its value"));
+            return;
+        };
+        let Some(row) = self.row_ref(r) else {
+            return;
+        };
+        if self
+            .cell_editor
+            .as_ref()
+            .is_none_or(|e| e.row != row || e.col != col)
+        {
             self.commit_cell_editor();
-            self.cell_editor = Some(CellEditor { row, col, targets: self.selected_cell_refs(), buffer: value.clone().unwrap_or_default(), null: value.is_none(), changed: false, hex: false });
+            self.cell_editor = Some(CellEditor {
+                row,
+                col,
+                targets: self.selected_cell_refs(),
+                buffer: value.clone().unwrap_or_default(),
+                null: value.is_none(),
+                changed: false,
+                hex: false,
+            });
         }
         let targets = self.selected_cell_refs();
-        if let Some(editor) = &mut self.cell_editor && !editor.changed { editor.targets = targets; }
-        let editable = self.edit.as_ref().is_some_and(|e| e.state.cell_editable(&self.rs, &e.target, row, col));
-        let mut apply = false; let mut reset = false;
+        if let Some(editor) = &mut self.cell_editor
+            && !editor.changed
+        {
+            editor.targets = targets;
+        }
+        let editable = self
+            .edit
+            .as_ref()
+            .is_some_and(|e| e.state.cell_editable(&self.rs, &e.target, row, col));
+        let mut apply = false;
+        let mut reset = false;
         if let Some(editor) = self.cell_editor.as_mut() {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut editor.hex, false, tr("Text")); ui.selectable_value(&mut editor.hex, true, tr("Hex"));
+                ui.selectable_value(&mut editor.hex, false, tr("Text"));
+                ui.selectable_value(&mut editor.hex, true, tr("Hex"));
                 ui.label(egui::RichText::new(&self.rs.columns[col]).strong());
                 if editable {
                     editor.changed |= ui.checkbox(&mut editor.null, "NULL").changed();
-                    apply = ui.add_enabled(editor.changed, egui::Button::new(tr("Apply"))).clicked();
+                    apply = ui
+                        .add_enabled(editor.changed, egui::Button::new(tr("Apply")))
+                        .clicked();
                     reset = ui.button(tr("Reset")).clicked();
-                } else { ui.label(tr("Read-only")); }
-                if ui.button(tr("Copy value")).clicked() { ui.ctx().copy_text(editor.buffer.clone()); }
-            });
-            egui::ScrollArea::both().id_salt(("cell_editor_scroll", self.salt)).show(ui, |ui| {
-                if editor.hex {
-                    let hex = editor.buffer.as_bytes().chunks(16).map(|bytes| bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n");
-                    ui.label(tr("UTF-8 bytes")); ui.monospace(hex);
                 } else {
-                    ui.add_enabled_ui(editable && !editor.null, |ui| {
-                        editor.changed |= ui.add(egui::TextEdit::multiline(&mut editor.buffer).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).desired_rows(4)).changed();
-                    });
+                    ui.label(tr("Read-only"));
+                }
+                if ui.button(tr("Copy value")).clicked() {
+                    ui.ctx().copy_text(editor.buffer.clone());
                 }
             });
+            egui::ScrollArea::both()
+                .id_salt(("cell_editor_scroll", self.salt))
+                .show(ui, |ui| {
+                    if editor.hex {
+                        let hex = editor
+                            .buffer
+                            .as_bytes()
+                            .chunks(16)
+                            .map(|bytes| {
+                                bytes
+                                    .iter()
+                                    .map(|b| format!("{b:02X}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        ui.label(tr("UTF-8 bytes"));
+                        ui.monospace(hex);
+                    } else {
+                        ui.add_enabled_ui(editable && !editor.null, |ui| {
+                            editor.changed |= ui
+                                .add(
+                                    egui::TextEdit::multiline(&mut editor.buffer)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(4),
+                                )
+                                .changed();
+                        });
+                    }
+                });
         }
-        if apply { self.commit_cell_editor(); }
-        if reset { self.cell_editor = None; }
+        if apply {
+            self.commit_cell_editor();
+        }
+        if reset {
+            self.cell_editor = None;
+        }
     }
 
     pub fn open_find(&mut self) {
@@ -275,20 +373,31 @@ impl ResultView {
     }
 
     fn find_matches(&self) -> Vec<(usize, usize)> {
-        if self.find_query.is_empty() { return Vec::new(); }
+        if self.find_query.is_empty() {
+            return Vec::new();
+        }
         let query = self.find_query.to_lowercase();
-        (0..self.n_view_rows()).flat_map(|r| {
-            let query = &query;
-            (0..self.rs.columns.len()).filter_map(move |c| {
-                let row = self.row_ref(r)?;
-                self.display_value(row, c).flatten()
-                    .filter(|v| v.to_lowercase().contains(query)).map(|_| (r, c))
+        (0..self.n_view_rows())
+            .flat_map(|r| {
+                let query = &query;
+                (0..self.rs.columns.len()).filter_map(move |c| {
+                    let row = self.row_ref(r)?;
+                    self.display_value(row, c)
+                        .flatten()
+                        .filter(|v| v.to_lowercase().contains(query))
+                        .map(|_| (r, c))
+                })
             })
-        }).collect()
+            .collect()
     }
 
     fn find_count(&mut self) -> usize {
-        let key: FindKey = (self.find_query.clone(), self.n_view_rows(), self.sort, self.filters.len());
+        let key: FindKey = (
+            self.find_query.clone(),
+            self.n_view_rows(),
+            self.sort,
+            self.filters.len(),
+        );
         if let Some((k, at, n)) = &self.find_count
             && *k == key
             && at.elapsed() < std::time::Duration::from_secs(1)
@@ -303,10 +412,18 @@ impl ResultView {
     fn find_step(&mut self, forward: bool) {
         let matches = self.find_matches();
         let next = if forward {
-            matches.iter().find(|&&cell| self.selected.is_none_or(|s| cell > s)).or(matches.first())
+            matches
+                .iter()
+                .find(|&&cell| self.selected.is_none_or(|s| cell > s))
+                .or(matches.first())
         } else {
-            matches.iter().rev().find(|&&cell| self.selected.is_none_or(|s| cell < s)).or(matches.last())
-        }.copied();
+            matches
+                .iter()
+                .rev()
+                .find(|&&cell| self.selected.is_none_or(|s| cell < s))
+                .or(matches.last())
+        }
+        .copied();
         if let Some((r, c)) = next {
             self.commit_edit();
             self.select_cell(r, c, Modifiers::NONE);
@@ -356,7 +473,11 @@ impl ResultView {
         self.edit_checked = true;
         match target {
             Ok(target) => {
-                self.edit = Some(EditSession { target, state: EditState::default(), editing: None });
+                self.edit = Some(EditSession {
+                    target,
+                    state: EditState::default(),
+                    editing: None,
+                });
                 self.readonly_reason = None;
             }
             Err(reason) => {
@@ -367,13 +488,15 @@ impl ResultView {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.cell_editor.as_ref().is_some_and(|e| e.changed) || self.edit
-            .as_ref()
-            .is_some_and(|e| e.state.is_dirty() || e.editing.as_ref().is_some_and(|ed| ed.changed))
+        self.cell_editor.as_ref().is_some_and(|e| e.changed)
+            || self.edit.as_ref().is_some_and(|e| {
+                e.state.is_dirty() || e.editing.as_ref().is_some_and(|ed| ed.changed)
+            })
     }
 
     pub fn can_undo(&self) -> bool {
-        self.cell_editor.as_ref().is_some_and(|e| e.changed) || self.edit.as_ref().is_some_and(|e| e.state.can_undo())
+        self.cell_editor.as_ref().is_some_and(|e| e.changed)
+            || self.edit.as_ref().is_some_and(|e| e.state.can_undo())
     }
 
     /// Discards pending changes and any edit in progress.
@@ -400,11 +523,15 @@ impl ResultView {
     }
 
     pub fn undo(&mut self) {
-        if self.cell_editor.take().is_some_and(|e| e.changed) { return; }
+        if self.cell_editor.take().is_some_and(|e| e.changed) {
+            return;
+        }
         if let Some(e) = self.edit.as_mut() {
             e.editing = None;
             e.state.undo();
-            if !e.state.is_dirty() { self.edit_rows.clear(); }
+            if !e.state.is_dirty() {
+                self.edit_rows.clear();
+            }
         }
         self.clamp_selection();
     }
@@ -429,7 +556,8 @@ impl ResultView {
             Some(&r) => Some(RowRef::Existing(r)),
             None => {
                 let i = view_row - self.order.len();
-                (i < self.edit.as_ref().map_or(0, |e| e.state.inserted.len())).then_some(RowRef::New(i))
+                (i < self.edit.as_ref().map_or(0, |e| e.state.inserted.len()))
+                    .then_some(RowRef::New(i))
             }
         }
     }
@@ -478,7 +606,13 @@ impl ResultView {
     /// binary columns are left to their defaults so the copy can be inserted.
     pub fn clone_selected_row(&mut self) {
         self.commit_edit();
-        let Some(vr) = self.selected.map(|(r, _)| r).or_else(|| self.selected_rows.iter().next().copied()) else { return };
+        let Some(vr) = self
+            .selected
+            .map(|(r, _)| r)
+            .or_else(|| self.selected_rows.iter().next().copied())
+        else {
+            return;
+        };
         let Some(row) = self.row_ref(vr) else { return };
         let n_cols = self.rs.columns.len();
         let values: Vec<Option<Cell>> = (0..n_cols).map(|c| self.display_value(row, c)).collect();
@@ -489,7 +623,8 @@ impl ResultView {
             .into_iter()
             .enumerate()
             .map(|(c, v)| {
-                let skip = (e.target.has_pk && e.target.key_cols.contains(&c)) || e.target.binary_cols.get(c).copied().unwrap_or(false);
+                let skip = (e.target.has_pk && e.target.key_cols.contains(&c))
+                    || e.target.binary_cols.get(c).copied().unwrap_or(false);
                 if skip { None } else { v }
             })
             .collect();
@@ -523,7 +658,9 @@ impl ResultView {
         let refs = self.selected_refs();
         let Some(e) = self.edit.as_mut() else { return };
         e.editing = None;
-        if e.state.delete_rows(&self.rs, &e.target, &refs) && refs.iter().any(|r| matches!(r, RowRef::New(_))) {
+        if e.state.delete_rows(&self.rs, &e.target, &refs)
+            && refs.iter().any(|r| matches!(r, RowRef::New(_)))
+        {
             self.selected = None;
             self.selected_rows.clear();
             self.selected_cells.clear();
@@ -533,8 +670,12 @@ impl ResultView {
 
     /// Opens the inline editor on visual cell `(vr, col)` if it is editable.
     fn start_edit(&mut self, vr: usize, col: usize) -> bool {
-        let Some(row) = self.row_ref(vr) else { return false };
-        let Some(e) = self.edit.as_mut() else { return false };
+        let Some(row) = self.row_ref(vr) else {
+            return false;
+        };
+        let Some(e) = self.edit.as_mut() else {
+            return false;
+        };
         if !e.state.cell_editable(&self.rs, &e.target, row, col) {
             return false;
         }
@@ -570,7 +711,12 @@ impl ResultView {
         if !cells.contains(&(ed.row, ed.col)) {
             cells = vec![(ed.row, ed.col)];
         }
-        self.apply_cell_values(cells.into_iter().map(|(row, col)| (row, col, Some(ed.buffer.clone()))).collect());
+        self.apply_cell_values(
+            cells
+                .into_iter()
+                .map(|(row, col)| (row, col, Some(ed.buffer.clone())))
+                .collect(),
+        );
     }
 
     fn toggle_sort(&mut self, col: usize) {
@@ -617,8 +763,12 @@ impl ResultView {
     }
 
     fn row_tsv(&self, view_row: usize) -> String {
-        let Some(row) = self.row_ref(view_row) else { return String::new() };
-        let vals: Vec<Cell> = (0..self.rs.columns.len()).map(|c| self.display_value(row, c).flatten()).collect();
+        let Some(row) = self.row_ref(view_row) else {
+            return String::new();
+        };
+        let vals: Vec<Cell> = (0..self.rs.columns.len())
+            .map(|c| self.display_value(row, c).flatten())
+            .collect();
         row_to_tsv(&vals)
     }
 
@@ -650,28 +800,56 @@ impl ResultView {
     }
 
     fn related_targets(&self, clicked: Option<(usize, usize)>) -> Vec<crate::ui::fk_nav::Target> {
-        let Some(links) = self.links.as_ref() else { return Vec::new() };
+        let Some(links) = self.links.as_ref() else {
+            return Vec::new();
+        };
         let mut cells = self.selected_cells.clone();
-        if let Some((r, c)) = self.selected { cells.insert((r, c)); }
-        for &r in &self.selected_rows { cells.extend((0..self.rs.columns.len()).map(|c| (r, c))); }
+        if let Some((r, c)) = self.selected {
+            cells.insert((r, c));
+        }
+        for &r in &self.selected_rows {
+            cells.extend((0..self.rs.columns.len()).map(|c| (r, c)));
+        }
         // A button on an unselected cell follows that cell, without pulling in an unrelated selection.
-        if let Some(cell) = clicked && !cells.contains(&cell) { cells = BTreeSet::from([cell]); }
+        if let Some(cell) = clicked
+            && !cells.contains(&cell)
+        {
+            cells = BTreeSet::from([cell]);
+        }
         links.targets_for_cells(cells.into_iter().filter_map(|(r, c)| {
-            let RowRef::Existing(row) = self.row_ref(r)? else { return None };
-            if self.edit.as_ref().is_some_and(|e| e.state.is_deleted(RowRef::Existing(row))) { return None; }
+            let RowRef::Existing(row) = self.row_ref(r)? else {
+                return None;
+            };
+            if self
+                .edit
+                .as_ref()
+                .is_some_and(|e| e.state.is_deleted(RowRef::Existing(row)))
+            {
+                return None;
+            }
             Some((c, self.rs.rows.get(row)?.as_slice()))
         }))
     }
 
-    fn related_jump(&self, clicked: Option<(usize, usize)>, anchor: egui::Pos2) -> Option<crate::ui::fk_nav::Jump> {
+    fn related_jump(
+        &self,
+        clicked: Option<(usize, usize)>,
+        anchor: egui::Pos2,
+    ) -> Option<crate::ui::fk_nav::Jump> {
         let targets = self.related_targets(clicked);
-        if targets.is_empty() { return None; }
-        Some(if !targets.iter().any(crate::ui::fk_nav::Target::has_values) {
-            crate::ui::fk_nav::Jump::Null
-        } else if targets.len() == 1 {
-            // A single target needs no choice.
-            targets.into_iter().next()?.jump()
-        } else { crate::ui::fk_nav::Jump::Choose { targets, anchor } })
+        if targets.is_empty() {
+            return None;
+        }
+        Some(
+            if !targets.iter().any(crate::ui::fk_nav::Target::has_values) {
+                crate::ui::fk_nav::Jump::Null
+            } else if targets.len() == 1 {
+                // A single target needs no choice.
+                targets.into_iter().next()?.jump()
+            } else {
+                crate::ui::fk_nav::Jump::Choose { targets, anchor }
+            },
+        )
     }
 
     fn cell_selected(&self, r: usize, c: usize) -> bool {
@@ -783,14 +961,29 @@ impl ResultView {
 
     fn apply_cell_values(&mut self, values: Vec<(RowRef, usize, Cell)>) {
         if let Some(edit) = self.edit.as_mut() {
-            if !edit.state.is_dirty() { self.edit_rows.clear(); }
-            let rows: BTreeSet<_> = values.iter().filter(|(row, col, _)| edit.state.cell_editable(&self.rs, &edit.target, *row, *col)).map(|(row, _, _)| *row).collect();
-            if edit.state.set_values(&self.rs, &edit.target, values) { self.edit_rows.extend(rows); }
+            if !edit.state.is_dirty() {
+                self.edit_rows.clear();
+            }
+            let rows: BTreeSet<_> = values
+                .iter()
+                .filter(|(row, col, _)| {
+                    edit.state.cell_editable(&self.rs, &edit.target, *row, *col)
+                })
+                .map(|(row, _, _)| *row)
+                .collect();
+            if edit.state.set_values(&self.rs, &edit.target, values) {
+                self.edit_rows.extend(rows);
+            }
         }
     }
 
     fn fill_selection(&mut self, value: Cell) {
-        self.apply_cell_values(self.selected_cell_refs().into_iter().map(|(r, c)| (r, c, value.clone())).collect());
+        self.apply_cell_values(
+            self.selected_cell_refs()
+                .into_iter()
+                .map(|(r, c)| (r, c, value.clone()))
+                .collect(),
+        );
     }
 
     fn paste_selection(&mut self, text: &str) -> Result<(), String> {
@@ -882,7 +1075,9 @@ impl ResultView {
     fn cancel_row(&mut self) {
         self.cell_editor = None;
         let row = self.selected_row();
-        if let Some(row) = row { self.edit_rows.remove(&row); }
+        if let Some(row) = row {
+            self.edit_rows.remove(&row);
+        }
         if let Some(e) = self.edit.as_mut() {
             e.editing = None;
             if let Some(row) = row {
@@ -906,24 +1101,33 @@ impl ResultView {
                 .filter(|&(r, _)| r != removed)
                 .map(|(r, c)| (shift(r), c))
                 .collect();
-            self.selected_rows = std::mem::take(&mut self.selected_rows).into_iter().map(shift).collect();
+            self.selected_rows = std::mem::take(&mut self.selected_rows)
+                .into_iter()
+                .map(shift)
+                .collect();
         }
         self.clamp_selection();
     }
 
     fn row_in_edit_batch(&self, row: RowRef) -> bool {
-        self.edit_rows.contains(&row) || self.edit.as_ref().is_some_and(|edit| match row {
-            RowRef::Existing(r) => edit.state.deleted.contains(&r) || edit.state.changes.keys().any(|(changed, _)| *changed == r),
-            RowRef::New(i) => i < edit.state.inserted.len(),
-        })
+        self.edit_rows.contains(&row)
+            || self.edit.as_ref().is_some_and(|edit| match row {
+                RowRef::Existing(r) => {
+                    edit.state.deleted.contains(&r)
+                        || edit.state.changes.keys().any(|(changed, _)| *changed == r)
+                }
+                RowRef::New(i) => i < edit.state.inserted.len(),
+            })
     }
 
     fn row_change_needs_save(&self, previous: Option<RowRef>) -> bool {
         // A newly added row must be filled before it is submitted.
         previous.is_none_or(|row| self.row_in_edit_batch(row))
-            && self
-                .selected_row()
-                .is_some_and(|r| matches!(r, RowRef::Existing(_)) && Some(r) != previous && !self.row_in_edit_batch(r))
+            && self.selected_row().is_some_and(|r| {
+                matches!(r, RowRef::Existing(_))
+                    && Some(r) != previous
+                    && !self.row_in_edit_batch(r)
+            })
             && self.is_dirty()
     }
 
@@ -1031,7 +1235,11 @@ pub fn affected_message(rs: &ResultSet) -> String {
 
 pub fn format_duration(d: std::time::Duration) -> String {
     let ms = d.as_secs_f64() * 1000.0;
-    if ms < 1000.0 { format!("{ms:.0} ms") } else { format!("{:.2} s", ms / 1000.0) }
+    if ms < 1000.0 {
+        format!("{ms:.0} ms")
+    } else {
+        format!("{:.2} s", ms / 1000.0)
+    }
 }
 
 /// Escapes a value for CSV (RFC 4180).
@@ -1044,16 +1252,29 @@ pub fn csv_escape(value: &str) -> String {
 }
 
 pub fn to_csv(view: &ResultView) -> String {
-    let rows: Vec<&Vec<Cell>> = view.order.iter().filter_map(|&r| view.rs.rows.get(r)).collect();
+    let rows: Vec<&Vec<Cell>> = view
+        .order
+        .iter()
+        .filter_map(|&r| view.rs.rows.get(r))
+        .collect();
     csv_text(&view.rs.columns, &rows)
 }
 
 fn csv_text(columns: &[String], rows: &[&Vec<Cell>]) -> String {
     let mut out = String::new();
-    out.push_str(&columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","));
+    out.push_str(
+        &columns
+            .iter()
+            .map(|c| csv_escape(c))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     out.push_str("\r\n");
     for row in rows {
-        let line: Vec<String> = row.iter().map(|c| c.as_deref().map(csv_escape).unwrap_or_default()).collect();
+        let line: Vec<String> = row
+            .iter()
+            .map(|c| c.as_deref().map(csv_escape).unwrap_or_default())
+            .collect();
         out.push_str(&line.join(","));
         out.push_str("\r\n");
     }
@@ -1079,8 +1300,13 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
-    pub const ALL: [ExportFormat; 5] =
-        [ExportFormat::Csv, ExportFormat::Tsv, ExportFormat::Json, ExportFormat::SqlInsert, ExportFormat::Markdown];
+    pub const ALL: [ExportFormat; 5] = [
+        ExportFormat::Csv,
+        ExportFormat::Tsv,
+        ExportFormat::Json,
+        ExportFormat::SqlInsert,
+        ExportFormat::Markdown,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -1128,9 +1354,18 @@ pub fn format_rows(view: &ResultView, fmt: ExportFormat, insert_target: &str) ->
 }
 
 /// `format_rows` with each column's mask applied to the values (never to the grid).
-pub fn format_rows_masked(view: &ResultView, fmt: ExportFormat, insert_target: &str, masks: Option<ExportMasks>) -> String {
+pub fn format_rows_masked(
+    view: &ResultView,
+    fmt: ExportFormat,
+    insert_target: &str,
+    masks: Option<ExportMasks>,
+) -> String {
     let cols = &view.rs.columns;
-    let mut owned: Vec<Vec<Cell>> = view.order.iter().filter_map(|&r| view.rs.rows.get(r).cloned()).collect();
+    let mut owned: Vec<Vec<Cell>> = view
+        .order
+        .iter()
+        .filter_map(|&r| view.rs.rows.get(r).cloned())
+        .collect();
     if let Some(m) = masks {
         for row in &mut owned {
             for (cell, mask) in row.iter_mut().zip(m.masks) {
@@ -1146,7 +1381,12 @@ pub fn format_rows_masked(view: &ResultView, fmt: ExportFormat, insert_target: &
             let mut out = cols.iter().map(|c| clean(c)).collect::<Vec<_>>().join("\t");
             out.push('\n');
             for row in rows {
-                out.push_str(&row.iter().map(|c| c.as_deref().map(clean).unwrap_or_default()).collect::<Vec<_>>().join("\t"));
+                out.push_str(
+                    &row.iter()
+                        .map(|c| c.as_deref().map(clean).unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join("\t"),
+                );
                 out.push('\n');
             }
             out
@@ -1158,32 +1398,60 @@ pub fn format_rows_masked(view: &ResultView, fmt: ExportFormat, insert_target: &
                     let fields: Vec<String> = cols
                         .iter()
                         .zip(row.iter())
-                        .map(|(c, v)| format!("{}: {}", json_string(c), v.as_deref().map_or("null".into(), json_string)))
+                        .map(|(c, v)| {
+                            format!(
+                                "{}: {}",
+                                json_string(c),
+                                v.as_deref().map_or("null".into(), json_string)
+                            )
+                        })
                         .collect();
                     format!("  {{{}}}", fields.join(", "))
                 })
                 .collect();
-            if items.is_empty() { "[]\n".into() } else { format!("[\n{}\n]\n", items.join(",\n")) }
+            if items.is_empty() {
+                "[]\n".into()
+            } else {
+                format!("[\n{}\n]\n", items.join(",\n"))
+            }
         }
         ExportFormat::SqlInsert => {
-            let col_list = cols.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(", ");
+            let col_list = cols
+                .iter()
+                .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(", ");
             let mut out = String::new();
             for row in rows {
                 let vals = row
                     .iter()
-                    .map(|v| v.as_deref().map_or("NULL".into(), |s| format!("'{}'", s.replace('\'', "''"))))
+                    .map(|v| {
+                        v.as_deref()
+                            .map_or("NULL".into(), |s| format!("'{}'", s.replace('\'', "''")))
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
-                out.push_str(&format!("INSERT INTO {insert_target} ({col_list}) VALUES ({vals});\n"));
+                out.push_str(&format!(
+                    "INSERT INTO {insert_target} ({col_list}) VALUES ({vals});\n"
+                ));
             }
             out
         }
         ExportFormat::Markdown => {
             let cell = |v: &str| v.replace('|', "\\|").replace(['\n', '\r'], " ");
-            let mut out = format!("| {} |\n", cols.iter().map(|c| cell(c)).collect::<Vec<_>>().join(" | "));
+            let mut out = format!(
+                "| {} |\n",
+                cols.iter().map(|c| cell(c)).collect::<Vec<_>>().join(" | ")
+            );
             out.push_str(&format!("|{}\n", " --- |".repeat(cols.len())));
             for row in rows {
-                out.push_str(&format!("| {} |\n", row.iter().map(|v| v.as_deref().map(cell).unwrap_or_default()).collect::<Vec<_>>().join(" | ")));
+                out.push_str(&format!(
+                    "| {} |\n",
+                    row.iter()
+                        .map(|v| v.as_deref().map(cell).unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ));
             }
             out
         }
@@ -1191,7 +1459,13 @@ pub fn format_rows_masked(view: &ResultView, fmt: ExportFormat, insert_target: &
 }
 
 /// Saves the visible rows to a file chosen by the user. Ok(false) if cancelled.
-pub fn export_to_file(view: &ResultView, fmt: ExportFormat, insert_target: &str, base_name: &str, masks: Option<ExportMasks>) -> Result<bool, String> {
+pub fn export_to_file(
+    view: &ResultView,
+    fmt: ExportFormat,
+    insert_target: &str,
+    base_name: &str,
+    masks: Option<ExportMasks>,
+) -> Result<bool, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title(trf("Export to {format}", &[("format", &fmt.label())]))
         .add_filter(fmt.label(), &[fmt.extension()])
@@ -1200,7 +1474,9 @@ pub fn export_to_file(view: &ResultView, fmt: ExportFormat, insert_target: &str,
     else {
         return Ok(false);
     };
-    std::fs::write(&path, format_rows_masked(view, fmt, insert_target, masks)).map(|_| true).map_err(|e| e.to_string())
+    std::fs::write(&path, format_rows_masked(view, fmt, insert_target, masks))
+        .map(|_| true)
+        .map_err(|e| e.to_string())
 }
 
 pub fn export_csv(view: &ResultView) -> Result<bool, String> {
@@ -1212,7 +1488,9 @@ pub fn export_csv(view: &ResultView) -> Result<bool, String> {
     else {
         return Ok(false);
     };
-    std::fs::write(&path, to_csv(view)).map(|_| true).map_err(|e| e.to_string())
+    std::fs::write(&path, to_csv(view))
+        .map(|_| true)
+        .map_err(|e| e.to_string())
 }
 
 /// Grid row and header height.
@@ -1221,7 +1499,11 @@ const HEADER_H: f32 = 30.0;
 
 /// The follow button of a foreign-key cell, at the edge away from the value.
 fn link_button(cell: Rect, numeric: bool) -> Rect {
-    let x = if numeric { cell.left() + 4.0 } else { cell.right() - 20.0 };
+    let x = if numeric {
+        cell.left() + 4.0
+    } else {
+        cell.right() - 20.0
+    };
     Rect::from_min_size(pos2(x, cell.center().y - 8.0), egui::vec2(16.0, 16.0))
 }
 
@@ -1234,7 +1516,11 @@ fn is_numeric(v: &str) -> bool {
 enum GridAction {
     Sort(usize),
     OpenFilter(usize, egui::Pos2),
-    Select { vr: usize, col: Option<usize>, mods: Modifiers },
+    Select {
+        vr: usize,
+        col: Option<usize>,
+        mods: Modifiers,
+    },
     SelectColumn(usize, bool),
     DragStart(usize, usize, bool),
     DragTo(usize, usize),
@@ -1283,7 +1569,12 @@ pub fn show_result(
     if view.rs.is_command() {
         ui.centered_and_justified(|ui| {
             ui.label(
-                RichText::new(format!("{} · {}", affected_message(&view.rs), format_duration(view.rs.elapsed))).color(p.muted),
+                RichText::new(format!(
+                    "{} · {}",
+                    affected_message(&view.rs),
+                    format_duration(view.rs.elapsed)
+                ))
+                .color(p.muted),
             )
         });
         return GridResponse::default();
@@ -1302,40 +1593,62 @@ pub fn show_result(
     let mut jump = None;
     let links = view.links.clone();
     let previous_row = view.selected_row();
-    if ui.is_enabled() && !egui::Popup::is_any_open(ui.ctx())
-        && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
+    if ui.is_enabled()
+        && !egui::Popup::is_any_open(ui.ctx())
+        && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F))
+    {
         view.open_find();
     }
     if view.find_open {
         let mut step = None;
         let mut restart = false;
         ui.horizontal(|ui| {
-            let response = ui.add(egui::TextEdit::singleline(&mut view.find_query)
-                .id_salt(("grid_find", view.salt)).hint_text(tr("Find in loaded rows…")).desired_width(240.0));
-            if std::mem::take(&mut view.find_focus) { response.request_focus(); }
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut view.find_query)
+                    .id_salt(("grid_find", view.salt))
+                    .hint_text(tr("Find in loaded rows…"))
+                    .desired_width(240.0),
+            );
+            if std::mem::take(&mut view.find_focus) {
+                response.request_focus();
+            }
             if response.changed() {
                 restart = true;
                 step = Some(true);
             }
-            let enter = (response.has_focus() || response.lost_focus()) && ui.input(|i| i.key_pressed(Key::Enter));
-            if enter { response.request_focus(); }
-            if ui.button(tr("Previous")).clicked() { step = Some(false); }
-            if ui.button(tr("Next")).clicked() || enter { step = Some(!ui.input(|i| i.modifiers.shift)); }
+            let enter = (response.has_focus() || response.lost_focus())
+                && ui.input(|i| i.key_pressed(Key::Enter));
+            if enter {
+                response.request_focus();
+            }
+            if ui.button(tr("Previous")).clicked() {
+                step = Some(false);
+            }
+            if ui.button(tr("Next")).clicked() || enter {
+                step = Some(!ui.input(|i| i.modifiers.shift));
+            }
             let matches = view.find_count();
-            ui.label(if matches == 1 { tr("1 match").into() } else { trf("{n} matches", &[("n", &matches)]) });
+            ui.label(if matches == 1 {
+                tr("1 match").into()
+            } else {
+                trf("{n} matches", &[("n", &matches)])
+            });
             let escape = (response.has_focus() || response.lost_focus())
                 && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
-            if theme::icon_button(ui, Ico::Close, true, tr("Close (Esc)")).clicked()
-                || escape {
+            if theme::icon_button(ui, Ico::Close, true, tr("Close (Esc)")).clicked() || escape {
                 view.find_open = false;
                 response.surrender_focus();
             }
         });
         if let Some(forward) = step {
             let previous = view.selected;
-            if restart { view.selected = None; }
+            if restart {
+                view.selected = None;
+            }
             view.find_step(forward);
-            if view.selected.is_none() { view.selected = previous; }
+            if view.selected.is_none() {
+                view.selected = previous;
+            }
         }
     }
     let editable = view.edit.is_some();
@@ -1346,21 +1659,39 @@ pub fn show_result(
     let edit_id = egui::Id::new(("cell_edit", view.salt));
     let page_rows = (area_rect.height() / ROW_H).floor().max(1.0) as usize;
     let owns_focus = ui.memory(|m| m.focused().is_none() || m.has_focus(edit_id));
-    let editor_pending_focus = view.edit.as_ref().and_then(|e| e.editing.as_ref()).is_some_and(|ed| ed.focus);
+    let editor_pending_focus = view
+        .edit
+        .as_ref()
+        .and_then(|e| e.editing.as_ref())
+        .is_some_and(|ed| ed.focus);
     // Not while the value popup is open: its Esc must not also discard the grid's changes.
-    let keyboard_enabled = ui.is_enabled() && !egui::Popup::is_any_open(ui.ctx()) && view.value_popup.is_none();
+    let keyboard_enabled =
+        ui.is_enabled() && !egui::Popup::is_any_open(ui.ctx()) && view.value_popup.is_none();
 
     if keyboard_enabled && editable && editing_now && (owns_focus || editor_pending_focus) {
         let action = ui.input_mut(|i| {
-            if i.consume_key(Modifiers::NONE, Key::Escape) { Some(GridAction::Cancel) }
-            else if i.consume_key(Modifiers::SHIFT, Key::Tab) { Some(GridAction::Navigate(Key::Tab, Modifiers::SHIFT)) }
-            else if i.consume_key(Modifiers::NONE, Key::Tab) { Some(GridAction::Navigate(Key::Tab, Modifiers::NONE)) }
-            else if i.consume_key(Modifiers::COMMAND, Key::Enter) || i.consume_key(Modifiers::SHIFT, Key::Enter) || i.consume_key(Modifiers::NONE, Key::Enter) { Some(GridAction::Commit) }
-            else if i.consume_key(Modifiers::NONE, Key::ArrowUp) { Some(GridAction::Navigate(Key::ArrowUp, Modifiers::NONE)) }
-            else if i.consume_key(Modifiers::NONE, Key::ArrowDown) { Some(GridAction::Navigate(Key::ArrowDown, Modifiers::NONE)) }
-            else { None }
+            if i.consume_key(Modifiers::NONE, Key::Escape) {
+                Some(GridAction::Cancel)
+            } else if i.consume_key(Modifiers::SHIFT, Key::Tab) {
+                Some(GridAction::Navigate(Key::Tab, Modifiers::SHIFT))
+            } else if i.consume_key(Modifiers::NONE, Key::Tab) {
+                Some(GridAction::Navigate(Key::Tab, Modifiers::NONE))
+            } else if i.consume_key(Modifiers::COMMAND, Key::Enter)
+                || i.consume_key(Modifiers::SHIFT, Key::Enter)
+                || i.consume_key(Modifiers::NONE, Key::Enter)
+            {
+                Some(GridAction::Commit)
+            } else if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                Some(GridAction::Navigate(Key::ArrowUp, Modifiers::NONE))
+            } else if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                Some(GridAction::Navigate(Key::ArrowDown, Modifiers::NONE))
+            } else {
+                None
+            }
         });
-        if let Some(action) = action { actions.push(action); }
+        if let Some(action) = action {
+            actions.push(action);
+        }
         let (add, delete) = ui.input_mut(|i| {
             (
                 i.consume_key(Modifiers::COMMAND, Key::N)
@@ -1377,9 +1708,10 @@ pub fn show_result(
     }
 
     // Retain grid ownership when an inline editor was removed before this frame.
-    if keyboard_enabled && owns_focus && !editing_now
-    {
-        if (copy_requested || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))) && view.has_selection() {
+    if keyboard_enabled && owns_focus && !editing_now {
+        if (copy_requested || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))))
+            && view.has_selection()
+        {
             ui.ctx().copy_text(view.selection_tsv());
         }
         if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A)) {
@@ -1514,7 +1846,18 @@ pub fn show_result(
     let initial_widths: Vec<f32> = (0..n_cols)
         .map(|c| {
             let header = view.rs.columns[c].chars().count();
-            let content = view.rs.rows.iter().take(50).map(|r| r.get(c).and_then(|v| v.as_deref()).map_or(6, |v| v.chars().count())).max().unwrap_or(0);
+            let content = view
+                .rs
+                .rows
+                .iter()
+                .take(50)
+                .map(|r| {
+                    r.get(c)
+                        .and_then(|v| v.as_deref())
+                        .map_or(6, |v| v.chars().count())
+                })
+                .max()
+                .unwrap_or(0);
             // Header: icon (24) + bold name + funnel and sort (44).
             let header_w = header as f32 * (char_w + 0.6) + 72.0;
             let content_w = content.min(40) as f32 * char_w + 22.0;
@@ -1535,324 +1878,613 @@ pub fn show_result(
         {
             return e.target.key_cols.contains(&i);
         }
-        columns_info.is_some_and(|cols| cols.iter().any(|c| c.primary_key && c.name.eq_ignore_ascii_case(name)))
+        columns_info.is_some_and(|cols| {
+            cols.iter()
+                .any(|c| c.primary_key && c.name.eq_ignore_ascii_case(name))
+        })
     };
 
-    egui::ScrollArea::horizontal().id_salt(("result_h", view.salt)).auto_shrink([false, false]).show(ui, |ui| {
-        let mut scroll_cell = None;
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-        {
-            let v = ui.visuals_mut();
-            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.grid);
-            v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.control_border);
-            v.widgets.active.bg_stroke = Stroke::new(1.0, p.accent);
-            v.widgets.hovered.bg_fill = theme::blend(p.island_bg, p.row_hover);
-        }
-        let mut table = TableBuilder::new(ui)
-            .id_salt(("result_table", view.salt, n_cols))
-            .striped(false)
-            .resizable(true)
-            .sense(Sense::click_and_drag())
-            .auto_shrink([false, false])
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(index_width).resizable(false));
-        if let Some(r) = scroll_to {
-            table = table.scroll_to_row(r, None);
-        }
-        for w in &initial_widths {
-            table = table.column(Column::initial(*w).at_least(36.0).clip(true).resizable(true));
-        }
-        table
-            .header(HEADER_H, |mut header| {
-                header.col(|ui| {
-                    let r = ui.max_rect();
-                    ui.painter().rect_filled(r, 0.0, p.header_bg);
-                    ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.grid));
-                });
-                for (i, name) in view.rs.columns.iter().enumerate() {
-                    let mut funnel_hit = Rect::NOTHING;
-                    let mut sort_hit = Rect::NOTHING;
-                    let (_, resp) = header.col(|ui| {
+    egui::ScrollArea::horizontal()
+        .id_salt(("result_h", view.salt))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let mut scroll_cell = None;
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            {
+                let v = ui.visuals_mut();
+                v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.grid);
+                v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.control_border);
+                v.widgets.active.bg_stroke = Stroke::new(1.0, p.accent);
+                v.widgets.hovered.bg_fill = theme::blend(p.island_bg, p.row_hover);
+            }
+            let mut table = TableBuilder::new(ui)
+                .id_salt(("result_table", view.salt, n_cols))
+                .striped(false)
+                .resizable(true)
+                .sense(Sense::click_and_drag())
+                .auto_shrink([false, false])
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::exact(index_width).resizable(false));
+            if let Some(r) = scroll_to {
+                table = table.scroll_to_row(r, None);
+            }
+            for w in &initial_widths {
+                table = table.column(
+                    Column::initial(*w)
+                        .at_least(36.0)
+                        .clip(true)
+                        .resizable(true),
+                );
+            }
+            table
+                .header(HEADER_H, |mut header| {
+                    header.col(|ui| {
                         let r = ui.max_rect();
-                        if scroll_to_column == Some(i) || (scroll_to.is_some() && view.selected.is_some_and(|(_, c)| c == i)) { scroll_cell = Some(r); }
                         ui.painter().rect_filled(r, 0.0, p.header_bg);
-                        ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.grid));
-                        let painter = ui.painter_at(r);
-                        let cy = r.center().y;
-                        let ico = if pk_of(i, name) { Ico::Key } else { Ico::Column };
-                        icons::paint(&painter, Rect::from_min_size(pos2(r.left() + 6.0, cy - 7.0), egui::Vec2::splat(14.0)), ico, p.icon, &p, true);
-                        let text_right = r.right() - 40.0;
-                        let galley = painter.layout_no_wrap(name.clone(), theme::mono_bold(12.5), p.text);
-                        let tp = pos2(r.left() + 24.0, cy - galley.size().y / 2.0);
-                        painter.with_clip_rect(Rect::from_min_max(r.min, pos2(text_right.max(r.left() + 24.0), r.max.y))).galley(tp, galley, p.text);
-                        let funnel = Rect::from_min_size(pos2(r.right() - 36.0, cy - 6.5), egui::Vec2::splat(13.0));
-                        funnel_hit = funnel.expand(4.0);
-                        let funnel_color = if filters_active.contains(&i) { p.accent } else { p.disabled };
-                        icons::paint(&painter, funnel, Ico::Filter, funnel_color, &p, true);
-                        let sort_ico = match sort {
-                            Some((c, SortDir::Asc)) if c == i => Ico::SortAsc,
-                            Some((c, SortDir::Desc)) if c == i => Ico::SortDesc,
-                            _ => Ico::Sort,
-                        };
-                        let sort_color = if matches!(sort, Some((c, _)) if c == i) { p.accent } else { p.disabled };
-                        let sr = Rect::from_min_size(pos2(r.right() - 20.0, cy - 6.5), egui::Vec2::splat(13.0));
-                        sort_hit = sr.expand(2.0);
-                        icons::paint(&painter, sr, sort_ico, sort_color, &p, true);
+                        ui.painter()
+                            .hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.grid));
                     });
-                    let on_funnel = resp.hover_pos().is_some_and(|pos| funnel_hit.contains(pos));
-                    let on_sort = resp.hover_pos().is_some_and(|pos| sort_hit.contains(pos));
-                    let hint = if on_funnel { tr("Filter by values").to_string() } else if on_sort { trf("{name}\nClick to sort", &[("name", name)]) } else { tr("Select column").to_string() };
-                    let resp = resp.on_hover_text(hint);
-                    if resp.clicked() {
-                        if resp.interact_pointer_pos().is_some_and(|pos| funnel_hit.contains(pos)) {
-                            actions.push(GridAction::OpenFilter(i, funnel_hit.left_bottom()));
-                        } else if resp.interact_pointer_pos().is_some_and(|pos| sort_hit.contains(pos)) {
-                            actions.push(GridAction::Sort(i));
-                        } else {
-                            actions.push(GridAction::SelectColumn(i, ui_mods(&resp).command));
-                        }
-                    }
-                }
-            })
-            .body(|body| {
-                body.rows(ROW_H, n_rows, |mut row| {
-                    let vr = row.index();
-                    let Some(rref) = view.row_ref(vr) else { return };
-                    let edit = view.edit.as_ref();
-                    let deleted = edit.is_some_and(|e| e.state.is_deleted(rref));
-                    let is_new = matches!(rref, RowRef::New(_));
-                    let row_sel = selected_rows.contains(&vr);
-                    let row_bg = if deleted {
-                        Some(p.row_deleted)
-                    } else if is_new {
-                        Some(p.row_added)
-                    } else {
-                        None
-                    };
-                    let (_, gresp) = row.col(|ui| {
-                        let r = ui.max_rect();
-                        if row_sel {
-                            ui.painter().rect_filled(r, 0.0, p.selection_inactive);
-                        } else if let Some(bg) = row_bg {
-                            ui.painter().rect_filled(r, 0.0, bg);
-                        }
-                        ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.grid));
-                        let (label, color) = match rref {
-                            RowRef::New(_) => ("+".to_string(), p.ok),
-                            RowRef::Existing(_) if deleted => ((vr + 1).to_string(), p.error),
-                            RowRef::Existing(_) => ((vr + 1).to_string(), p.gutter_fg),
-                        };
-                        ui.painter().text(pos2(r.left() + 8.0, r.center().y), egui::Align2::LEFT_CENTER, label, cell_font.clone(), color);
-                    });
-                    if gresp.clicked() || gresp.secondary_clicked() {
-                        let mods = ui_mods(&gresp);
-                        actions.push(GridAction::Select { vr, col: None, mods });
-                    }
-                    for c in 0..n_cols {
-                        let is_sel = view.cell_selected(vr, c);
-                        let value = view.display_value(rref, c);
-                        let can_edit = edit.is_some_and(|e| e.state.cell_editable(&view.rs, &e.target, rref, c));
-                        let editing_here = inline.as_ref().is_some_and(|ed| ed.row == rref && ed.col == c);
-                        let modified = (edit.is_some_and(|e| e.state.is_modified(rref, c)) && !is_new)
-                            || inline.as_ref().is_some_and(|ed| editing_here && ed.changed);
-                        // Keys follow the stored values, not pending edits.
-                        let stored = match rref { RowRef::Existing(i) => view.rs.rows.get(i), RowRef::New(_) => None };
-                        let targets = links.as_deref().zip(stored).map(|(l, row)| l.targets(c, row)).unwrap_or_default();
-                        let link = (!deleted && !targets.is_empty()).then_some(0);
-                        let numeric = matches!(&value, Some(Some(v)) if is_numeric(v));
-                        let (_, resp) = row.col(|ui| {
+                    for (i, name) in view.rs.columns.iter().enumerate() {
+                        let mut funnel_hit = Rect::NOTHING;
+                        let mut sort_hit = Rect::NOTHING;
+                        let (_, resp) = header.col(|ui| {
                             let r = ui.max_rect();
-                            let bg = if modified && !deleted {
-                                Some(p.cell_modified)
-                            } else if is_sel && !editing_here {
-                                Some(p.selection)
-                            } else if row_sel {
-                                Some(p.selection_inactive)
+                            if scroll_to_column == Some(i)
+                                || (scroll_to.is_some()
+                                    && view.selected.is_some_and(|(_, c)| c == i))
+                            {
+                                scroll_cell = Some(r);
+                            }
+                            ui.painter().rect_filled(r, 0.0, p.header_bg);
+                            ui.painter().hline(
+                                r.x_range(),
+                                r.bottom() - 0.5,
+                                Stroke::new(1.0, p.grid),
+                            );
+                            let painter = ui.painter_at(r);
+                            let cy = r.center().y;
+                            let ico = if pk_of(i, name) {
+                                Ico::Key
                             } else {
-                                row_bg
+                                Ico::Column
                             };
-                            if let Some(bg) = bg {
+                            icons::paint(
+                                &painter,
+                                Rect::from_min_size(
+                                    pos2(r.left() + 6.0, cy - 7.0),
+                                    egui::Vec2::splat(14.0),
+                                ),
+                                ico,
+                                p.icon,
+                                &p,
+                                true,
+                            );
+                            let text_right = r.right() - 40.0;
+                            let galley = painter.layout_no_wrap(
+                                name.clone(),
+                                theme::mono_bold(12.5),
+                                p.text,
+                            );
+                            let tp = pos2(r.left() + 24.0, cy - galley.size().y / 2.0);
+                            painter
+                                .with_clip_rect(Rect::from_min_max(
+                                    r.min,
+                                    pos2(text_right.max(r.left() + 24.0), r.max.y),
+                                ))
+                                .galley(tp, galley, p.text);
+                            let funnel = Rect::from_min_size(
+                                pos2(r.right() - 36.0, cy - 6.5),
+                                egui::Vec2::splat(13.0),
+                            );
+                            funnel_hit = funnel.expand(4.0);
+                            let funnel_color = if filters_active.contains(&i) {
+                                p.accent
+                            } else {
+                                p.disabled
+                            };
+                            icons::paint(&painter, funnel, Ico::Filter, funnel_color, &p, true);
+                            let sort_ico = match sort {
+                                Some((c, SortDir::Asc)) if c == i => Ico::SortAsc,
+                                Some((c, SortDir::Desc)) if c == i => Ico::SortDesc,
+                                _ => Ico::Sort,
+                            };
+                            let sort_color = if matches!(sort, Some((c, _)) if c == i) {
+                                p.accent
+                            } else {
+                                p.disabled
+                            };
+                            let sr = Rect::from_min_size(
+                                pos2(r.right() - 20.0, cy - 6.5),
+                                egui::Vec2::splat(13.0),
+                            );
+                            sort_hit = sr.expand(2.0);
+                            icons::paint(&painter, sr, sort_ico, sort_color, &p, true);
+                        });
+                        let on_funnel =
+                            resp.hover_pos().is_some_and(|pos| funnel_hit.contains(pos));
+                        let on_sort = resp.hover_pos().is_some_and(|pos| sort_hit.contains(pos));
+                        let hint = if on_funnel {
+                            tr("Filter by values").to_string()
+                        } else if on_sort {
+                            trf("{name}\nClick to sort", &[("name", name)])
+                        } else {
+                            tr("Select column").to_string()
+                        };
+                        let resp = resp.on_hover_text(hint);
+                        if resp.clicked() {
+                            if resp
+                                .interact_pointer_pos()
+                                .is_some_and(|pos| funnel_hit.contains(pos))
+                            {
+                                actions.push(GridAction::OpenFilter(i, funnel_hit.left_bottom()));
+                            } else if resp
+                                .interact_pointer_pos()
+                                .is_some_and(|pos| sort_hit.contains(pos))
+                            {
+                                actions.push(GridAction::Sort(i));
+                            } else {
+                                actions.push(GridAction::SelectColumn(i, ui_mods(&resp).command));
+                            }
+                        }
+                    }
+                })
+                .body(|body| {
+                    body.rows(ROW_H, n_rows, |mut row| {
+                        let vr = row.index();
+                        let Some(rref) = view.row_ref(vr) else { return };
+                        let edit = view.edit.as_ref();
+                        let deleted = edit.is_some_and(|e| e.state.is_deleted(rref));
+                        let is_new = matches!(rref, RowRef::New(_));
+                        let row_sel = selected_rows.contains(&vr);
+                        let row_bg = if deleted {
+                            Some(p.row_deleted)
+                        } else if is_new {
+                            Some(p.row_added)
+                        } else {
+                            None
+                        };
+                        let (_, gresp) = row.col(|ui| {
+                            let r = ui.max_rect();
+                            if row_sel {
+                                ui.painter().rect_filled(r, 0.0, p.selection_inactive);
+                            } else if let Some(bg) = row_bg {
                                 ui.painter().rect_filled(r, 0.0, bg);
                             }
-                            if modified && is_sel && !editing_here {
-                                let width = if view.selected == Some((vr, c)) { 2.0 } else { 1.0 };
-                                ui.painter().rect_stroke(r.shrink(0.5), 0.0, Stroke::new(width, p.accent), egui::StrokeKind::Inside);
-                            }
-                            ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, p.grid));
-                            if editing_here && let Some(ed) = inline.as_mut() {
-                                if ed.focus && ui.is_enabled() {
-                                    ed.focus = false;
-                                    ui.memory_mut(|m| m.request_focus(edit_id));
-                                    let mut st = egui::text_edit::TextEditState::load(ui.ctx(), edit_id).unwrap_or_default();
-                                    let n = ed.buffer.chars().count();
-                                    st.cursor.set_char_range(Some(if ed.select_all { CCursorRange::two(CCursor::new(0), CCursor::new(n)) } else { CCursorRange::one(CCursor::new(n)) }));
-                                    st.store(ui.ctx(), edit_id);
-                                }
-                                ui.painter().rect_stroke(r.shrink(0.5), 2.0, Stroke::new(1.5, p.accent), egui::StrokeKind::Inside);
-                                let edit_rect = r.shrink2(egui::vec2(5.0, 2.0));
-                                let te = ui.put(
-                                    edit_rect,
-                                    egui::TextEdit::singleline(&mut ed.buffer)
-                                        .id(edit_id)
-                                        .font(cell_font.clone())
-                                        .frame(egui::Frame::NONE)
-                                        .margin(egui::vec2(2.0, 2.0))
-                                        .background_color(Color32::TRANSPARENT)
-                                        .vertical_align(egui::Align::Center)
-                                        .desired_width(edit_rect.width()),
-                                );
-                                ed.changed |= te.changed();
-                                if te.lost_focus() && !actions.iter().any(|a| matches!(a, GridAction::Commit | GridAction::Navigate(..) | GridAction::Cancel)) {
-                                    actions.push(GridAction::Commit);
-                                }
-                                return;
-                            }
-                            let painter = ui.painter_at(r.shrink2(egui::vec2(6.0, 0.0)));
-                            // Hovering a key value shows its follow button; over the button the value is a link.
-                            let button = link.filter(|_| ui.rect_contains_pointer(r)).map(|_| link_button(r, numeric));
-                            let hot = button.is_some_and(|b| ui.rect_contains_pointer(b));
-                            let text_rect = match &value {
-                                Some(Some(v)) => {
-                                    let shown: String =
-                                        v.chars().take(300).map(|ch| if ch == '\n' || ch == '\r' { '⏎' } else { ch }).collect();
-                                    let (pos, align) = if is_numeric(v) {
-                                        (pos2(r.right() - 7.0, r.center().y), egui::Align2::RIGHT_CENTER)
-                                    } else {
-                                        (pos2(r.left() + 7.0, r.center().y), egui::Align2::LEFT_CENTER)
-                                    };
-                                    painter.text(pos, align, shown, cell_font.clone(), if deleted { p.muted } else if hot { p.accent } else { p.text })
-                                }
-                                Some(None) => painter.text(
-                                    pos2(r.left() + 7.0, r.center().y),
-                                    egui::Align2::LEFT_CENTER,
-                                    "<null>",
-                                    cell_font.clone(),
-                                    p.disabled,
-                                ),
-                                None => painter.text(
-                                    pos2(r.left() + 7.0, r.center().y),
-                                    egui::Align2::LEFT_CENTER,
-                                    "<default>",
-                                    cell_font.clone(),
-                                    p.disabled,
-                                ),
+                            ui.painter().hline(
+                                r.x_range(),
+                                r.bottom() - 0.5,
+                                Stroke::new(1.0, p.grid),
+                            );
+                            let (label, color) = match rref {
+                                RowRef::New(_) => ("+".to_string(), p.ok),
+                                RowRef::Existing(_) if deleted => ((vr + 1).to_string(), p.error),
+                                RowRef::Existing(_) => ((vr + 1).to_string(), p.gutter_fg),
                             };
-                            if deleted {
-                                painter.hline(text_rect.x_range(), text_rect.center().y, Stroke::new(1.0, p.error));
-                            } else if link.is_some() {
-                                painter.hline(text_rect.x_range(), text_rect.bottom() + 0.5, Stroke::new(1.0, if hot { p.accent } else { p.accent.gamma_multiply(0.45) }));
-                            }
-                            if let Some(b) = button {
-                                ui.painter().rect_filled(b.expand(2.0), 3.0, if hot { p.hover } else { bg.unwrap_or(p.island_bg) });
-                                icons::paint(ui.painter(), b, Ico::FollowKey, if hot { p.accent } else { p.icon }, &p, true);
-                            }
+                            ui.painter().text(
+                                pos2(r.left() + 8.0, r.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                cell_font.clone(),
+                                color,
+                            );
                         });
-                        if editing_here {
-                            continue;
+                        if gresp.clicked() || gresp.secondary_clicked() {
+                            let mods = ui_mods(&gresp);
+                            actions.push(GridAction::Select {
+                                vr,
+                                col: None,
+                                mods,
+                            });
                         }
-                        if resp.drag_started() { actions.push(GridAction::DragStart(vr, c, ui_mods(&resp).command)); }
-                        if view.drag_anchor.is_some() && resp.contains_pointer() && resp.ctx.input(|i| i.pointer.primary_down()) { actions.push(GridAction::DragTo(vr, c)); }
-                        let on_button = |pos: Option<egui::Pos2>| link.is_some() && pos.is_some_and(|pos| link_button(resp.rect, numeric).contains(pos));
-                        let over_button = resp.hovered() && on_button(resp.hover_pos());
-                        if over_button {
-                            resp.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        let mods = ui_mods(&resp);
-                        // Keep ordinary clicks and selection gestures available on related cells.
-                        // Only the explicit follow button (or F4 below) opens navigation targets.
-                        let follow = resp.clicked() && on_button(resp.interact_pointer_pos()) && !mods.command && !mods.shift && !mods.alt;
-                        if follow {
-                            if let Some(jump) = view.related_jump(Some((vr, c)), resp.rect.left_bottom()) { actions.push(GridAction::Jump(jump)); }
-                        } else if resp.clicked() || (resp.secondary_clicked() && !is_sel && !view.selected_rows.contains(&vr)) {
+                        for c in 0..n_cols {
+                            let is_sel = view.cell_selected(vr, c);
+                            let value = view.display_value(rref, c);
+                            let can_edit = edit.is_some_and(|e| {
+                                e.state.cell_editable(&view.rs, &e.target, rref, c)
+                            });
+                            let editing_here = inline
+                                .as_ref()
+                                .is_some_and(|ed| ed.row == rref && ed.col == c);
+                            let modified = (edit.is_some_and(|e| e.state.is_modified(rref, c))
+                                && !is_new)
+                                || inline.as_ref().is_some_and(|ed| editing_here && ed.changed);
+                            // Keys follow the stored values, not pending edits.
+                            let stored = match rref {
+                                RowRef::Existing(i) => view.rs.rows.get(i),
+                                RowRef::New(_) => None,
+                            };
+                            let targets = links
+                                .as_deref()
+                                .zip(stored)
+                                .map(|(l, row)| l.targets(c, row))
+                                .unwrap_or_default();
+                            let link = (!deleted && !targets.is_empty()).then_some(0);
+                            let numeric = matches!(&value, Some(Some(v)) if is_numeric(v));
+                            let (_, resp) = row.col(|ui| {
+                                let r = ui.max_rect();
+                                let bg = if modified && !deleted {
+                                    Some(p.cell_modified)
+                                } else if is_sel && !editing_here {
+                                    Some(p.selection)
+                                } else if row_sel {
+                                    Some(p.selection_inactive)
+                                } else {
+                                    row_bg
+                                };
+                                if let Some(bg) = bg {
+                                    ui.painter().rect_filled(r, 0.0, bg);
+                                }
+                                if modified && is_sel && !editing_here {
+                                    let width = if view.selected == Some((vr, c)) {
+                                        2.0
+                                    } else {
+                                        1.0
+                                    };
+                                    ui.painter().rect_stroke(
+                                        r.shrink(0.5),
+                                        0.0,
+                                        Stroke::new(width, p.accent),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                ui.painter().hline(
+                                    r.x_range(),
+                                    r.bottom() - 0.5,
+                                    Stroke::new(1.0, p.grid),
+                                );
+                                if editing_here && let Some(ed) = inline.as_mut() {
+                                    if ed.focus && ui.is_enabled() {
+                                        ed.focus = false;
+                                        ui.memory_mut(|m| m.request_focus(edit_id));
+                                        let mut st =
+                                            egui::text_edit::TextEditState::load(ui.ctx(), edit_id)
+                                                .unwrap_or_default();
+                                        let n = ed.buffer.chars().count();
+                                        st.cursor.set_char_range(Some(if ed.select_all {
+                                            CCursorRange::two(CCursor::new(0), CCursor::new(n))
+                                        } else {
+                                            CCursorRange::one(CCursor::new(n))
+                                        }));
+                                        st.store(ui.ctx(), edit_id);
+                                    }
+                                    ui.painter().rect_stroke(
+                                        r.shrink(0.5),
+                                        2.0,
+                                        Stroke::new(1.5, p.accent),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    let edit_rect = r.shrink2(egui::vec2(5.0, 2.0));
+                                    let te = ui.put(
+                                        edit_rect,
+                                        egui::TextEdit::singleline(&mut ed.buffer)
+                                            .id(edit_id)
+                                            .font(cell_font.clone())
+                                            .frame(egui::Frame::NONE)
+                                            .margin(egui::vec2(2.0, 2.0))
+                                            .background_color(Color32::TRANSPARENT)
+                                            .vertical_align(egui::Align::Center)
+                                            .desired_width(edit_rect.width()),
+                                    );
+                                    ed.changed |= te.changed();
+                                    if te.lost_focus()
+                                        && !actions.iter().any(|a| {
+                                            matches!(
+                                                a,
+                                                GridAction::Commit
+                                                    | GridAction::Navigate(..)
+                                                    | GridAction::Cancel
+                                            )
+                                        })
+                                    {
+                                        actions.push(GridAction::Commit);
+                                    }
+                                    return;
+                                }
+                                let painter = ui.painter_at(r.shrink2(egui::vec2(6.0, 0.0)));
+                                // Hovering a key value shows its follow button; over the button the value is a link.
+                                let button = link
+                                    .filter(|_| ui.rect_contains_pointer(r))
+                                    .map(|_| link_button(r, numeric));
+                                let hot = button.is_some_and(|b| ui.rect_contains_pointer(b));
+                                let text_rect = match &value {
+                                    Some(Some(v)) => {
+                                        let shown: String =
+                                            v.chars()
+                                                .take(300)
+                                                .map(|ch| {
+                                                    if ch == '\n' || ch == '\r' {
+                                                        '⏎'
+                                                    } else {
+                                                        ch
+                                                    }
+                                                })
+                                                .collect();
+                                        let (pos, align) = if is_numeric(v) {
+                                            (
+                                                pos2(r.right() - 7.0, r.center().y),
+                                                egui::Align2::RIGHT_CENTER,
+                                            )
+                                        } else {
+                                            (
+                                                pos2(r.left() + 7.0, r.center().y),
+                                                egui::Align2::LEFT_CENTER,
+                                            )
+                                        };
+                                        painter.text(
+                                            pos,
+                                            align,
+                                            shown,
+                                            cell_font.clone(),
+                                            if deleted {
+                                                p.muted
+                                            } else if hot {
+                                                p.accent
+                                            } else {
+                                                p.text
+                                            },
+                                        )
+                                    }
+                                    Some(None) => painter.text(
+                                        pos2(r.left() + 7.0, r.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        "<null>",
+                                        cell_font.clone(),
+                                        p.disabled,
+                                    ),
+                                    None => painter.text(
+                                        pos2(r.left() + 7.0, r.center().y),
+                                        egui::Align2::LEFT_CENTER,
+                                        "<default>",
+                                        cell_font.clone(),
+                                        p.disabled,
+                                    ),
+                                };
+                                if deleted {
+                                    painter.hline(
+                                        text_rect.x_range(),
+                                        text_rect.center().y,
+                                        Stroke::new(1.0, p.error),
+                                    );
+                                } else if link.is_some() {
+                                    painter.hline(
+                                        text_rect.x_range(),
+                                        text_rect.bottom() + 0.5,
+                                        Stroke::new(
+                                            1.0,
+                                            if hot {
+                                                p.accent
+                                            } else {
+                                                p.accent.gamma_multiply(0.45)
+                                            },
+                                        ),
+                                    );
+                                }
+                                if let Some(b) = button {
+                                    ui.painter().rect_filled(
+                                        b.expand(2.0),
+                                        3.0,
+                                        if hot {
+                                            p.hover
+                                        } else {
+                                            bg.unwrap_or(p.island_bg)
+                                        },
+                                    );
+                                    icons::paint(
+                                        ui.painter(),
+                                        b,
+                                        Ico::FollowKey,
+                                        if hot { p.accent } else { p.icon },
+                                        &p,
+                                        true,
+                                    );
+                                }
+                            });
+                            if editing_here {
+                                continue;
+                            }
+                            if resp.drag_started() {
+                                actions.push(GridAction::DragStart(vr, c, ui_mods(&resp).command));
+                            }
+                            if view.drag_anchor.is_some()
+                                && resp.contains_pointer()
+                                && resp.ctx.input(|i| i.pointer.primary_down())
+                            {
+                                actions.push(GridAction::DragTo(vr, c));
+                            }
+                            let on_button = |pos: Option<egui::Pos2>| {
+                                link.is_some()
+                                    && pos.is_some_and(|pos| {
+                                        link_button(resp.rect, numeric).contains(pos)
+                                    })
+                            };
+                            let over_button = resp.hovered() && on_button(resp.hover_pos());
+                            if over_button {
+                                resp.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
                             let mods = ui_mods(&resp);
-                            actions.push(GridAction::Select { vr, col: Some(c), mods });
-                        }
-                        let cell_rect = resp.rect;
-                        // The whole value: Alt+Click (⌥-click) on any cell, or a double click on
-                        // one that can't be edited inline (query results, NoSQL engines, read-only
-                        // connections and columns), where a double click edits otherwise.
-                        if (resp.clicked() && ui_mods(&resp).alt) || (resp.double_clicked() && !can_edit) {
-                            actions.push(GridAction::ViewValue(vr, c, cell_rect.left_bottom()));
-                        } else if resp.double_clicked() {
-                            actions.push(GridAction::StartEdit(vr, c));
-                        }
-                        let resp = if over_button {
-                            resp.on_hover_text(tr("Go to referenced row"))
-                        } else if editable && !can_edit && resp.hovered() && edit.is_some_and(|e| !e.state.is_deleted(rref)) {
-                            resp.on_hover_text(tr("Read-only cell"))
-                        } else {
-                            resp
-                        };
-                        resp.context_menu(|ui| {
-                            if editable {
-                                if ui.add_enabled(can_edit, egui::Button::new(tr("Edit")).shortcut_text("F2")).clicked() {
-                                    actions.push(GridAction::StartEdit(vr, c));
-                                    ui.close();
+                            // Keep ordinary clicks and selection gestures available on related cells.
+                            // Only the explicit follow button (or F4 below) opens navigation targets.
+                            let follow = resp.clicked()
+                                && on_button(resp.interact_pointer_pos())
+                                && !mods.command
+                                && !mods.shift
+                                && !mods.alt;
+                            if follow {
+                                if let Some(jump) =
+                                    view.related_jump(Some((vr, c)), resp.rect.left_bottom())
+                                {
+                                    actions.push(GridAction::Jump(jump));
                                 }
-                                let is_null = matches!(value, Some(None));
-                                if ui.add_enabled(can_edit && !is_null, egui::Button::new(tr("Set NULL"))).clicked() {
-                                    actions.push(GridAction::SetNull(rref, c));
-                                    ui.close();
-                                }
-                                let revertible = deleted || edit.is_some_and(|e| e.state.is_modified(rref, c));
-                                if ui.add_enabled(revertible, egui::Button::new(tr("Revert change"))).clicked() {
-                                    actions.push(GridAction::Revert(rref, c));
-                                    ui.close();
-                                }
-                                // Insert-only targets (ClickHouse) can't delete rows already stored.
-                                let insert_only = edit.is_some_and(|e| e.target.insert_only) && matches!(rref, RowRef::Existing(_));
-                                if ui.add_enabled(!deleted && !insert_only, egui::Button::new(tr("Delete row"))).clicked() {
-                                    actions.push(GridAction::DeleteRows);
-                                    ui.close();
-                                }
-                                if ui.add(egui::Button::new(tr("Clone Row")).shortcut_text(crate::shortcuts::format("⌘D"))).clicked() {
-                                    actions.push(GridAction::Select { vr, col: Some(c), mods: Modifiers::NONE });
-                                    actions.push(GridAction::CloneRow);
-                                    ui.close();
-                                }
-                                ui.separator();
+                            } else if resp.clicked()
+                                || (resp.secondary_clicked()
+                                    && !is_sel
+                                    && !view.selected_rows.contains(&vr))
+                            {
+                                let mods = ui_mods(&resp);
+                                actions.push(GridAction::Select {
+                                    vr,
+                                    col: Some(c),
+                                    mods,
+                                });
                             }
-                            let view_value = if cfg!(target_os = "macos") { "⌥Click" } else { "Alt+Click" };
-                            if ui.add(egui::Button::new(tr("View Value")).shortcut_text(view_value)).clicked() {
+                            let cell_rect = resp.rect;
+                            // The whole value: Alt+Click (⌥-click) on any cell, or a double click on
+                            // one that can't be edited inline (query results, NoSQL engines, read-only
+                            // connections and columns), where a double click edits otherwise.
+                            if (resp.clicked() && ui_mods(&resp).alt)
+                                || (resp.double_clicked() && !can_edit)
+                            {
                                 actions.push(GridAction::ViewValue(vr, c, cell_rect.left_bottom()));
-                                ui.close();
+                            } else if resp.double_clicked() {
+                                actions.push(GridAction::StartEdit(vr, c));
                             }
-                            if ui.add(egui::Button::new(tr("Record View")).shortcut_text(crate::shortcuts::format("⇧↩"))).clicked() {
-                                actions.push(GridAction::RecordView(vr));
-                                ui.close();
-                            }
-                            if let (Some(l), Some(row)) = (links.as_deref(), stored) {
-                                for target in view.related_targets(Some((vr, c))) {
-                                    if ui.button(target.label()).clicked() {
-                                        actions.push(GridAction::Jump(target.jump()));
+                            let resp = if over_button {
+                                resp.on_hover_text(tr("Go to referenced row"))
+                            } else if editable
+                                && !can_edit
+                                && resp.hovered()
+                                && edit.is_some_and(|e| !e.state.is_deleted(rref))
+                            {
+                                resp.on_hover_text(tr("Read-only cell"))
+                            } else {
+                                resp
+                            };
+                            resp.context_menu(|ui| {
+                                if editable {
+                                    if ui
+                                        .add_enabled(
+                                            can_edit,
+                                            egui::Button::new(tr("Edit")).shortcut_text("F2"),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(GridAction::StartEdit(vr, c));
+                                        ui.close();
+                                    }
+                                    let is_null = matches!(value, Some(None));
+                                    if ui
+                                        .add_enabled(
+                                            can_edit && !is_null,
+                                            egui::Button::new(tr("Set NULL")),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(GridAction::SetNull(rref, c));
+                                        ui.close();
+                                    }
+                                    let revertible = deleted
+                                        || edit.is_some_and(|e| e.state.is_modified(rref, c));
+                                    if ui
+                                        .add_enabled(
+                                            revertible,
+                                            egui::Button::new(tr("Revert change")),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(GridAction::Revert(rref, c));
+                                        ui.close();
+                                    }
+                                    // Insert-only targets (ClickHouse) can't delete rows already stored.
+                                    let insert_only = edit.is_some_and(|e| e.target.insert_only)
+                                        && matches!(rref, RowRef::Existing(_));
+                                    if ui
+                                        .add_enabled(
+                                            !deleted && !insert_only,
+                                            egui::Button::new(tr("Delete row")),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(GridAction::DeleteRows);
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add(
+                                            egui::Button::new(tr("Clone Row"))
+                                                .shortcut_text(crate::shortcuts::format("⌘D")),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.push(GridAction::Select {
+                                            vr,
+                                            col: Some(c),
+                                            mods: Modifiers::NONE,
+                                        });
+                                        actions.push(GridAction::CloneRow);
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                }
+                                let view_value = if cfg!(target_os = "macos") {
+                                    "⌥Click"
+                                } else {
+                                    "Alt+Click"
+                                };
+                                if ui
+                                    .add(
+                                        egui::Button::new(tr("View Value"))
+                                            .shortcut_text(view_value),
+                                    )
+                                    .clicked()
+                                {
+                                    actions.push(GridAction::ViewValue(
+                                        vr,
+                                        c,
+                                        cell_rect.left_bottom(),
+                                    ));
+                                    ui.close();
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(tr("Record View"))
+                                            .shortcut_text(crate::shortcuts::format("⇧↩")),
+                                    )
+                                    .clicked()
+                                {
+                                    actions.push(GridAction::RecordView(vr));
+                                    ui.close();
+                                }
+                                if let (Some(l), Some(row)) = (links.as_deref(), stored) {
+                                    for target in view.related_targets(Some((vr, c))) {
+                                        if ui.button(target.label()).clicked() {
+                                            actions.push(GridAction::Jump(target.jump()));
+                                            ui.close();
+                                        }
+                                    }
+                                    if let Some(target) = l.children(row)
+                                        && ui.button(tr("Referenced by…")).clicked()
+                                    {
+                                        actions.push(GridAction::Jump(target));
                                         ui.close();
                                     }
                                 }
-                                if let Some(target) = l.children(row) && ui.button(tr("Referenced by…")).clicked() {
-                                    actions.push(GridAction::Jump(target));
+                                if ui.button(tr("Copy value")).clicked() {
+                                    actions.push(GridAction::Copy(
+                                        value.clone().flatten().unwrap_or_default(),
+                                    ));
                                     ui.close();
                                 }
-                            }
-                            if ui.button(tr("Copy value")).clicked() {
-                                actions.push(GridAction::Copy(value.clone().flatten().unwrap_or_default()));
-                                ui.close();
-                            }
-                            if ui.button(tr("Copy row (TSV)")).clicked() {
-                                actions.push(GridAction::Copy(view.row_tsv(vr)));
-                                ui.close();
-                            }
-                            if ui.button(tr("Copy row with headers")).clicked() {
-                                actions.push(GridAction::Copy(format!("{}\n{}", view.rs.columns.join("\t"), view.row_tsv(vr))));
-                                ui.close();
-                            }
-                        });
-                    }
+                                if ui.button(tr("Copy row (TSV)")).clicked() {
+                                    actions.push(GridAction::Copy(view.row_tsv(vr)));
+                                    ui.close();
+                                }
+                                if ui.button(tr("Copy row with headers")).clicked() {
+                                    actions.push(GridAction::Copy(format!(
+                                        "{}\n{}",
+                                        view.rs.columns.join("\t"),
+                                        view.row_tsv(vr)
+                                    )));
+                                    ui.close();
+                                }
+                            });
+                        }
+                    });
                 });
-            });
-        // The inner vertical scroll area consumes scroll targets on both axes.
-        // Request horizontal visibility after it has finished.
-        if let Some(rect) = scroll_cell { ui.scroll_to_rect(rect, None); }
-    });
+            // The inner vertical scroll area consumes scroll targets on both axes.
+            // Request horizontal visibility after it has finished.
+            if let Some(rect) = scroll_cell {
+                ui.scroll_to_rect(rect, None);
+            }
+        });
 
     if let Some(e) = view.edit.as_mut() {
         e.editing = inline;
@@ -1866,8 +2498,18 @@ pub fn show_result(
     for a in actions {
         match a {
             GridAction::OpenFilter(c, anchor) => {
-                let search = view.filters.get(&c).map(|f| f.text.clone()).unwrap_or_default();
-                view.filter_popup = Some(FilterPopup { col: c, anchor, search, values: distinct_values(&view.rs.rows, c), just_opened: true });
+                let search = view
+                    .filters
+                    .get(&c)
+                    .map(|f| f.text.clone())
+                    .unwrap_or_default();
+                view.filter_popup = Some(FilterPopup {
+                    col: c,
+                    anchor,
+                    search,
+                    values: distinct_values(&view.rs.rows, c),
+                    just_opened: true,
+                });
             }
             GridAction::Sort(c) => {
                 view.commit_edit();
@@ -2006,13 +2648,21 @@ pub fn show_result(
                 if let Some(row) = view.row_ref(vr)
                     && let Some(column) = view.rs.columns.get(c).cloned()
                 {
-                    let data_type = columns_info.and_then(|cols| cols.iter().find(|x| x.name == column)).map(|x| x.data_type.to_lowercase());
+                    let data_type = columns_info
+                        .and_then(|cols| cols.iter().find(|x| x.name == column))
+                        .map(|x| x.data_type.to_lowercase());
                     let value = view.display_value(row, c);
                     let shown = match &value {
                         Some(Some(v)) => pretty_json(v).unwrap_or_else(|| v.clone()),
                         _ => String::new(),
                     };
-                    view.value_popup = Some(ValuePopup { column, data_type, value, shown, anchor });
+                    view.value_popup = Some(ValuePopup {
+                        column,
+                        data_type,
+                        value,
+                        shown,
+                        anchor,
+                    });
                 }
             }
             GridAction::Copy(t) => ui.ctx().copy_text(t),
@@ -2044,7 +2694,9 @@ pub fn show_result(
     if ui.input(|i| i.key_pressed(Key::F4))
         && let Some(target) = view.related_jump(None, ui.max_rect().left_top())
         && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F4))
-    { jump = Some(target); }
+    {
+        jump = Some(target);
+    }
     // First: its Esc closes it only, not also the record view.
     value_popup_ui(ui, view);
     record_view_ui(ui, view, columns_info);
@@ -2067,11 +2719,18 @@ pub fn show_result(
 /// The value popup: the cell's whole value, selectable, below the cell. Esc or a click outside
 /// closes it.
 fn value_popup_ui(ui: &Ui, view: &mut ResultView) {
-    let Some(popup) = view.value_popup.as_ref() else { return };
+    let Some(popup) = view.value_popup.as_ref() else {
+        return;
+    };
     let p = pal(ui);
     let font = FontId::monospace(12.5);
     let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
-    let longest = popup.shown.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    let longest = popup
+        .shown
+        .lines()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
     let width = (longest as f32 * char_w + 28.0).clamp(280.0, 640.0);
     let id = egui::Id::new(("value_popup", view.salt));
     // A modal (Esc and a click outside close it) placed at the cell instead of the center.
@@ -2083,44 +2742,53 @@ fn value_popup_ui(ui: &Ui, view: &mut ResultView) {
         .fixed_pos(popup.anchor + vec2(0.0, 2.0))
         .constrain(true);
     let mut close = false;
-    let modal = egui::Modal::new(id).area(area).backdrop_color(Color32::from_black_alpha(40)).show(ui.ctx(), |ui| {
-        ui.set_width(width);
-        ui.horizontal(|ui| {
-            ui.add(egui::Label::new(RichText::new(&popup.column).strong().color(p.text)).truncate());
-            if let Some(t) = &popup.data_type {
-                ui.label(RichText::new(t).small().color(p.muted));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                close = theme::icon_button(ui, Ico::Close, true, tr("Close (Esc)")).clicked();
-                if let Some(Some(v)) = &popup.value
-                    && ui.small_button(tr("Copy value")).clicked()
-                {
-                    ui.ctx().copy_text(v.clone());
+    let modal = egui::Modal::new(id)
+        .area(area)
+        .backdrop_color(Color32::from_black_alpha(40))
+        .show(ui.ctx(), |ui| {
+            ui.set_width(width);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(&popup.column).strong().color(p.text))
+                        .truncate(),
+                );
+                if let Some(t) = &popup.data_type {
+                    ui.label(RichText::new(t).small().color(p.muted));
                 }
-            });
-        });
-        ui.separator();
-        match &popup.value {
-            Some(Some(_)) => {
-                egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut popup.shown.as_str())
-                            .font(font)
-                            .frame(egui::Frame::NONE)
-                            .background_color(Color32::TRANSPARENT)
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY),
-                    );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = theme::icon_button(ui, Ico::Close, true, tr("Close (Esc)")).clicked();
+                    if let Some(Some(v)) = &popup.value
+                        && ui.small_button(tr("Copy value")).clicked()
+                    {
+                        ui.ctx().copy_text(v.clone());
+                    }
                 });
+            });
+            ui.separator();
+            match &popup.value {
+                Some(Some(_)) => {
+                    egui::ScrollArea::vertical()
+                        .max_height(420.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut popup.shown.as_str())
+                                    .font(font)
+                                    .frame(egui::Frame::NONE)
+                                    .background_color(Color32::TRANSPARENT)
+                                    .desired_rows(1)
+                                    .desired_width(f32::INFINITY),
+                            );
+                        });
+                }
+                Some(None) => {
+                    ui.label(RichText::new("<null>").monospace().color(p.disabled));
+                }
+                None => {
+                    ui.label(RichText::new("<default>").monospace().color(p.disabled));
+                }
             }
-            Some(None) => {
-                ui.label(RichText::new("<null>").monospace().color(p.disabled));
-            }
-            None => {
-                ui.label(RichText::new("<default>").monospace().color(p.disabled));
-            }
-        }
-    });
+        });
     if modal.should_close() || close {
         view.value_popup = None;
     }
@@ -2197,7 +2865,9 @@ fn record_view_ui(ui: &Ui, view: &mut ResultView, columns_info: Option<&[ColumnI
     let p = pal(ui);
     let mut open = true;
     let mut go: Option<usize> = None;
-    let values: Vec<Cell> = (0..view.rs.columns.len()).map(|c| view.display_value(row, c).flatten()).collect();
+    let values: Vec<Cell> = (0..view.rs.columns.len())
+        .map(|c| view.display_value(row, c).flatten())
+        .collect();
     egui::Window::new(tr("Record View"))
         .id(egui::Id::new(("record_view", view.salt)))
         .open(&mut open)
@@ -2215,42 +2885,72 @@ fn record_view_ui(ui: &Ui, view: &mut ResultView, columns_info: Option<&[ColumnI
                 if theme::icon_button(ui, Ico::ChevronRight, vr + 1 < n, tr("Next row")).clicked() {
                     go = Some(vr + 1);
                 }
-                ui.label(RichText::new(trf("Row {n} of {total}", &[("n", &(vr + 1)), ("total", &n)])).color(p.muted));
+                ui.label(
+                    RichText::new(trf(
+                        "Row {n} of {total}",
+                        &[("n", &(vr + 1)), ("total", &n)],
+                    ))
+                    .color(p.muted),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button(tr("Copy row with headers")).clicked() {
-                        let text = view.rs.columns.iter().zip(&values).map(|(c, v)| format!("{c}\t{}", v.clone().unwrap_or_default())).collect::<Vec<_>>().join("\n");
+                        let text = view
+                            .rs
+                            .columns
+                            .iter()
+                            .zip(&values)
+                            .map(|(c, v)| format!("{c}\t{}", v.clone().unwrap_or_default()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         ui.ctx().copy_text(text);
                     }
                 });
             });
             ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                let label_w = 150.0;
-                for (c, name) in view.rs.columns.iter().enumerate() {
-                    let info = columns_info.and_then(|cols| cols.iter().find(|x| x.name == *name));
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(vec2(label_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                            ui.set_width(label_w);
-                            ui.add(egui::Label::new(RichText::new(name).strong().color(p.text)).truncate());
-                            if let Some(info) = info {
-                                ui.label(RichText::new(info.data_type.to_lowercase()).small().color(p.muted));
-                            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let label_w = 150.0;
+                    for (c, name) in view.rs.columns.iter().enumerate() {
+                        let info =
+                            columns_info.and_then(|cols| cols.iter().find(|x| x.name == *name));
+                        ui.horizontal_top(|ui| {
+                            ui.allocate_ui_with_layout(
+                                vec2(label_w, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(label_w);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(name).strong().color(p.text),
+                                        )
+                                        .truncate(),
+                                    );
+                                    if let Some(info) = info {
+                                        ui.label(
+                                            RichText::new(info.data_type.to_lowercase())
+                                                .small()
+                                                .color(p.muted),
+                                        );
+                                    }
+                                },
+                            );
+                            let text = match &values[c] {
+                                None => RichText::new("<null>").monospace().color(p.muted),
+                                Some(v) => RichText::new(v).monospace().color(p.text),
+                            };
+                            let resp =
+                                ui.add(egui::Label::new(text).wrap().sense(egui::Sense::click()));
+                            resp.context_menu(|ui| {
+                                if ui.button(tr("Copy value")).clicked() {
+                                    ui.ctx().copy_text(values[c].clone().unwrap_or_default());
+                                    ui.close();
+                                }
+                            });
                         });
-                        let text = match &values[c] {
-                            None => RichText::new("<null>").monospace().color(p.muted),
-                            Some(v) => RichText::new(v).monospace().color(p.text),
-                        };
-                        let resp = ui.add(egui::Label::new(text).wrap().sense(egui::Sense::click()));
-                        resp.context_menu(|ui| {
-                            if ui.button(tr("Copy value")).clicked() {
-                                ui.ctx().copy_text(values[c].clone().unwrap_or_default());
-                                ui.close();
-                            }
-                        });
-                    });
-                    ui.separator();
-                }
-            });
+                        ui.separator();
+                    }
+                });
         });
     if let Some(r) = go {
         view.record_view = Some(r);
@@ -2279,18 +2979,39 @@ pub enum EditAction {
 }
 
 /// Data edit buttons (+, −, undo, revert, submit) and "Preview".
-pub fn edit_buttons(ui: &mut Ui, view: Option<&mut ResultView>, enabled: bool) -> Option<EditAction> {
+pub fn edit_buttons(
+    ui: &mut Ui,
+    view: Option<&mut ResultView>,
+    enabled: bool,
+) -> Option<EditAction> {
     let editable = enabled && view.as_ref().is_some_and(|v| v.edit.is_some());
     let dirty = editable && view.as_ref().is_some_and(|v| v.is_dirty());
     let can_undo = editable && view.as_ref().is_some_and(|v| v.can_undo());
     let has_sel = editable && view.as_ref().is_some_and(|v| v.has_selection());
     let add = theme::icon_button(ui, Ico::Plus, editable, tr("Add row"));
     let del = theme::icon_button(ui, Ico::Minus, has_sel, tr("Delete selected rows"));
-    let undo = theme::icon_button(ui, Ico::Undo, can_undo, &crate::shortcuts::format(tr("Undo (⌘Z)")));
+    let undo = theme::icon_button(
+        ui,
+        Ico::Undo,
+        can_undo,
+        &crate::shortcuts::format(tr("Undo (⌘Z)")),
+    );
     let revert = theme::icon_button(ui, Ico::Revert, dirty, tr("Revert all changes"));
-    let submit = theme::icon_button(ui, Ico::Submit, dirty, &crate::shortcuts::format(tr("Submit changes (⌘S)")));
-    let pv = theme::flat_button(ui, Some(Ico::Eye), tr("Preview"), FontId::proportional(13.0), false, dirty)
-        .on_hover_text(tr("Preview the SQL of the pending changes"));
+    let submit = theme::icon_button(
+        ui,
+        Ico::Submit,
+        dirty,
+        &crate::shortcuts::format(tr("Submit changes (⌘S)")),
+    );
+    let pv = theme::flat_button(
+        ui,
+        Some(Ico::Eye),
+        tr("Preview"),
+        FontId::proportional(13.0),
+        false,
+        dirty,
+    )
+    .on_hover_text(tr("Preview the SQL of the pending changes"));
     if let Some(v) = view {
         if add.clicked() {
             v.add_row();
@@ -2330,13 +3051,25 @@ fn demo_filter(view: &mut ResultView, area: Rect) {
             if let Some((first, _)) = values.first() {
                 allowed.remove(first);
             }
-            ColumnFilter { allowed: Some(allowed), text: String::new() }
+            ColumnFilter {
+                allowed: Some(allowed),
+                text: String::new(),
+            }
         } else {
-            ColumnFilter { allowed: None, text: text.to_string() }
+            ColumnFilter {
+                allowed: None,
+                text: text.to_string(),
+            }
         };
         view.set_filter(c, Some(filter));
         let anchor = area.left_top() + egui::vec2(120.0 * c as f32 + 60.0, 30.0);
-        view.filter_popup = Some(FilterPopup { col: c, anchor, search: text.to_string(), values, just_opened: true });
+        view.filter_popup = Some(FilterPopup {
+            col: c,
+            anchor,
+            search: text.to_string(),
+            values,
+            just_opened: true,
+        });
     }
 }
 
@@ -2344,8 +3077,13 @@ fn demo_filter(view: &mut ResultView, area: Rect) {
 /// or clones it (in memory, never saved), once per run.
 fn demo_grid(view: &mut ResultView) {
     static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let Ok(mode) = std::env::var("DATACRAFT_DEMO_GRID") else { return };
-    if view.rs.rows.is_empty() || (mode == "clone" && view.edit.is_none()) || DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    let Ok(mode) = std::env::var("DATACRAFT_DEMO_GRID") else {
+        return;
+    };
+    if view.rs.rows.is_empty()
+        || (mode == "clone" && view.edit.is_none())
+        || DONE.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
         return;
     }
     view.selected = Some((0, 1.min(view.rs.columns.len().saturating_sub(1))));
@@ -2358,14 +3096,22 @@ fn demo_grid(view: &mut ResultView) {
 
 /// Funnel popup: search, check values, all/none and remove filter.
 fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
-    let Some(popup) = view.filter_popup.as_mut() else { return };
+    let Some(popup) = view.filter_popup.as_mut() else {
+        return;
+    };
     let p = pal(ui);
     let col = popup.col;
     let current = view.filters.get(&col).cloned();
     let mut new_filter: Option<Option<ColumnFilter>> = None;
     let mut close = ui.input(|i| i.key_pressed(Key::Escape));
     let col_name = view.rs.columns.get(col).cloned().unwrap_or_default();
-    let all_values = || popup.values.iter().map(|(v, _)| v.clone()).collect::<HashSet<Cell>>();
+    let all_values = || {
+        popup
+            .values
+            .iter()
+            .map(|(v, _)| v.clone())
+            .collect::<HashSet<Cell>>()
+    };
     let area = egui::Area::new(egui::Id::new(("col_filter", view.salt)))
         .order(egui::Order::Foreground)
         .fixed_pos(popup.anchor + egui::vec2(0.0, 4.0))
@@ -2373,10 +3119,16 @@ fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_width(260.0);
-                ui.label(RichText::new(trf("Filter “{column}”", &[("column", &col_name)])).font(theme::bold(13.0)).color(p.text));
+                ui.label(
+                    RichText::new(trf("Filter “{column}”", &[("column", &col_name)]))
+                        .font(theme::bold(13.0))
+                        .color(p.text),
+                );
                 ui.add_space(4.0);
                 let search = ui.add(
-                    egui::TextEdit::singleline(&mut popup.search).hint_text(tr("Search value…")).desired_width(f32::INFINITY),
+                    egui::TextEdit::singleline(&mut popup.search)
+                        .hint_text(tr("Search value…"))
+                        .desired_width(f32::INFINITY),
                 );
                 if popup.just_opened || ui.memory(|m| m.focused().is_none()) {
                     search.request_focus();
@@ -2395,7 +3147,11 @@ fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
                     .filter(|(_, (v, _))| needle.is_empty() || matches_text(v, &needle))
                     .map(|(i, _)| i)
                     .collect();
-                let base = new_filter.clone().flatten().or_else(|| current.clone()).unwrap_or_default();
+                let base = new_filter
+                    .clone()
+                    .flatten()
+                    .or_else(|| current.clone())
+                    .unwrap_or_default();
                 ui.horizontal(|ui| {
                     if ui.small_button(tr("All")).clicked() {
                         let mut f = base.clone();
@@ -2414,22 +3170,29 @@ fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
                         new_filter = Some(Some(f));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(current.is_some(), egui::Button::new(tr("Remove filter")).small()).clicked() {
+                        if ui
+                            .add_enabled(
+                                current.is_some(),
+                                egui::Button::new(tr("Remove filter")).small(),
+                            )
+                            .clicked()
+                        {
                             new_filter = Some(None);
                             close = true;
                         }
                     });
                 });
                 ui.separator();
-                egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show_rows(
-                    ui,
-                    20.0,
-                    shown.len(),
-                    |ui, range| {
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show_rows(ui, 20.0, shown.len(), |ui, range| {
                         for &i in &shown[range] {
                             let (value, count) = &popup.values[i];
                             let mut on = base.allowed.as_ref().is_none_or(|a| a.contains(value));
-                            let text = RichText::new(value_label(value)).monospace().color(if value.is_none() { p.muted } else { p.text });
+                            let text = RichText::new(value_label(value))
+                                .monospace()
+                                .color(if value.is_none() { p.muted } else { p.text });
                             ui.horizontal(|ui| {
                                 if ui.checkbox(&mut on, text).changed() {
                                     let mut f = base.clone();
@@ -2442,13 +3205,17 @@ fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
                                     f.allowed = Some(allowed);
                                     new_filter = Some(Some(f));
                                 }
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(count.to_string()).small().color(p.muted));
-                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(count.to_string()).small().color(p.muted),
+                                        );
+                                    },
+                                );
                             });
                         }
-                    },
-                );
+                    });
                 if shown.is_empty() {
                     ui.label(RichText::new(tr("No matches")).color(p.muted));
                 }
@@ -2465,7 +3232,10 @@ fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
         // A filter that checks every value and has no text is redundant.
         let total = all_values_of(view);
         let f = f.map(|mut f| {
-            if f.allowed.as_ref().is_some_and(|a| total.iter().all(|v| a.contains(v))) {
+            if f.allowed
+                .as_ref()
+                .is_some_and(|a| total.iter().all(|v| a.contains(v)))
+            {
                 f.allowed = None;
             }
             f
@@ -2478,7 +3248,10 @@ fn filter_popup_ui(ui: &Ui, view: &mut ResultView) {
 }
 
 fn all_values_of(view: &ResultView) -> Vec<Cell> {
-    view.filter_popup.as_ref().map(|p| p.values.iter().map(|(v, _)| v.clone()).collect()).unwrap_or_default()
+    view.filter_popup
+        .as_ref()
+        .map(|p| p.values.iter().map(|(v, _)| v.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// Floating pill centred at the bottom of the grid: "N rows ⌄  ⋮".
@@ -2489,12 +3262,22 @@ fn row_count_pill(ui: &Ui, view: &ResultView, area: Rect) -> Option<String> {
     let text = match (view.filtered_out(), n) {
         (0, 1) => tr("1 row").to_string(),
         (0, n) => trf("{n}{plus} rows", &[("n", &n), ("plus", &plus)]),
-        (_, n) => trf("{shown} of {n}{plus} rows", &[("shown", &view.order.len()), ("n", &n), ("plus", &plus)]),
+        (_, n) => trf(
+            "{shown} of {n}{plus} rows",
+            &[("shown", &view.order.len()), ("n", &n), ("plus", &plus)],
+        ),
     };
     let font = FontId::proportional(12.5);
-    let tw = ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), p.text).size().x);
+    let tw = ui.fonts_mut(|f| {
+        f.layout_no_wrap(text.clone(), font.clone(), p.text)
+            .size()
+            .x
+    });
     let size = egui::vec2(10.0 + tw + 18.0 + 9.0 + 24.0 + 4.0, 28.0);
-    let pos = pos2(area.center().x - size.x / 2.0, area.bottom() - size.y - 12.0);
+    let pos = pos2(
+        area.center().x - size.x / 2.0,
+        area.bottom() - size.y - 12.0,
+    );
     let mut error = None;
     egui::Area::new(egui::Id::new(("rows_pill", view.salt)))
         .order(egui::Order::Middle)
@@ -2502,14 +3285,32 @@ fn row_count_pill(ui: &Ui, view: &ResultView, area: Rect) -> Option<String> {
         .show(ui.ctx(), |ui| {
             let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
             ui.painter().add(
-                egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: egui::Color32::from_black_alpha(if p.dark { 60 } else { 18 }) }
-                    .as_shape(rect, 8.0),
+                egui::Shadow {
+                    offset: [0, 2],
+                    blur: 8,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(if p.dark { 60 } else { 18 }),
+                }
+                .as_shape(rect, 8.0),
             );
-            ui.painter().rect(rect, 8.0, p.island_bg, Stroke::new(1.0, p.control_border), egui::StrokeKind::Inside);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(2.0, 1.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            ui.painter().rect(
+                rect,
+                8.0,
+                p.island_bg,
+                Stroke::new(1.0, p.control_border),
+                egui::StrokeKind::Inside,
+            );
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink2(egui::vec2(2.0, 1.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
             child.spacing_mut().item_spacing.x = 0.0;
             let rows_btn = theme::flat_button(&mut child, None, &text, font.clone(), true, true)
-                .on_hover_text(trf("Query executed in {time}", &[("time", &format_duration(view.rs.elapsed))]));
+                .on_hover_text(trf(
+                    "Query executed in {time}",
+                    &[("time", &format_duration(view.rs.elapsed))],
+                ));
             theme::toolbar_separator(&mut child);
             let more = theme::icon_button_sized(&mut child, Ico::MoreVert, true, "", 24.0);
             for resp in [rows_btn, more] {
@@ -2543,7 +3344,11 @@ pub fn show_output(ui: &mut Ui, log: &[OutputEntry]) {
             }
             for e in log {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("[{}]", e.time)).monospace().color(pal.muted));
+                    ui.label(
+                        RichText::new(format!("[{}]", e.time))
+                            .monospace()
+                            .color(pal.muted),
+                    );
                     if !e.statement.is_empty() {
                         ui.label(RichText::new(statement_title_long(&e.statement)).monospace());
                     }
@@ -2551,7 +3356,9 @@ pub fn show_output(ui: &mut Ui, log: &[OutputEntry]) {
                 let color: Color32 = if e.is_error { pal.error } else { pal.ok };
                 ui.horizontal(|ui| {
                     ui.add_space(16.0);
-                    ui.add(egui::Label::new(RichText::new(&e.message).monospace().color(color)).wrap());
+                    ui.add(
+                        egui::Label::new(RichText::new(&e.message).monospace().color(color)).wrap(),
+                    );
                 });
             }
         });
@@ -2568,22 +3375,54 @@ mod column_navigation_tests {
     #[test]
     fn explorer_column_navigation_reveals_columns_in_populated_and_empty_grids() {
         for empty in [false, true] {
-            let rows = if empty { Vec::new() } else { vec![vec![Some("one".into()); 30], vec![Some("two".into()); 30]] };
-            let mut view = ResultView::new(ResultSet { columns: (0..30).map(|c| format!("column_{c:02}")).collect(), rows, ..Default::default() }, 500 + u64::from(empty));
-            if !empty { view.select_cell(1, 0, Modifiers::NONE); }
+            let rows = if empty {
+                Vec::new()
+            } else {
+                vec![vec![Some("one".into()); 30], vec![Some("two".into()); 30]]
+            };
+            let mut view = ResultView::new(
+                ResultSet {
+                    columns: (0..30).map(|c| format!("column_{c:02}")).collect(),
+                    rows,
+                    ..Default::default()
+                },
+                500 + u64::from(empty),
+            );
+            if !empty {
+                view.select_cell(1, 0, Modifiers::NONE);
+            }
             assert!(!view.focus_column("unavailable"));
             let mut first = true;
-            let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 460.0)).build_ui_state(move |ui, state: &mut (ResultView, f32)| {
-                if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
-                let id = ui.make_persistent_id(egui::IdSalt::new(("result_h", state.0.salt)));
-                show_result(ui, &mut state.0, false, None, false, true);
-                state.1 = egui::scroll_area::State::load(ui.ctx(), id).unwrap().offset.x;
-            }, (view, 0.0));
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(vec2(900.0, 460.0))
+                .build_ui_state(
+                    move |ui, state: &mut (ResultView, f32)| {
+                        if std::mem::take(&mut first) {
+                            theme::install_fonts(ui.ctx());
+                            theme::apply(ui.ctx(), true);
+                            return;
+                        }
+                        let id =
+                            ui.make_persistent_id(egui::IdSalt::new(("result_h", state.0.salt)));
+                        show_result(ui, &mut state.0, false, None, false, true);
+                        state.1 = egui::scroll_area::State::load(ui.ctx(), id)
+                            .unwrap()
+                            .offset
+                            .x;
+                    },
+                    (view, 0.0),
+                );
             h.run_steps(3);
             assert!(h.state_mut().0.focus_column("column_29"));
             h.run_steps(20);
-            assert!(h.state().1 > 1000.0, "navigation must reveal offscreen columns even without rows");
-            assert_eq!(h.state().0.selected, if empty { None } else { Some((1, 29)) });
+            assert!(
+                h.state().1 > 1000.0,
+                "navigation must reveal offscreen columns even without rows"
+            );
+            assert_eq!(
+                h.state().0.selected,
+                if empty { None } else { Some((1, 29)) }
+            );
             assert!(!h.state().0.is_dirty());
             assert!(h.state_mut().0.focus_column("column_00"));
             h.run_steps(20);
@@ -2631,7 +3470,10 @@ mod filter_tests {
     #[test]
     fn distinct_values_with_count_and_numeric_order() {
         let d = distinct_values(&rows(), 0);
-        let labels: Vec<_> = d.iter().map(|(v, n)| (v.clone().unwrap_or_default(), *n)).collect();
+        let labels: Vec<_> = d
+            .iter()
+            .map(|(v, n)| (v.clone().unwrap_or_default(), *n))
+            .collect();
         assert_eq!(labels, [("1".into(), 1), ("2".into(), 2), ("10".into(), 1)]);
         assert_eq!(distinct_values(&rows(), 1).len(), 3);
     }
@@ -2639,22 +3481,58 @@ mod filter_tests {
     #[test]
     fn combined_filter_and_sort() {
         let mut filters = BTreeMap::new();
-        filters.insert(1, ColumnFilter { allowed: Some(HashSet::from([Some("b".to_string()), None])), text: String::new() });
+        filters.insert(
+            1,
+            ColumnFilter {
+                allowed: Some(HashSet::from([Some("b".to_string()), None])),
+                text: String::new(),
+            },
+        );
         assert_eq!(compute_order(&rows(), None, &filters), vec![0, 1, 3]);
-        assert_eq!(compute_order(&rows(), Some((0, SortDir::Desc)), &filters), vec![1, 3, 0]);
-        assert_eq!(compute_order(&rows(), None, &BTreeMap::new()), vec![0, 1, 2, 3]);
+        assert_eq!(
+            compute_order(&rows(), Some((0, SortDir::Desc)), &filters),
+            vec![1, 3, 0]
+        );
+        assert_eq!(
+            compute_order(&rows(), None, &BTreeMap::new()),
+            vec![0, 1, 2, 3]
+        );
     }
 
     #[test]
     fn text_filter_hides_rows() {
         let mut filters = BTreeMap::new();
-        filters.insert(1, ColumnFilter { allowed: None, text: "B".into() });
+        filters.insert(
+            1,
+            ColumnFilter {
+                allowed: None,
+                text: "B".into(),
+            },
+        );
         assert_eq!(compute_order(&rows(), None, &filters), vec![0, 3]);
-        filters.insert(1, ColumnFilter { allowed: None, text: "null".into() });
+        filters.insert(
+            1,
+            ColumnFilter {
+                allowed: None,
+                text: "null".into(),
+            },
+        );
         assert_eq!(compute_order(&rows(), None, &filters), vec![1]);
         // Text and checked values combine.
-        filters.insert(0, ColumnFilter { allowed: Some(HashSet::from([Some("2".to_string())])), text: String::new() });
-        filters.insert(1, ColumnFilter { allowed: None, text: "b".into() });
+        filters.insert(
+            0,
+            ColumnFilter {
+                allowed: Some(HashSet::from([Some("2".to_string())])),
+                text: String::new(),
+            },
+        );
+        filters.insert(
+            1,
+            ColumnFilter {
+                allowed: None,
+                text: "b".into(),
+            },
+        );
         assert_eq!(compute_order(&rows(), None, &filters), vec![3]);
     }
 }
@@ -2665,56 +3543,93 @@ mod keyboard_tests {
     use egui_kittest::kittest::Queryable;
 
     fn wide_table_scenario(render: bool) {
-        let mut view = ResultView::new(ResultSet {
-            columns: (0..30).map(|c| format!("column_{c:02}")).collect(),
-            rows: (0..200).map(|r| (0..30).map(|c| Some(format!("value_{r}_{c}"))).collect()).collect(),
-            ..Default::default()
-        }, 991);
+        let mut view = ResultView::new(
+            ResultSet {
+                columns: (0..30).map(|c| format!("column_{c:02}")).collect(),
+                rows: (0..200)
+                    .map(|r| (0..30).map(|c| Some(format!("value_{r}_{c}"))).collect())
+                    .collect(),
+                ..Default::default()
+            },
+            991,
+        );
         view.select_cell(0, 0, Modifiers::NONE);
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 460.0)).build_ui_state(
-            move |ui, state: &mut (ResultView, f32)| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    theme::apply(ui.ctx(), true);
-                    return;
-                }
-                let id = ui.make_persistent_id(egui::IdSalt::new(("result_h", state.0.salt)));
-                show_result(ui, &mut state.0, false, None, false, true);
-                state.1 = egui::scroll_area::State::load(ui.ctx(), id).expect("horizontal scroll state").offset.x;
-            }, (view, 0.0));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(900.0, 460.0))
+            .build_ui_state(
+                move |ui, state: &mut (ResultView, f32)| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        theme::apply(ui.ctx(), true);
+                        return;
+                    }
+                    let id = ui.make_persistent_id(egui::IdSalt::new(("result_h", state.0.salt)));
+                    show_result(ui, &mut state.0, false, None, false, true);
+                    state.1 = egui::scroll_area::State::load(ui.ctx(), id)
+                        .expect("horizontal scroll state")
+                        .offset
+                        .x;
+                },
+                (view, 0.0),
+            );
         h.run_steps(3);
         h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowRight);
         h.run_steps(20);
         assert_eq!(h.state().0.selected, Some((0, 29)));
-        assert!(h.state().1 > 1000.0, "cursor must reveal the last column: {}", h.state().1);
+        assert!(
+            h.state().1 > 1000.0,
+            "cursor must reveal the last column: {}",
+            h.state().1
+        );
         if render {
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/navigation-snapshots");
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/navigation-snapshots");
             std::fs::create_dir_all(&dir).unwrap();
-            h.render().unwrap().save(dir.join("wide-table.png")).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join("wide-table.png"))
+                .unwrap();
         }
         h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowLeft);
         h.run_steps(20);
         assert_eq!(h.state().0.selected, Some((0, 0)));
-        assert!(h.state().1 < 60.0, "cursor must reveal the first column, offset {}", h.state().1);
+        assert!(
+            h.state().1 < 60.0,
+            "cursor must reveal the first column, offset {}",
+            h.state().1
+        );
         h.key_press_modifiers(Modifiers::COMMAND, Key::F);
         h.run_steps(2);
-        h.input_mut().events.push(egui::Event::Text("value_199_29".into()));
+        h.input_mut()
+            .events
+            .push(egui::Event::Text("value_199_29".into()));
         h.run_steps(20);
         assert_eq!(h.state().0.selected, Some((199, 29)));
-        assert!(h.state().1 > 1000.0, "find must also reveal the matched column");
+        assert!(
+            h.state().1 > 1000.0,
+            "find must also reveal the matched column"
+        );
         if render {
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/navigation-snapshots");
-            h.render().unwrap().save(dir.join("table-find.png")).unwrap();
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/navigation-snapshots");
+            h.render()
+                .unwrap()
+                .save(dir.join("table-find.png"))
+                .unwrap();
         }
     }
 
     #[test]
-    fn horizontal_keyboard_navigation_reveals_the_selected_column() { wide_table_scenario(false); }
+    fn horizontal_keyboard_navigation_reveals_the_selected_column() {
+        wide_table_scenario(false);
+    }
 
     #[test]
     #[ignore = "Requires a GPU; renders horizontal navigation on test data"]
-    fn render_wide_table() { wide_table_scenario(true); }
+    fn render_wide_table() {
+        wide_table_scenario(true);
+    }
 
     #[test]
     fn ctrl_f_finds_loaded_values_and_wraps_without_changing_data() {
@@ -2737,7 +3652,9 @@ mod keyboard_tests {
     #[test]
     fn finding_outside_an_edited_batch_respects_opt_in_auto_save() {
         let mut h = harness(true, true);
-        h.input_mut().events.push(egui::Event::Text("edited".into()));
+        h.input_mut()
+            .events
+            .push(egui::Event::Text("edited".into()));
         h.run_steps(2);
         h.key_press(Key::Enter);
         h.run_steps(2);
@@ -2746,7 +3663,10 @@ mod keyboard_tests {
         h.run_steps(2);
         h.key_press(Key::Escape);
         h.run_steps(2);
-        assert!(h.state().view.is_dirty(), "closing find must not discard pending row changes");
+        assert!(
+            h.state().view.is_dirty(),
+            "closing find must not discard pending row changes"
+        );
         h.key_press_modifiers(Modifiers::COMMAND, Key::F);
         h.run_steps(2);
         h.input_mut().events.push(egui::Event::Text("c".into()));
@@ -2835,7 +3755,10 @@ mod keyboard_tests {
         ResultView::new(
             ResultSet {
                 columns: vec!["id".into(), "note".into()],
-                rows: vec![vec![Some("1".into()), Some(r#"{"b":[1,2.50],"a":"x}"}"#.into())], vec![Some("2".into()), None]],
+                rows: vec![
+                    vec![Some("1".into()), Some(r#"{"b":[1,2.50],"a":"x}"}"#.into())],
+                    vec![Some("2".into()), None],
+                ],
                 ..Default::default()
             },
             7,
@@ -2848,7 +3771,12 @@ mod keyboard_tests {
         let events = &mut h.input_mut().events;
         events.push(egui::Event::PointerMoved(pos));
         for pressed in [true, false, true, false] {
-            events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+            events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
         }
     }
 
@@ -2862,15 +3790,30 @@ mod keyboard_tests {
         let mut h = harness_for(read_only_view(), false);
         double_click(&mut h, pos2(160.0, 50.0));
         h.run_steps(3);
-        let popup = h.state().view.value_popup.as_ref().expect("the value popup");
-        assert_eq!((popup.column.as_str(), popup.shown.as_str()), ("note", "{\n  \"b\": [\n    1,\n    2.50\n  ],\n  \"a\": \"x}\"\n}"));
+        let popup = h
+            .state()
+            .view
+            .value_popup
+            .as_ref()
+            .expect("the value popup");
+        assert_eq!(
+            (popup.column.as_str(), popup.shown.as_str()),
+            (
+                "note",
+                "{\n  \"b\": [\n    1,\n    2.50\n  ],\n  \"a\": \"x}\"\n}"
+            )
+        );
         // Below the cell.
         assert!((55.0..75.0).contains(&popup.anchor.y), "{:?}", popup.anchor);
         h.get_by_label("Copy value");
         if render {
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/navigation-snapshots");
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target/navigation-snapshots");
             std::fs::create_dir_all(&dir).unwrap();
-            h.render().unwrap().save(dir.join("value-popup.png")).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join("value-popup.png"))
+                .unwrap();
         }
         h.key_press(Key::Escape);
         h.run_steps(2);
@@ -2879,18 +3822,28 @@ mod keyboard_tests {
     }
 
     #[test]
-    fn double_click_shows_a_read_only_value_and_esc_closes_it() { value_popup_scenario(false); }
+    fn double_click_shows_a_read_only_value_and_esc_closes_it() {
+        value_popup_scenario(false);
+    }
 
     #[test]
     #[ignore = "renders with wgpu"]
-    fn render_value_popup() { value_popup_scenario(true); }
+    fn render_value_popup() {
+        value_popup_scenario(true);
+    }
 
     #[test]
     fn a_click_outside_closes_the_value_popup_and_only_that() {
         let mut h = harness_for(read_only_view(), false);
         double_click(&mut h, pos2(160.0, 74.0));
         h.run_steps(3);
-        assert!(matches!(h.state().view.value_popup.as_ref().map(|p| &p.value), Some(Some(None))), "NULL");
+        assert!(
+            matches!(
+                h.state().view.value_popup.as_ref().map(|p| &p.value),
+                Some(Some(None))
+            ),
+            "NULL"
+        );
         // Over another cell: the click closes the popup without selecting it.
         click(&h, pos2(60.0, 50.0));
         h.run_steps(3);
@@ -2904,8 +3857,17 @@ mod keyboard_tests {
         double_click(&mut h, pos2(160.0, 50.0));
         h.run_steps(3);
         assert!(h.state().view.value_popup.is_none());
-        assert!(h.state().view.edit.as_ref().is_some_and(|e| e.editing.is_some()), "inline editor");
-        h.input_mut().events.push(egui::Event::Text("edited".into()));
+        assert!(
+            h.state()
+                .view
+                .edit
+                .as_ref()
+                .is_some_and(|e| e.editing.is_some()),
+            "inline editor"
+        );
+        h.input_mut()
+            .events
+            .push(egui::Event::Text("edited".into()));
         h.run_steps(2);
         h.key_press(Key::Enter);
         h.run_steps(2);
@@ -2913,12 +3875,24 @@ mod keyboard_tests {
         // From the context menu.
         h.hover_at(pos2(160.0, 50.0));
         for pressed in [true, false] {
-            h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            h.event(egui::Event::PointerButton {
+                pos: pos2(160.0, 50.0),
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
         }
         h.run_steps(2);
         h.get_by_label_contains("View Value").click();
         h.run_steps(3);
-        assert_eq!(h.state().view.value_popup.as_ref().map(|p| p.shown.as_str()), Some("edited"));
+        assert_eq!(
+            h.state()
+                .view
+                .value_popup
+                .as_ref()
+                .map(|p| p.shown.as_str()),
+            Some("edited")
+        );
         h.key_press(Key::Escape);
         h.run_steps(2);
         assert!(h.state().view.value_popup.is_none());
@@ -2928,10 +3902,21 @@ mod keyboard_tests {
     #[test]
     fn related_cells_select_normally_and_navigate_with_button_or_f4() {
         use crate::ui::fk_nav::{Jump, Links};
-        let key = crate::db::subset::ForeignKey { schema: "main".into(), table: "notes".into(), columns: vec!["note".into()], ref_schema: "main".into(), ref_table: "texts".into(), ref_columns: vec!["code".into()] };
+        let key = crate::db::subset::ForeignKey {
+            schema: "main".into(),
+            table: "notes".into(),
+            columns: vec!["note".into()],
+            ref_schema: "main".into(),
+            ref_table: "texts".into(),
+            ref_columns: vec!["code".into()],
+        };
         let mut view = view();
-        let keys = crate::db::fk_nav::TableKeys { outgoing: vec![key.clone()], incoming: Vec::new() };
-        view.links = Links::new(&keys, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
+        let keys = crate::db::fk_nav::TableKeys {
+            outgoing: vec![key.clone()],
+            incoming: Vec::new(),
+        };
+        view.links =
+            Links::new(&keys, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
         let mut h = harness_for(view, false);
         // Ctrl/⌘-click on a key value adds it to the selection like any other cell.
         click(&h, pos2(60.0, 98.0));
@@ -2940,12 +3925,23 @@ mod keyboard_tests {
         h.hover_at(pos2(160.0, 50.0));
         h.run_steps(1);
         for pressed in [true, false] {
-            h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::COMMAND });
+            h.event(egui::Event::PointerButton {
+                pos: pos2(160.0, 50.0),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::COMMAND,
+            });
             h.run_steps(1);
         }
         h.event(egui::Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
-        assert_eq!((h.state().view.selected_cells.clone(), h.state().jump.is_none()), (BTreeSet::from([(0, 1), (2, 0)]), true));
+        assert_eq!(
+            (
+                h.state().view.selected_cells.clone(),
+                h.state().jump.is_none()
+            ),
+            (BTreeSet::from([(0, 1), (2, 0)]), true)
+        );
         // Plain clicks select related cells, including NULL, without opening navigation.
         click(&h, pos2(160.0, 50.0));
         h.run_steps(2);
@@ -2964,7 +3960,13 @@ mod keyboard_tests {
         h.key_press(Key::F4);
         h.run_steps(2);
         // A single target needs no choice: F4 follows it.
-        assert_eq!(h.state_mut().jump.take(), Some(Jump::Parent { key: key.clone(), values: vec![Some("a".into())] }));
+        assert_eq!(
+            h.state_mut().jump.take(),
+            Some(Jump::Parent {
+                key: key.clone(),
+                values: vec![Some("a".into())]
+            })
+        );
 
         // The dedicated follow button does the same and handles NULL values.
         let follow = |h: &mut egui_kittest::Harness<'static, State>, y: f32| {
@@ -2975,38 +3977,89 @@ mod keyboard_tests {
             })
         };
         assert_eq!(follow(&mut h, 74.0), Some(Jump::Null));
-        assert_eq!(follow(&mut h, 50.0), Some(Jump::Parent { key: key.clone(), values: vec![Some("a".into())] }));
+        assert_eq!(
+            follow(&mut h, 50.0),
+            Some(Jump::Parent {
+                key: key.clone(),
+                values: vec![Some("a".into())]
+            })
+        );
 
         // Several targets open the chooser.
-        let other = crate::db::subset::ForeignKey { ref_table: "archive".into(), ..key.clone() };
+        let other = crate::db::subset::ForeignKey {
+            ref_table: "archive".into(),
+            ..key.clone()
+        };
         let view = &mut h.state_mut().view;
-        view.links = Links::new(&crate::db::fk_nav::TableKeys { outgoing: vec![key, other], incoming: Vec::new() }, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
-        let Some(Jump::Choose { targets, .. }) = view.related_jump(Some((0, 1)), pos2(0.0, 0.0)) else { panic!("expected navigation candidates") };
+        view.links = Links::new(
+            &crate::db::fk_nav::TableKeys {
+                outgoing: vec![key, other],
+                incoming: Vec::new(),
+            },
+            &[Some("id".into()), Some("note".into())],
+        )
+        .map(std::sync::Arc::new);
+        let Some(Jump::Choose { targets, .. }) = view.related_jump(Some((0, 1)), pos2(0.0, 0.0))
+        else {
+            panic!("expected navigation candidates")
+        };
         assert_eq!(targets.len(), 2);
     }
 
     #[test]
     fn multi_selection_f4_and_follow_button_use_the_same_related_values() {
         use crate::ui::fk_nav::{Jump, Links};
-        let key = crate::db::subset::ForeignKey { schema: "main".into(), table: "notes".into(), columns: vec!["note".into()], ref_schema: "main".into(), ref_table: "texts".into(), ref_columns: vec!["code".into()] };
+        let key = crate::db::subset::ForeignKey {
+            schema: "main".into(),
+            table: "notes".into(),
+            columns: vec!["note".into()],
+            ref_schema: "main".into(),
+            ref_table: "texts".into(),
+            ref_columns: vec!["code".into()],
+        };
         let mut view = view();
-        view.links = Links::new(&crate::db::fk_nav::TableKeys { outgoing: vec![key.clone()], incoming: Vec::new() }, &[Some("id".into()), Some("note".into())]).map(std::sync::Arc::new);
+        view.links = Links::new(
+            &crate::db::fk_nav::TableKeys {
+                outgoing: vec![key.clone()],
+                incoming: Vec::new(),
+            },
+            &[Some("id".into()), Some("note".into())],
+        )
+        .map(std::sync::Arc::new);
         let mut h = harness_for(view, false);
         click(&h, pos2(160.0, 50.0));
         h.run_steps(2);
         h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
         h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
         h.run_steps(2);
-        assert_eq!(h.state().view.selected_cells, BTreeSet::from([(0, 1), (1, 1), (2, 1)]));
+        assert_eq!(
+            h.state().view.selected_cells,
+            BTreeSet::from([(0, 1), (1, 1), (2, 1)])
+        );
         h.key_press(Key::F4);
         h.run_steps(2);
-        let expected = Jump::Rows { key: key.clone(), values: vec![vec![Some("a".into())], vec![Some("c".into())]] };
-        assert_eq!(h.state_mut().jump.take(), Some(expected.clone()), "F4 should use the selected range");
+        let expected = Jump::Rows {
+            key: key.clone(),
+            values: vec![vec![Some("a".into())], vec![Some("c".into())]],
+        };
+        assert_eq!(
+            h.state_mut().jump.take(),
+            Some(expected.clone()),
+            "F4 should use the selected range"
+        );
         // Directly verify the selected-cell button path, independent of column widths.
-        assert_eq!(h.state().view.related_jump(Some((0, 1)), pos2(0.0, 0.0)), Some(expected.clone()));
+        assert_eq!(
+            h.state().view.related_jump(Some((0, 1)), pos2(0.0, 0.0)),
+            Some(expected.clone())
+        );
         h.event(egui::Event::PointerMoved(pos2(160.0, 50.0)));
         for pressed in [true, false] {
-            h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+            h.event(egui::Event::PointerButton {
+                pos: pos2(160.0, 50.0),
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
         }
         h.run_steps(3);
         h.get_by_label_contains("main.texts").click();
@@ -3016,12 +4069,24 @@ mod keyboard_tests {
         view.selected = None;
         view.selected_cells.clear();
         view.selected_rows = BTreeSet::from([0, 2]);
-        assert_eq!(view.related_jump(Some((1, 1)), pos2(0.0, 0.0)), Some(Jump::Null), "an unselected cell navigates on its own");
-        assert_eq!(view.related_targets(None)[0].clone().jump(), Jump::Rows { key, values: vec![vec![Some("a".into())], vec![Some("c".into())]] });
+        assert_eq!(
+            view.related_jump(Some((1, 1)), pos2(0.0, 0.0)),
+            Some(Jump::Null),
+            "an unselected cell navigates on its own"
+        );
+        assert_eq!(
+            view.related_targets(None)[0].clone().jump(),
+            Jump::Rows {
+                key,
+                values: vec![vec![Some("a".into())], vec![Some("c".into())]]
+            }
+        );
         // Visual sorting maps back to stored rows; a selection of rows 0 and 1 now means c + a.
         view.order = vec![2, 0, 1];
         view.selected_rows = BTreeSet::from([0, 1]);
-        assert!(matches!(view.related_targets(None)[0].clone().jump(), Jump::Rows { values, .. } if values == vec![vec![Some("a".into())], vec![Some("c".into())]]));
+        assert!(
+            matches!(view.related_targets(None)[0].clone().jump(), Jump::Rows { values, .. } if values == vec![vec![Some("a".into())], vec![Some("c".into())]])
+        );
     }
 
     #[test]
@@ -3031,14 +4096,35 @@ mod keyboard_tests {
         events.push(egui::Event::ModifiersChanged(Modifiers::ALT));
         events.push(egui::Event::PointerMoved(pos2(160.0, 98.0)));
         for pressed in [true, false] {
-            events.push(egui::Event::PointerButton { pos: pos2(160.0, 98.0), button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::ALT });
+            events.push(egui::Event::PointerButton {
+                pos: pos2(160.0, 98.0),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::ALT,
+            });
         }
         h.run_steps(1);
-        h.input_mut().events.push(egui::Event::ModifiersChanged(Modifiers::NONE));
+        h.input_mut()
+            .events
+            .push(egui::Event::ModifiersChanged(Modifiers::NONE));
         h.run_steps(2);
-        assert_eq!(h.state().view.value_popup.as_ref().map(|p| p.shown.as_str()), Some("c"));
+        assert_eq!(
+            h.state()
+                .view
+                .value_popup
+                .as_ref()
+                .map(|p| p.shown.as_str()),
+            Some("c")
+        );
         assert_eq!(h.state().view.selected, Some((2, 1)));
-        assert!(h.state().view.edit.as_ref().is_some_and(|e| e.editing.is_none()), "no inline editor");
+        assert!(
+            h.state()
+                .view
+                .edit
+                .as_ref()
+                .is_some_and(|e| e.editing.is_none()),
+            "no inline editor"
+        );
         // A plain click outside closes it.
         click(&h, pos2(60.0, 50.0));
         h.run_steps(3);
@@ -3053,7 +4139,15 @@ mod keyboard_tests {
         // Already indented: the same.
         assert_eq!(pretty_json(expected).as_deref(), Some(expected));
         assert_eq!(pretty_json(" [ ] ").as_deref(), Some("[]"));
-        for other in ["42", "\"s\"", "{not json}", "[1,", "text {\"a\":1}", "", "{\"a\":1} {\"b\":2}"] {
+        for other in [
+            "42",
+            "\"s\"",
+            "{not json}",
+            "[1,",
+            "text {\"a\":1}",
+            "",
+            "{\"a\":1} {\"b\":2}",
+        ] {
             assert_eq!(pretty_json(other), None, "{other}");
         }
     }
@@ -3182,7 +4276,10 @@ mod keyboard_tests {
         v.commit_edit();
         let changes = &v.edit.as_ref().unwrap().state.changes;
         assert_eq!(changes.get(&(5, 2)), Some(&Some("typed".into())));
-        assert!(!changes.contains_key(&(3, 2)), "the stale selection must not get the value");
+        assert!(
+            !changes.contains_key(&(3, 2)),
+            "the stale selection must not get the value"
+        );
     }
 
     #[test]
@@ -3198,8 +4295,15 @@ mod keyboard_tests {
         v.selected_cells = BTreeSet::from([(first_new, 1), (first_new + 2, 1)]);
         v.cancel_row();
         assert_eq!(v.edit.as_ref().unwrap().state.inserted.len(), 2);
-        assert!(v.edit_rows.iter().all(|r| !matches!(r, RowRef::New(i) if *i >= 2)));
-        assert!(v.edit_rows.contains(&RowRef::New(1)), "the old third new row is now the second");
+        assert!(
+            v.edit_rows
+                .iter()
+                .all(|r| !matches!(r, RowRef::New(i) if *i >= 2))
+        );
+        assert!(
+            v.edit_rows.contains(&RowRef::New(1)),
+            "the old third new row is now the second"
+        );
         assert_eq!(v.selected_cells, BTreeSet::from([(first_new + 1, 1)]));
     }
 
@@ -3730,7 +4834,10 @@ mod export_tests {
     fn view() -> ResultView {
         let rs = ResultSet {
             columns: vec!["id".into(), "note".into()],
-            rows: vec![vec![Some("1".into()), Some("a \"b\"\tc|d".into())], vec![Some("2".into()), None]],
+            rows: vec![
+                vec![Some("1".into()), Some("a \"b\"\tc|d".into())],
+                vec![Some("2".into()), None],
+            ],
             ..Default::default()
         };
         ResultView::new(rs, 1)
@@ -3741,15 +4848,24 @@ mod export_tests {
         use crate::db::copy::Mask;
         let v = view();
         let masks = [Mask::Keep, Mask::Email];
-        let m = Some(ExportMasks { masks: &masks, key: "k" });
+        let m = Some(ExportMasks {
+            masks: &masks,
+            key: "k",
+        });
         let csv = format_rows_masked(&v, ExportFormat::Csv, "", m);
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines[0], "id,note");
-        assert!(lines[1].starts_with("1,user_") && lines[1].ends_with("@example.com"), "{csv}");
+        assert!(
+            lines[1].starts_with("1,user_") && lines[1].ends_with("@example.com"),
+            "{csv}"
+        );
         assert_eq!(lines[2], "2,");
         assert_eq!(format_rows_masked(&v, ExportFormat::Csv, "", m), csv);
         assert_eq!(v.rs.rows[0][1].as_deref(), Some("a \"b\"\tc|d"));
-        assert_eq!(format_rows_masked(&v, ExportFormat::Tsv, "", None), format_rows(&v, ExportFormat::Tsv, ""));
+        assert_eq!(
+            format_rows_masked(&v, ExportFormat::Tsv, "", None),
+            format_rows(&v, ExportFormat::Tsv, "")
+        );
     }
 
     #[test]
@@ -3759,11 +4875,17 @@ mod export_tests {
             format_rows(&v, ExportFormat::Json, ""),
             "[\n  {\"id\": \"1\", \"note\": \"a \\\"b\\\"\\tc|d\"},\n  {\"id\": \"2\", \"note\": null}\n]\n"
         );
-        assert_eq!(format_rows(&v, ExportFormat::Tsv, ""), "id\tnote\n1\ta \"b\" c|d\n2\t\n");
+        assert_eq!(
+            format_rows(&v, ExportFormat::Tsv, ""),
+            "id\tnote\n1\ta \"b\" c|d\n2\t\n"
+        );
         assert_eq!(
             format_rows(&v, ExportFormat::SqlInsert, "[dbo].[t]"),
             "INSERT INTO [dbo].[t] (\"id\", \"note\") VALUES ('1', 'a \"b\"\tc|d');\nINSERT INTO [dbo].[t] (\"id\", \"note\") VALUES ('2', NULL);\n"
         );
-        assert_eq!(format_rows(&v, ExportFormat::Markdown, ""), "| id | note |\n| --- | --- |\n| 1 | a \"b\"\tc\\|d |\n| 2 |  |\n");
+        assert_eq!(
+            format_rows(&v, ExportFormat::Markdown, ""),
+            "| id | note |\n| --- | --- |\n| 1 | a \"b\"\tc\\|d |\n| 2 |  |\n"
+        );
     }
 }

@@ -2,11 +2,11 @@
 //! turns the edited structure into the ALTER TABLE statements of each engine.
 
 use crate::db::{Cell, Driver, ResultSet, Session};
-use std::collections::BTreeMap;
 use crate::i18n::{tr, trf};
 use crate::ui::create_dialog::NewColumn;
 use crate::ui::drop_dialog::{DropKind, effective_name, object_sql};
 use crate::ui::quote_ident_if_needed;
+use std::collections::BTreeMap;
 
 /// A column as the server describes it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -91,7 +91,10 @@ pub struct Plan {
 
 /// Engines whose indexes can be listed and edited here (Snowflake has none on standard tables).
 pub fn has_indexes(driver: Driver) -> bool {
-    !matches!(driver, Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+    !matches!(
+        driver,
+        Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto
+    )
 }
 
 pub fn initial_columns(d: &TableDetails) -> Vec<EditColumn> {
@@ -115,7 +118,12 @@ pub fn initial_indexes(d: &TableDetails) -> Vec<EditIndex> {
     d.indexes
         .iter()
         .enumerate()
-        .map(|(i, x)| EditIndex { original: Some(i), name: x.name.clone(), columns: x.columns.join(", "), unique: x.unique })
+        .map(|(i, x)| EditIndex {
+            original: Some(i),
+            name: x.name.clone(),
+            columns: x.columns.join(", "),
+            unique: x.unique,
+        })
         .collect()
 }
 
@@ -129,7 +137,10 @@ fn lit(s: &str) -> String {
 /// Rows of the first result set with columns.
 async fn query(s: &mut Session, sql: &str) -> anyhow::Result<ResultSet> {
     let sets = s.execute(sql, 100_000).await?;
-    Ok(sets.into_iter().find(|r| !r.columns.is_empty()).unwrap_or_default())
+    Ok(sets
+        .into_iter()
+        .find(|r| !r.columns.is_empty())
+        .unwrap_or_default())
 }
 
 fn text(c: &Cell) -> String {
@@ -137,15 +148,26 @@ fn text(c: &Cell) -> String {
 }
 
 fn flag(c: &Cell) -> bool {
-    matches!(c.as_deref().map(str::trim), Some("1" | "t" | "true" | "TRUE" | "YES" | "Y" | "y"))
+    matches!(
+        c.as_deref().map(str::trim),
+        Some("1" | "t" | "true" | "TRUE" | "YES" | "Y" | "y")
+    )
 }
 
 /// Groups `(index name, unique, column, constraint?)` rows (ordered by name, then position).
-fn group_indexes(rows: impl IntoIterator<Item = (String, bool, Option<String>, bool)>) -> Vec<IndexDef> {
+fn group_indexes(
+    rows: impl IntoIterator<Item = (String, bool, Option<String>, bool)>,
+) -> Vec<IndexDef> {
     let mut out: Vec<IndexDef> = Vec::new();
     for (name, unique, column, constraint) in rows {
         if out.last().is_none_or(|x| x.name != name) {
-            out.push(IndexDef { name: name.clone(), unique, constraint, plain: true, columns: vec![] });
+            out.push(IndexDef {
+                name: name.clone(),
+                unique,
+                constraint,
+                plain: true,
+                columns: vec![],
+            });
         }
         let x = out.last_mut().expect("pushed");
         match column {
@@ -160,21 +182,40 @@ fn group_indexes(rows: impl IntoIterator<Item = (String, bool, Option<String>, b
 }
 
 /// Full structure of `schema.table`, read with the engine's catalog queries.
-pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: &str) -> anyhow::Result<TableDetails> {
+pub async fn load_details(
+    s: &mut Session,
+    driver: Driver,
+    schema: &str,
+    table: &str,
+) -> anyhow::Result<TableDetails> {
     let mut d = match driver {
         Driver::ClickHouse | Driver::Snowflake => load_one(s, driver, schema, table).await?,
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => anyhow::bail!(tr("Not available for this engine")),
-        _ => load_tables(s, driver, schema, Some(table)).await?.remove(table).unwrap_or_default(),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => {
+            anyhow::bail!(tr("Not available for this engine"))
+        }
+        _ => load_tables(s, driver, schema, Some(table))
+            .await?
+            .remove(table)
+            .unwrap_or_default(),
     };
     if driver == Driver::Sqlite && !d.columns.is_empty() {
         let tab = lit(table);
-        let create = query(s, &format!("select sql from sqlite_master where type = 'table' and name = {tab}"))
-            .await?
-            .rows
-            .first()
-            .map(|r| text(&r[0]))
-            .unwrap_or_default();
-        let triggers = query(s, &format!("select count(*) from sqlite_master where type = 'trigger' and tbl_name = {tab}")).await?;
+        let create = query(
+            s,
+            &format!("select sql from sqlite_master where type = 'table' and name = {tab}"),
+        )
+        .await?
+        .rows
+        .first()
+        .map(|r| text(&r[0]))
+        .unwrap_or_default();
+        let triggers = query(
+            s,
+            &format!(
+                "select count(*) from sqlite_master where type = 'trigger' and tbl_name = {tab}"
+            ),
+        )
+        .await?;
         let referenced = query(
             s,
             &format!(
@@ -183,10 +224,20 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
             ),
         )
         .await?;
-        let count = |rs: &ResultSet| rs.rows.first().map(|r| text(&r[0])).unwrap_or_default() != "0";
+        let count =
+            |rs: &ResultSet| rs.rows.first().map(|r| text(&r[0])).unwrap_or_default() != "0";
         let lower = create.to_ascii_lowercase();
         d.autoincrement = lower.contains("autoincrement");
-        let constraints = ["check", "references", "foreign", "unique", "generated", "collate", "without rowid", "on conflict"];
+        let constraints = [
+            "check",
+            "references",
+            "foreign",
+            "unique",
+            "generated",
+            "collate",
+            "without rowid",
+            "on conflict",
+        ];
         d.rebuild_blocker = (constraints.iter().any(|w| lower.contains(w)) || count(&triggers) || count(&referenced)).then(|| {
             tr("SQLite can only make this change by rebuilding the table, and this table has constraints, triggers or foreign keys that a rebuild would lose. Use a console instead.").to_string()
         });
@@ -198,7 +249,12 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
 }
 
 /// ClickHouse and Snowflake: one table at a time.
-async fn load_one(s: &mut Session, driver: Driver, schema: &str, table: &str) -> anyhow::Result<TableDetails> {
+async fn load_one(
+    s: &mut Session,
+    driver: Driver,
+    schema: &str,
+    table: &str,
+) -> anyhow::Result<TableDetails> {
     let (sch, tab) = (lit(schema), lit(table));
     let mut d = TableDetails::default();
     match driver {
@@ -223,7 +279,11 @@ async fn load_one(s: &mut Session, driver: Driver, schema: &str, table: &str) ->
                         name: text(&r[0]),
                         nullable: crate::db::clickhouse::is_nullable(&text(&r[1])),
                         data_type: text(&r[1]),
-                        default: if kind == "DEFAULT" && !text(&r[3]).is_empty() { Some(text(&r[3])) } else { None },
+                        default: if kind == "DEFAULT" && !text(&r[3]).is_empty() {
+                            Some(text(&r[3]))
+                        } else {
+                            None
+                        },
                         extra: if generated { kind } else { String::new() },
                         comment: text(&r[4]),
                         generated,
@@ -232,7 +292,12 @@ async fn load_one(s: &mut Session, driver: Driver, schema: &str, table: &str) ->
                 })
                 .collect();
             // Data-skipping indexes are not part of this view (they can't be changed here).
-            d.primary_key = rs.rows.iter().filter(|r| text(&r[5]) == "1").map(|r| text(&r[0])).collect();
+            d.primary_key = rs
+                .rows
+                .iter()
+                .filter(|r| text(&r[5]) == "1")
+                .map(|r| text(&r[0]))
+                .collect();
         }
         Driver::Snowflake => {
             let rs = query(
@@ -248,19 +313,36 @@ async fn load_one(s: &mut Session, driver: Driver, schema: &str, table: &str) ->
                 .iter()
                 .map(|r| ColumnDef {
                     name: text(&r[0]),
-                    data_type: snowflake_type(&text(&r[1]), r[4].as_deref(), r[5].as_deref(), r[6].as_deref()),
+                    data_type: snowflake_type(
+                        &text(&r[1]),
+                        r[4].as_deref(),
+                        r[5].as_deref(),
+                        r[6].as_deref(),
+                    ),
                     nullable: text(&r[2]).eq_ignore_ascii_case("YES"),
                     default: r[3].clone(),
                     ..Default::default()
                 })
                 .collect();
-            let rs = query(s, &format!("show primary keys in table {}", Session::quote_table(driver, schema, table))).await?;
+            let rs = query(
+                s,
+                &format!(
+                    "show primary keys in table {}",
+                    Session::quote_table(driver, schema, table)
+                ),
+            )
+            .await?;
             let col = |name: &str| rs.columns.iter().position(|c| c.eq_ignore_ascii_case(name));
             if let (Some(c), Some(seq)) = (col("column_name"), col("key_sequence")) {
-                let mut keys: Vec<(u32, String)> = rs.rows.iter().map(|r| (text(&r[seq]).parse().unwrap_or(0), text(&r[c]))).collect();
+                let mut keys: Vec<(u32, String)> = rs
+                    .rows
+                    .iter()
+                    .map(|r| (text(&r[seq]).parse().unwrap_or(0), text(&r[c])))
+                    .collect();
                 keys.sort();
                 d.primary_key = keys.into_iter().map(|(_, c)| c).collect();
-                d.pk_name = col("constraint_name").and_then(|i| rs.rows.first().map(|r| text(&r[i])));
+                d.pk_name =
+                    col("constraint_name").and_then(|i| rs.rows.first().map(|r| text(&r[i])));
             }
         }
         _ => anyhow::bail!(tr("Not available for this engine")),
@@ -279,15 +361,32 @@ fn by_table(rs: &ResultSet) -> BTreeMap<String, Vec<&[Cell]>> {
 
 /// Columns, primary key and indexes of `table`, or of every table of `schema` with one query of
 /// each kind (PostgreSQL, MySQL / MariaDB, SQL Server, Oracle, SQLite), by table name.
-pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: Option<&str>) -> anyhow::Result<BTreeMap<String, TableDetails>> {
+pub async fn load_tables(
+    s: &mut Session,
+    driver: Driver,
+    schema: &str,
+    table: Option<&str>,
+) -> anyhow::Result<BTreeMap<String, TableDetails>> {
     let sch = lit(schema);
-    let one = |column: &str| table.map(|t| format!(" and {column} = {}", lit(t))).unwrap_or_default();
+    let one = |column: &str| {
+        table
+            .map(|t| format!(" and {column} = {}", lit(t)))
+            .unwrap_or_default()
+    };
     let mut all: BTreeMap<String, TableDetails> = BTreeMap::new();
     let mut version = String::new();
     // One query of each kind may cover a whole schema: a truncated catalog is an error.
     async fn rows(s: &mut Session, sql: &str) -> anyhow::Result<ResultSet> {
-        let rs = s.execute(sql, 2_000_000).await?.into_iter().find(|r| !r.columns.is_empty()).unwrap_or_default();
-        anyhow::ensure!(!rs.truncated, tr("The schema catalog is too large to compare"));
+        let rs = s
+            .execute(sql, 2_000_000)
+            .await?
+            .into_iter()
+            .find(|r| !r.columns.is_empty())
+            .unwrap_or_default();
+        anyhow::ensure!(
+            !rs.truncated,
+            tr("The schema catalog is too large to compare")
+        );
         Ok(rs)
     }
     match driver {
@@ -354,16 +453,28 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
             )
             .await?;
             for (t, rs) in by_table(&rs) {
-                let partial: Vec<String> = rs.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
+                let partial: Vec<String> = rs
+                    .iter()
+                    .filter(|r| !flag(&r[4]))
+                    .map(|r| text(&r[0]))
+                    .collect();
                 let d = all.entry(t).or_default();
-                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
+                d.indexes = group_indexes(
+                    rs.iter()
+                        .map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))),
+                );
                 for x in d.indexes.iter_mut().filter(|x| partial.contains(&x.name)) {
                     x.plain = false;
                 }
             }
         }
         Driver::MySql | Driver::MariaDb => {
-            version = query(s, "select version()").await?.rows.first().map(|r| text(&r[0])).unwrap_or_default();
+            version = query(s, "select version()")
+                .await?
+                .rows
+                .first()
+                .map(|r| text(&r[0]))
+                .unwrap_or_default();
             let mariadb = version.to_ascii_lowercase().contains("mariadb");
             let rs = rows(
                 s,
@@ -380,9 +491,15 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
                     .map(|r| {
                         let extra = text(&r[4]);
                         let lower = extra.to_ascii_lowercase();
-                        let generated = lower.contains("virtual generated") || lower.contains("stored generated") || lower.contains("persistent");
+                        let generated = lower.contains("virtual generated")
+                            || lower.contains("stored generated")
+                            || lower.contains("persistent");
                         let default_generated = lower.contains("default_generated");
-                        let extra = extra.split_whitespace().filter(|w| !w.eq_ignore_ascii_case("DEFAULT_GENERATED")).collect::<Vec<_>>().join(" ");
+                        let extra = extra
+                            .split_whitespace()
+                            .filter(|w| !w.eq_ignore_ascii_case("DEFAULT_GENERATED"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         let default = match r[3].clone() {
                             _ if generated => None,
                             // MariaDB writes NULL as the word and quotes literals.
@@ -417,14 +534,31 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
             .await?;
             for (t, rs) in by_table(&rs) {
                 let d = all.entry(t).or_default();
-                d.primary_key = rs.iter().filter(|r| text(&r[0]) == "PRIMARY").map(|r| text(&r[2])).collect();
-                d.indexes = group_indexes(rs.iter().filter(|r| text(&r[0]) != "PRIMARY").map(|r| (text(&r[0]), text(&r[1]) == "0", r[2].clone(), false)));
+                d.primary_key = rs
+                    .iter()
+                    .filter(|r| text(&r[0]) == "PRIMARY")
+                    .map(|r| text(&r[2]))
+                    .collect();
+                d.indexes = group_indexes(
+                    rs.iter()
+                        .filter(|r| text(&r[0]) != "PRIMARY")
+                        .map(|r| (text(&r[0]), text(&r[1]) == "0", r[2].clone(), false)),
+                );
             }
         }
         Driver::MsSql => {
             let ids = match table {
-                Some(t) => format!("= object_id({})", lit(&format!("{}.{}", Driver::MsSql.quote_ident(schema), Driver::MsSql.quote_ident(t)))),
-                None => format!("in (select object_id from sys.tables where schema_id = schema_id({sch}))"),
+                Some(t) => format!(
+                    "= object_id({})",
+                    lit(&format!(
+                        "{}.{}",
+                        Driver::MsSql.quote_ident(schema),
+                        Driver::MsSql.quote_ident(t)
+                    ))
+                ),
+                None => format!(
+                    "in (select object_id from sys.tables where schema_id = schema_id({sch}))"
+                ),
             };
             let rs = rows(
                 s,
@@ -484,9 +618,16 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
             )
             .await?;
             for (t, rs) in by_table(&rs) {
-                let filtered: Vec<String> = rs.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
+                let filtered: Vec<String> = rs
+                    .iter()
+                    .filter(|r| !flag(&r[4]))
+                    .map(|r| text(&r[0]))
+                    .collect();
                 let d = all.entry(t).or_default();
-                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
+                d.indexes = group_indexes(
+                    rs.iter()
+                        .map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))),
+                );
                 for x in d.indexes.iter_mut().filter(|x| filtered.contains(&x.name)) {
                     x.plain = false;
                 }
@@ -509,9 +650,21 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
                         let generated = text(&r[8]) == "YES";
                         ColumnDef {
                             name: text(&r[0]),
-                            data_type: oracle_type(&text(&r[1]), &text(&r[2]), &text(&r[3]), r[4].as_deref(), r[5].as_deref()),
+                            data_type: oracle_type(
+                                &text(&r[1]),
+                                &text(&r[2]),
+                                &text(&r[3]),
+                                r[4].as_deref(),
+                                r[5].as_deref(),
+                            ),
                             nullable: text(&r[6]) == "Y",
-                            default: if generated { None } else { r[7].clone().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) },
+                            default: if generated {
+                                None
+                            } else {
+                                r[7].clone()
+                                    .map(|v| v.trim().to_string())
+                                    .filter(|v| !v.is_empty())
+                            },
                             generated,
                             ..Default::default()
                         }
@@ -548,19 +701,38 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
             )
             .await?;
             for (t, rs) in by_table(&rs) {
-                let functional: Vec<String> = rs.iter().filter(|r| !flag(&r[4])).map(|r| text(&r[0])).collect();
+                let functional: Vec<String> = rs
+                    .iter()
+                    .filter(|r| !flag(&r[4]))
+                    .map(|r| text(&r[0]))
+                    .collect();
                 let d = all.entry(t).or_default();
-                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))));
-                for x in d.indexes.iter_mut().filter(|x| functional.contains(&x.name)) {
+                d.indexes = group_indexes(
+                    rs.iter()
+                        .map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), flag(&r[3]))),
+                );
+                for x in d
+                    .indexes
+                    .iter_mut()
+                    .filter(|x| functional.contains(&x.name))
+                {
                     x.plain = false;
                 }
             }
         }
         Driver::Sqlite => {
-            version = query(s, "select sqlite_version()").await?.rows.first().map(|r| text(&r[0])).unwrap_or_default();
+            version = query(s, "select sqlite_version()")
+                .await?
+                .rows
+                .first()
+                .map(|r| text(&r[0]))
+                .unwrap_or_default();
             // The tables of the schema, joined with each pragma function.
             let master = format!("{}.sqlite_master m", Driver::Sqlite.quote_ident(schema));
-            let tables = format!("m.type = 'table' and m.name not like 'sqlite\\_%' escape '\\'{}", one("m.name"));
+            let tables = format!(
+                "m.type = 'table' and m.name not like 'sqlite\\_%' escape '\\'{}",
+                one("m.name")
+            );
             let rs = rows(
                 s,
                 &format!("select m.name, p.name, p.type, p.\"notnull\", p.dflt_value, p.pk from {master} join pragma_table_info(m.name, {sch}) p where {tables} order by m.name, p.cid"),
@@ -574,7 +746,13 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
                     if pos > 0 {
                         pk.push((pos, text(&r[0])));
                     }
-                    d.columns.push(ColumnDef { name: text(&r[0]), data_type: text(&r[1]), nullable: !flag(&r[2]), default: r[3].clone(), ..Default::default() });
+                    d.columns.push(ColumnDef {
+                        name: text(&r[0]),
+                        data_type: text(&r[1]),
+                        nullable: !flag(&r[2]),
+                        default: r[3].clone(),
+                        ..Default::default()
+                    });
                 }
                 pk.sort();
                 d.primary_key = pk.into_iter().map(|(_, c)| c).collect();
@@ -589,14 +767,27 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
             )
             .await?;
             for (t, rs) in by_table(&rs) {
-                let partial: Vec<String> = rs.iter().filter(|r| !flag(&r[3])).map(|r| text(&r[0])).collect();
+                let partial: Vec<String> = rs
+                    .iter()
+                    .filter(|r| !flag(&r[3]))
+                    .map(|r| text(&r[0]))
+                    .collect();
                 let d = all.entry(t).or_default();
-                d.indexes = group_indexes(rs.iter().map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), false)));
+                d.indexes = group_indexes(
+                    rs.iter()
+                        .map(|r| (text(&r[0]), flag(&r[1]), r[2].clone(), false)),
+                );
                 for x in d.indexes.iter_mut().filter(|x| partial.contains(&x.name)) {
                     x.plain = false;
                 }
             }
-            for r in &rows(s, &format!("select m.name, m.sql from {master} where {tables}")).await?.rows {
+            for r in &rows(
+                s,
+                &format!("select m.name, m.sql from {master} where {tables}"),
+            )
+            .await?
+            .rows
+            {
                 if let Some(d) = all.get_mut(&text(&r[0])) {
                     d.autoincrement = text(&r[1]).to_ascii_lowercase().contains("autoincrement");
                 }
@@ -612,7 +803,13 @@ pub async fn load_tables(s: &mut Session, driver: Driver, schema: &str, table: O
 }
 
 /// Oracle column type from ALL_TAB_COLUMNS.
-fn oracle_type(ty: &str, length: &str, char_length: &str, precision: Option<&str>, scale: Option<&str>) -> String {
+fn oracle_type(
+    ty: &str,
+    length: &str,
+    char_length: &str,
+    precision: Option<&str>,
+    scale: Option<&str>,
+) -> String {
     let ty = ty.to_ascii_lowercase();
     match ty.as_str() {
         "varchar2" | "nvarchar2" | "char" | "nchar" => format!("{ty}({char_length})"),
@@ -629,9 +826,18 @@ fn oracle_type(ty: &str, length: &str, char_length: &str, precision: Option<&str
 }
 
 /// Snowflake column type from INFORMATION_SCHEMA.COLUMNS.
-fn snowflake_type(ty: &str, precision: Option<&str>, scale: Option<&str>, length: Option<&str>) -> String {
+fn snowflake_type(
+    ty: &str,
+    precision: Option<&str>,
+    scale: Option<&str>,
+    length: Option<&str>,
+) -> String {
     match ty.to_ascii_uppercase().as_str() {
-        "NUMBER" => format!("number({},{})", precision.unwrap_or("38"), scale.unwrap_or("0")),
+        "NUMBER" => format!(
+            "number({},{})",
+            precision.unwrap_or("38"),
+            scale.unwrap_or("0")
+        ),
         "TEXT" => length.map_or("varchar".into(), |l| format!("varchar({l})")),
         other => other.to_ascii_lowercase(),
     }
@@ -639,14 +845,25 @@ fn snowflake_type(ty: &str, precision: Option<&str>, scale: Option<&str>, length
 
 /// `major.minor.patch` at the start of a version string.
 fn version_at_least(version: &str, want: (u32, u32, u32)) -> bool {
-    let mut parts = version.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse::<u32>().unwrap_or(0));
-    let v = (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<u32>().unwrap_or(0));
+    let v = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
     v >= want
 }
 
 /// MySQL 8.0+ and MariaDB 10.5+ have RENAME COLUMN (older ones only CHANGE).
 fn mysql_has_rename_column(version: &str) -> bool {
-    if version.to_ascii_lowercase().contains("mariadb") { version_at_least(version, (10, 5, 0)) } else { version_at_least(version, (8, 0, 0)) }
+    if version.to_ascii_lowercase().contains("mariadb") {
+        version_at_least(version, (10, 5, 0))
+    } else {
+        version_at_least(version, (8, 0, 0))
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -679,7 +896,10 @@ struct Diff<'a> {
 }
 
 fn norm_type(t: &str) -> String {
-    t.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase()
+    t.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn validate(edit: &TableEdit) -> Result<(), String> {
@@ -714,11 +934,17 @@ fn validate(edit: &TableEdit) -> Result<(), String> {
         if x.original.is_none() {
             let cols = split_columns(&x.columns);
             if cols.is_empty() {
-                return Err(trf("Index “{name}” needs at least one column", &[("name", &name)]));
+                return Err(trf(
+                    "Index “{name}” needs at least one column",
+                    &[("name", &name)],
+                ));
             }
             for c in cols {
                 if !seen.contains(&c.to_lowercase()) {
-                    return Err(trf("Index “{name}”: unknown column “{column}”", &[("name", &name), ("column", &c)]));
+                    return Err(trf(
+                        "Index “{name}”: unknown column “{column}”",
+                        &[("name", &name), ("column", &c)],
+                    ));
                 }
             }
         }
@@ -727,7 +953,10 @@ fn validate(edit: &TableEdit) -> Result<(), String> {
 }
 
 fn split_columns(s: &str) -> Vec<String> {
-    s.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()
+    s.split(',')
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect()
 }
 
 fn diff<'a>(driver: Driver, d: &'a TableDetails, edit: &'a TableEdit) -> Diff<'a> {
@@ -738,7 +967,13 @@ fn diff<'a>(driver: Driver, d: &'a TableDetails, edit: &'a TableEdit) -> Diff<'a
         _ => eff(&e.column.name),
     };
     let kept_originals: Vec<usize> = edit.columns.iter().filter_map(|c| c.original).collect();
-    let dropped = d.columns.iter().enumerate().filter(|(i, _)| !kept_originals.contains(i)).map(|(_, c)| c).collect();
+    let dropped = d
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !kept_originals.contains(i))
+        .map(|(_, c)| c)
+        .collect();
     let mut kept = vec![];
     let mut added = vec![];
     for e in edit.columns {
@@ -768,12 +1003,26 @@ fn diff<'a>(driver: Driver, d: &'a TableDetails, edit: &'a TableEdit) -> Diff<'a
         .columns
         .iter()
         .filter(|c| c.column.primary_key)
-        .map(|c| c.original.and_then(|i| d.columns.get(i)).map(|o| o.name.as_str()))
+        .map(|c| {
+            c.original
+                .and_then(|i| d.columns.get(i))
+                .map(|o| o.name.as_str())
+        })
         .collect();
     old_pk.sort_unstable();
     new_pk_orig.sort_unstable();
-    let pk_changed = new_pk_orig.iter().any(Option::is_none) || new_pk_orig.iter().map(|o| o.unwrap_or_default()).collect::<Vec<_>>() != old_pk;
-    let new_pk = edit.columns.iter().filter(|c| c.column.primary_key).map(col_name).collect();
+    let pk_changed = new_pk_orig.iter().any(Option::is_none)
+        || new_pk_orig
+            .iter()
+            .map(|o| o.unwrap_or_default())
+            .collect::<Vec<_>>()
+            != old_pk;
+    let new_pk = edit
+        .columns
+        .iter()
+        .filter(|c| c.column.primary_key)
+        .map(col_name)
+        .collect();
 
     // Indexes removed from the list, or on a column that is dropped.
     let kept_indexes: Vec<usize> = edit.indexes.iter().filter_map(|x| x.original).collect();
@@ -781,21 +1030,53 @@ fn diff<'a>(driver: Driver, d: &'a TableDetails, edit: &'a TableEdit) -> Diff<'a
         .indexes
         .iter()
         .enumerate()
-        .filter(|(i, x)| !kept_indexes.contains(i) || x.columns.iter().any(|c| d.columns.iter().zip(0..).any(|(o, j)| &o.name == c && !kept_originals.contains(&j))))
+        .filter(|(i, x)| {
+            !kept_indexes.contains(i)
+                || x.columns.iter().any(|c| {
+                    d.columns
+                        .iter()
+                        .zip(0..)
+                        .any(|(o, j)| &o.name == c && !kept_originals.contains(&j))
+                })
+        })
         .map(|(_, x)| x)
         .collect();
     // Index columns are typed with the new column names (in any case).
     let column_name = |typed: &str| {
-        edit.columns.iter().find(|c| c.column.name.trim().eq_ignore_ascii_case(typed)).map(col_name).unwrap_or_else(|| typed.to_string())
+        edit.columns
+            .iter()
+            .find(|c| c.column.name.trim().eq_ignore_ascii_case(typed))
+            .map(col_name)
+            .unwrap_or_else(|| typed.to_string())
     };
     let added_indexes = edit
         .indexes
         .iter()
         .filter(|x| x.original.is_none())
-        .map(|x| (eff(&x.name), split_columns(&x.columns).iter().map(|c| column_name(c)).collect(), x.unique))
+        .map(|x| {
+            (
+                eff(&x.name),
+                split_columns(&x.columns)
+                    .iter()
+                    .map(|c| column_name(c))
+                    .collect(),
+                x.unique,
+            )
+        })
         .collect();
-    let new_name = (edit.new_name.trim() != edit.table).then(|| eff(edit.new_name)).filter(|n| n != edit.table);
-    Diff { dropped, kept, added, pk_changed, new_pk, dropped_indexes, added_indexes, new_name }
+    let new_name = (edit.new_name.trim() != edit.table)
+        .then(|| eff(edit.new_name))
+        .filter(|n| n != edit.table);
+    Diff {
+        dropped,
+        kept,
+        added,
+        pk_changed,
+        new_pk,
+        dropped_indexes,
+        added_indexes,
+        new_name,
+    }
 }
 
 /// Statements that turn the loaded structure `d` into the edited one.
@@ -804,21 +1085,37 @@ pub fn plan(driver: Driver, d: &TableDetails, edit: &TableEdit) -> Result<Plan, 
     let diff = diff(driver, d, edit);
     for c in &diff.kept {
         if c.old.generated && (c.ty || c.null || c.default) {
-            return Err(trf("“{name}” is a generated column: it can only be renamed or dropped", &[("name", &c.old.name)]));
+            return Err(trf(
+                "“{name}” is a generated column: it can only be renamed or dropped",
+                &[("name", &c.old.name)],
+            ));
         }
     }
-    let mut warnings: Vec<String> = diff.dropped.iter().map(|c| trf("Drops column “{name}” and all its data", &[("name", &c.name)])).collect();
-    warnings.extend(
-        diff.kept
-            .iter()
-            .filter(|c| c.ty)
-            .map(|c| trf("Changing the type of “{name}” can truncate or lose data, or fail on existing rows", &[("name", &c.old.name)])),
-    );
+    let mut warnings: Vec<String> = diff
+        .dropped
+        .iter()
+        .map(|c| {
+            trf(
+                "Drops column “{name}” and all its data",
+                &[("name", &c.name)],
+            )
+        })
+        .collect();
+    warnings.extend(diff.kept.iter().filter(|c| c.ty).map(|c| {
+        trf(
+            "Changing the type of “{name}” can truncate or lose data, or fail on existing rows",
+            &[("name", &c.old.name)],
+        )
+    }));
     let sqlite_rebuild = driver == Driver::Sqlite
         && (diff.pk_changed
             || diff.kept.iter().any(|c| c.ty || c.null || c.default)
             || (!diff.dropped.is_empty() && !version_at_least(&d.version, (3, 35, 0))));
-    let mut plan = Plan { statements: vec![], warnings, transaction: false };
+    let mut plan = Plan {
+        statements: vec![],
+        warnings,
+        transaction: false,
+    };
     if sqlite_rebuild {
         if let Some(why) = &d.rebuild_blocker {
             return Err(why.clone());
@@ -828,7 +1125,8 @@ pub fn plan(driver: Driver, d: &TableDetails, edit: &TableEdit) -> Result<Plan, 
     } else {
         plan.statements = alter_sql(driver, d, edit, &diff)?;
     }
-    plan.transaction = matches!(driver, Driver::Postgres | Driver::Sqlite | Driver::MsSql) && plan.statements.len() > 1;
+    plan.transaction = matches!(driver, Driver::Postgres | Driver::Sqlite | Driver::MsSql)
+        && plan.statements.len() > 1;
     if plan.statements.is_empty() {
         plan.warnings.clear();
     }
@@ -847,17 +1145,34 @@ fn column_def(c: &NewColumn) -> String {
     s
 }
 
-fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) -> Result<Vec<String>, String> {
+fn alter_sql(
+    driver: Driver,
+    d: &TableDetails,
+    edit: &TableEdit,
+    diff: &Diff,
+) -> Result<Vec<String>, String> {
     let q = |s: &str| quote_ident_if_needed(driver, s);
     let schema = edit.schema;
-    let t = if driver == Driver::Sqlite || schema.is_empty() { q(edit.table) } else { format!("{}.{}", q(schema), q(edit.table)) };
-    let in_schema = |n: &str| if driver == Driver::Sqlite || schema.is_empty() { q(n) } else { format!("{}.{}", q(schema), q(n)) };
+    let t = if driver == Driver::Sqlite || schema.is_empty() {
+        q(edit.table)
+    } else {
+        format!("{}.{}", q(schema), q(edit.table))
+    };
+    let in_schema = |n: &str| {
+        if driver == Driver::Sqlite || schema.is_empty() {
+            q(n)
+        } else {
+            format!("{}.{}", q(schema), q(n))
+        }
+    };
     let cols = |v: &[String]| v.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ");
     let had_pk = !d.primary_key.is_empty();
     let mut out = vec![];
     let alter = |s: String| format!("alter table {t} {s}");
 
-    if driver == Driver::ClickHouse && (diff.pk_changed || !diff.added_indexes.is_empty() || !diff.dropped_indexes.is_empty()) {
+    if driver == Driver::ClickHouse
+        && (diff.pk_changed || !diff.added_indexes.is_empty() || !diff.dropped_indexes.is_empty())
+    {
         return Err(tr("ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console").into());
     }
     if driver == Driver::MySql || driver == Driver::MariaDb {
@@ -876,12 +1191,20 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
         for c in &diff.kept {
             let redefined = c.ty || c.null || c.default;
             if c.renamed && !redefined && (rename_column || c.old.generated) {
-                clauses.push(format!("rename column {} to {}", q(&c.old.name), q(&c.name)));
+                clauses.push(format!(
+                    "rename column {} to {}",
+                    q(&c.old.name),
+                    q(&c.name)
+                ));
                 continue;
             }
             let def = column_def_mysql(c.new, c.old, !c.ty);
             if c.renamed {
-                clauses.push(format!("change column {} {} {def}", q(&c.old.name), q(&c.name)));
+                clauses.push(format!(
+                    "change column {} {} {def}",
+                    q(&c.old.name),
+                    q(&c.name)
+                ));
             } else {
                 clauses.push(format!("modify column {} {def}", q(&c.name)));
             }
@@ -893,7 +1216,12 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
             clauses.push(format!("add primary key ({})", cols(&diff.new_pk)));
         }
         for (name, columns, unique) in &diff.added_indexes {
-            clauses.push(format!("add {}index {} ({})", if *unique { "unique " } else { "" }, q(name), cols(columns)));
+            clauses.push(format!(
+                "add {}index {} ({})",
+                if *unique { "unique " } else { "" },
+                q(name),
+                cols(columns)
+            ));
         }
         if !clauses.is_empty() {
             out.push(format!("alter table {t}\n    {}", clauses.join(",\n    ")));
@@ -903,7 +1231,10 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
         if diff.pk_changed && had_pk {
             out.push(match driver {
                 Driver::Postgres | Driver::MsSql => {
-                    let name = d.pk_name.clone().unwrap_or_else(|| format!("{}_pkey", edit.table));
+                    let name = d
+                        .pk_name
+                        .clone()
+                        .unwrap_or_else(|| format!("{}_pkey", edit.table));
                     alter(format!("drop constraint {}", q(&name)))
                 }
                 _ => alter("drop primary key".into()),
@@ -917,7 +1248,11 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
             });
         }
         for c in &diff.dropped {
-            if let Some(df) = c.default_constraint.as_deref().filter(|_| driver == Driver::MsSql) {
+            if let Some(df) = c
+                .default_constraint
+                .as_deref()
+                .filter(|_| driver == Driver::MsSql)
+            {
                 out.push(alter(format!("drop constraint {}", q(df))));
             }
             out.push(alter(format!("drop column {}", q(&c.name))));
@@ -926,10 +1261,18 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
         for c in diff.kept.iter().filter(|c| c.renamed) {
             out.push(match driver {
                 Driver::MsSql => {
-                    let old = format!("{}.{}.{}", q(schema), q(edit.table), q(&c.old.name)).replace('\'', "''");
-                    format!("exec sp_rename '{old}', '{}', 'COLUMN'", c.name.replace('\'', "''"))
+                    let old = format!("{}.{}.{}", q(schema), q(edit.table), q(&c.old.name))
+                        .replace('\'', "''");
+                    format!(
+                        "exec sp_rename '{old}', '{}', 'COLUMN'",
+                        c.name.replace('\'', "''")
+                    )
                 }
-                _ => alter(format!("rename column {} to {}", q(&c.old.name), q(&c.name))),
+                _ => alter(format!(
+                    "rename column {} to {}",
+                    q(&c.old.name),
+                    q(&c.name)
+                )),
             });
         }
         for c in &diff.kept {
@@ -940,13 +1283,22 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                 Driver::Postgres => {
                     if c.ty {
                         let ty = c.new.data_type.trim();
-                        out.push(alter(format!("alter column {col} type {ty} using {col}::{ty}")));
+                        out.push(alter(format!(
+                            "alter column {col} type {ty} using {col}::{ty}"
+                        )));
                     }
                     if c.null {
-                        out.push(alter(format!("alter column {col} {} not null", if not_null { "set" } else { "drop" })));
+                        out.push(alter(format!(
+                            "alter column {col} {} not null",
+                            if not_null { "set" } else { "drop" }
+                        )));
                     }
                     if c.default {
-                        out.push(alter(if default.is_empty() { format!("alter column {col} drop default") } else { format!("alter column {col} set default {default}") }));
+                        out.push(alter(if default.is_empty() {
+                            format!("alter column {col} drop default")
+                        } else {
+                            format!("alter column {col} set default {default}")
+                        }));
                     }
                 }
                 Driver::MsSql => {
@@ -957,7 +1309,11 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                         out.push(alter(format!("drop constraint {}", q(df))));
                     }
                     if c.ty || c.null {
-                        out.push(alter(format!("alter column {col} {} {}", c.new.data_type.trim(), if not_null { "not null" } else { "null" })));
+                        out.push(alter(format!(
+                            "alter column {col} {} {}",
+                            c.new.data_type.trim(),
+                            if not_null { "not null" } else { "null" }
+                        )));
                     }
                     if redo_default && !default.is_empty() {
                         out.push(alter(format!("add default {default} for {col}")));
@@ -969,7 +1325,10 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                         spec.push_str(&format!(" {}", c.new.data_type.trim()));
                     }
                     if c.default {
-                        spec.push_str(&format!(" default {}", if default.is_empty() { "null" } else { default }));
+                        spec.push_str(&format!(
+                            " default {}",
+                            if default.is_empty() { "null" } else { default }
+                        ));
                     }
                     if c.null {
                         spec.push_str(if not_null { " not null" } else { " null" });
@@ -980,14 +1339,23 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                 }
                 Driver::Snowflake => {
                     if c.ty {
-                        out.push(alter(format!("alter column {col} set data type {}", c.new.data_type.trim())));
+                        out.push(alter(format!(
+                            "alter column {col} set data type {}",
+                            c.new.data_type.trim()
+                        )));
                     }
                     if c.null {
-                        out.push(alter(format!("alter column {col} {} not null", if not_null { "set" } else { "drop" })));
+                        out.push(alter(format!(
+                            "alter column {col} {} not null",
+                            if not_null { "set" } else { "drop" }
+                        )));
                     }
                     if c.default {
                         if !default.is_empty() {
-                            return Err(tr("Snowflake can only remove a column's default, not set a new one").into());
+                            return Err(tr(
+                                "Snowflake can only remove a column's default, not set a new one",
+                            )
+                            .into());
                         }
                         out.push(alter(format!("alter column {col} drop default")));
                     }
@@ -996,9 +1364,16 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                 // DEFAULT goes in the same MODIFY (the server needs it to fill NULLs when the
                 // column becomes NOT NULL).
                 Driver::ClickHouse => {
-                    let default_clause = if default.is_empty() { String::new() } else { format!(" default {default}") };
+                    let default_clause = if default.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" default {default}")
+                    };
                     if c.ty || c.null {
-                        out.push(alter(format!("modify column {col} {}{default_clause}", crate::db::clickhouse::column_type(&c.new.data_type, not_null))));
+                        out.push(alter(format!(
+                            "modify column {col} {}{default_clause}",
+                            crate::db::clickhouse::column_type(&c.new.data_type, not_null)
+                        )));
                     } else if c.default && !default.is_empty() {
                         out.push(alter(format!("modify column {col}{default_clause}")));
                     }
@@ -1016,9 +1391,20 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
                 Driver::Oracle => alter(format!("add ({} {})", q(name), column_def(c))),
                 Driver::MsSql => alter(format!("add {} {}", q(name), column_def(c))),
                 Driver::ClickHouse => {
-                    let ty = crate::db::clickhouse::column_type(&c.data_type, c.not_null || c.primary_key);
+                    let ty = crate::db::clickhouse::column_type(
+                        &c.data_type,
+                        c.not_null || c.primary_key,
+                    );
                     let default = c.default.trim();
-                    alter(format!("add column {} {ty}{}", q(name), if default.is_empty() { String::new() } else { format!(" default {default}") }))
+                    alter(format!(
+                        "add column {} {ty}{}",
+                        q(name),
+                        if default.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" default {default}")
+                        }
+                    ))
                 }
                 _ => alter(format!("add column {} {}", q(name), column_def(c))),
             });
@@ -1027,13 +1413,27 @@ fn alter_sql(driver: Driver, d: &TableDetails, edit: &TableEdit, diff: &Diff) ->
             out.push(alter(format!("add primary key ({})", cols(&diff.new_pk))));
         }
         for (name, columns, unique) in &diff.added_indexes {
-            let name = if driver == Driver::Oracle { in_schema(name) } else { q(name) };
-            out.push(format!("create {}index {name} on {t} ({})", if *unique { "unique " } else { "" }, cols(columns)));
+            let name = if driver == Driver::Oracle {
+                in_schema(name)
+            } else {
+                q(name)
+            };
+            out.push(format!(
+                "create {}index {name} on {t} ({})",
+                if *unique { "unique " } else { "" },
+                cols(columns)
+            ));
         }
     }
     // 4. The table's new name, last (everything above uses the old one).
     if diff.new_name.is_some() {
-        out.push(object_sql(driver, DropKind::Rename, schema, edit.table, edit.new_name));
+        out.push(object_sql(
+            driver,
+            DropKind::Rename,
+            schema,
+            edit.table,
+            edit.new_name,
+        ));
     }
     Ok(out)
 }
@@ -1045,7 +1445,11 @@ pub(crate) fn column_def_mysql(c: &NewColumn, old: &ColumnDef, same_type: bool) 
     if same_type && let Some(coll) = &old.collation {
         s.push_str(&format!(" collate {coll}"));
     }
-    s.push_str(if c.not_null || c.primary_key { " not null" } else { " null" });
+    s.push_str(if c.not_null || c.primary_key {
+        " not null"
+    } else {
+        " null"
+    });
     if !c.default.trim().is_empty() {
         s.push_str(&format!(" default {}", c.default.trim()));
     }
@@ -1053,19 +1457,35 @@ pub(crate) fn column_def_mysql(c: &NewColumn, old: &ColumnDef, same_type: bool) 
         s.push_str(&format!(" {}", old.extra));
     }
     if !old.comment.is_empty() {
-        s.push_str(&format!(" comment {}", lit(&old.comment).replace('\\', "\\\\")));
+        s.push_str(&format!(
+            " comment {}",
+            lit(&old.comment).replace('\\', "\\\\")
+        ));
     }
     s
 }
 
 /// SQLite's "12-step" rebuild: a new table with the edited definition, the rows copied, the old
 /// table dropped and the new one renamed, then its indexes created again.
-fn sqlite_rebuild_sql(d: &TableDetails, edit: &TableEdit, diff: &Diff) -> Result<Vec<String>, String> {
+fn sqlite_rebuild_sql(
+    d: &TableDetails,
+    edit: &TableEdit,
+    diff: &Diff,
+) -> Result<Vec<String>, String> {
     let q = |s: &str| quote_ident_if_needed(Driver::Sqlite, s);
-    let final_name = diff.new_name.clone().unwrap_or_else(|| edit.table.to_string());
+    let final_name = diff
+        .new_name
+        .clone()
+        .unwrap_or_else(|| edit.table.to_string());
     let tmp = format!("_dc_new_{final_name}");
-    let pk: Vec<&NewColumn> = edit.columns.iter().map(|c| &c.column).filter(|c| c.primary_key).collect();
-    let inline_pk = d.autoincrement && pk.len() == 1 && pk[0].data_type.trim().eq_ignore_ascii_case("integer");
+    let pk: Vec<&NewColumn> = edit
+        .columns
+        .iter()
+        .map(|c| &c.column)
+        .filter(|c| c.primary_key)
+        .collect();
+    let inline_pk =
+        d.autoincrement && pk.len() == 1 && pk[0].data_type.trim().eq_ignore_ascii_case("integer");
     let mut lines: Vec<String> = edit
         .columns
         .iter()
@@ -1079,30 +1499,77 @@ fn sqlite_rebuild_sql(d: &TableDetails, edit: &TableEdit, diff: &Diff) -> Result
         })
         .collect();
     if !pk.is_empty() && !inline_pk {
-        lines.push(format!("    primary key ({})", pk.iter().map(|c| q(c.name.trim())).collect::<Vec<_>>().join(", ")));
+        lines.push(format!(
+            "    primary key ({})",
+            pk.iter()
+                .map(|c| q(c.name.trim()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
-    let mut out = vec![format!("create table {}\n(\n{}\n)", q(&tmp), lines.join(",\n"))];
-    let copied: Vec<(&str, String)> =
-        edit.columns.iter().filter_map(|e| e.original.and_then(|i| d.columns.get(i)).map(|o| (o.name.as_str(), q(e.column.name.trim())))).collect();
+    let mut out = vec![format!(
+        "create table {}\n(\n{}\n)",
+        q(&tmp),
+        lines.join(",\n")
+    )];
+    let copied: Vec<(&str, String)> = edit
+        .columns
+        .iter()
+        .filter_map(|e| {
+            e.original
+                .and_then(|i| d.columns.get(i))
+                .map(|o| (o.name.as_str(), q(e.column.name.trim())))
+        })
+        .collect();
     if !copied.is_empty() {
-        let to = copied.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
-        let from = copied.iter().map(|(o, _)| q(o)).collect::<Vec<_>>().join(", ");
-        out.push(format!("insert into {} ({to}) select {from} from {}", q(&tmp), q(edit.table)));
+        let to = copied
+            .iter()
+            .map(|(_, n)| n.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let from = copied
+            .iter()
+            .map(|(o, _)| q(o))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(format!(
+            "insert into {} ({to}) select {from} from {}",
+            q(&tmp),
+            q(edit.table)
+        ));
     }
     // Since SQLite 3.26 a rename re-checks the views on the schema, and those on the dropped
     // table fail until the new one has its name; the legacy rename skips that check. Apple's
     // SQLite has it on already; the bundled one (Windows, Linux) doesn't.
     out.push("pragma legacy_alter_table = on".into());
     out.push(format!("drop table {}", q(edit.table)));
-    out.push(format!("alter table {} rename to {}", q(&tmp), q(&final_name)));
+    out.push(format!(
+        "alter table {} rename to {}",
+        q(&tmp),
+        q(&final_name)
+    ));
     // Kept indexes, with their columns renamed; those on a dropped column go with it.
     let renamed = |old: &str| {
-        edit.columns.iter().find(|e| e.original.and_then(|i| d.columns.get(i)).is_some_and(|o| o.name == old)).map(|e| e.column.name.trim().to_string())
+        edit.columns
+            .iter()
+            .find(|e| {
+                e.original
+                    .and_then(|i| d.columns.get(i))
+                    .is_some_and(|o| o.name == old)
+            })
+            .map(|e| e.column.name.trim().to_string())
     };
     let mut indexes: Vec<(String, Vec<String>, bool)> = vec![];
-    for x in edit.indexes.iter().filter_map(|x| x.original.and_then(|i| d.indexes.get(i))) {
+    for x in edit
+        .indexes
+        .iter()
+        .filter_map(|x| x.original.and_then(|i| d.indexes.get(i)))
+    {
         if !x.plain {
-            return Err(trf("Index “{name}” can't be rebuilt (expression or partial index): drop it first", &[("name", &x.name)]));
+            return Err(trf(
+                "Index “{name}” can't be rebuilt (expression or partial index): drop it first",
+                &[("name", &x.name)],
+            ));
         }
         let cols: Option<Vec<String>> = x.columns.iter().map(|c| renamed(c)).collect();
         if let Some(cols) = cols {
@@ -1112,7 +1579,12 @@ fn sqlite_rebuild_sql(d: &TableDetails, edit: &TableEdit, diff: &Diff) -> Result
     indexes.extend(diff.added_indexes.iter().cloned());
     for (name, cols, unique) in indexes {
         let cols = cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", ");
-        out.push(format!("create {}index {} on {} ({cols})", if unique { "unique " } else { "" }, q(&name), q(&final_name)));
+        out.push(format!(
+            "create {}index {} on {} ({cols})",
+            if unique { "unique " } else { "" },
+            q(&name),
+            q(&final_name)
+        ));
     }
     Ok(out)
 }
@@ -1122,7 +1594,13 @@ mod tests {
     use super::*;
 
     fn def(name: &str, ty: &str, nullable: bool, default: Option<&str>) -> ColumnDef {
-        ColumnDef { name: name.into(), data_type: ty.into(), nullable, default: default.map(String::from), ..Default::default() }
+        ColumnDef {
+            name: name.into(),
+            data_type: ty.into(),
+            nullable,
+            default: default.map(String::from),
+            ..Default::default()
+        }
     }
 
     /// `items(id int pk, name varchar(50) not null, price int default 0, note text)` with an
@@ -1137,7 +1615,13 @@ mod tests {
             ],
             primary_key: vec!["id".into()],
             pk_name: Some("items_pkey".into()),
-            indexes: vec![IndexDef { name: "items_name".into(), columns: vec!["name".into()], unique: false, constraint: false, plain: true }],
+            indexes: vec![IndexDef {
+                name: "items_name".into(),
+                columns: vec!["name".into()],
+                unique: false,
+                constraint: false,
+                plain: true,
+            }],
             version: String::new(),
             rebuild_blocker: None,
             autoincrement: false,
@@ -1157,16 +1641,42 @@ mod tests {
         cols.remove(3);
         cols.push(EditColumn {
             original: None,
-            column: NewColumn { name: "email".into(), data_type: "varchar(255)".into(), not_null: false, primary_key: false, default: String::new() },
+            column: NewColumn {
+                name: "email".into(),
+                data_type: "varchar(255)".into(),
+                not_null: false,
+                primary_key: false,
+                default: String::new(),
+            },
         });
-        let indexes = vec![EditIndex { original: None, name: "goods_email".into(), columns: "EMAIL".into(), unique: true }];
+        let indexes = vec![EditIndex {
+            original: None,
+            name: "goods_email".into(),
+            columns: "EMAIL".into(),
+            unique: true,
+        }];
         (cols, indexes)
     }
 
     fn run(driver: Driver, schema: &str, d: &TableDetails) -> Plan {
         let (cols, idx) = edit_all(d);
-        let table = if matches!(driver, Driver::Oracle | Driver::Snowflake) { "ITEMS" } else { "items" };
-        plan(driver, d, &TableEdit { schema, table, new_name: "goods", columns: &cols, indexes: &idx }).unwrap()
+        let table = if matches!(driver, Driver::Oracle | Driver::Snowflake) {
+            "ITEMS"
+        } else {
+            "items"
+        };
+        plan(
+            driver,
+            d,
+            &TableEdit {
+                schema,
+                table,
+                new_name: "goods",
+                columns: &cols,
+                indexes: &idx,
+            },
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1174,8 +1684,26 @@ mod tests {
         let d = details("integer", "text");
         let cols = initial_columns(&d);
         let idx = initial_indexes(&d);
-        for driver in [Driver::Postgres, Driver::MySql, Driver::MsSql, Driver::Oracle, Driver::Snowflake, Driver::Sqlite] {
-            let p = plan(driver, &d, &TableEdit { schema: "s", table: "items", new_name: "items", columns: &cols, indexes: &idx }).unwrap();
+        for driver in [
+            Driver::Postgres,
+            Driver::MySql,
+            Driver::MsSql,
+            Driver::Oracle,
+            Driver::Snowflake,
+            Driver::Sqlite,
+        ] {
+            let p = plan(
+                driver,
+                &d,
+                &TableEdit {
+                    schema: "s",
+                    table: "items",
+                    new_name: "items",
+                    columns: &cols,
+                    indexes: &idx,
+                },
+            )
+            .unwrap();
             assert_eq!(p, Plan::default(), "{driver:?}");
         }
     }
@@ -1209,8 +1737,25 @@ mod tests {
         let mut cols = initial_columns(&d);
         cols[1].column.not_null = false;
         cols[2].column.default = String::new();
-        let p = plan(Driver::Postgres, &d, &TableEdit { schema: "public", table: "items", new_name: "items", columns: &cols, indexes: &initial_indexes(&d) }).unwrap();
-        assert_eq!(p.statements, ["alter table public.items alter column name drop not null", "alter table public.items alter column price drop default"]);
+        let p = plan(
+            Driver::Postgres,
+            &d,
+            &TableEdit {
+                schema: "public",
+                table: "items",
+                new_name: "items",
+                columns: &cols,
+                indexes: &initial_indexes(&d),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            p.statements,
+            [
+                "alter table public.items alter column name drop not null",
+                "alter table public.items alter column price drop default"
+            ]
+        );
         assert!(p.warnings.is_empty());
     }
 
@@ -1242,22 +1787,46 @@ mod tests {
         let mut cols = initial_columns(&d);
         cols[0].column.name = "item_id".into();
         cols[1].column.name = "title".into();
-        let edit = |d: &TableDetails, cols: &[EditColumn]| plan(Driver::MySql, d, &TableEdit { schema: "shop", table: "items", new_name: "items", columns: cols, indexes: &initial_indexes(d) });
+        let edit = |d: &TableDetails, cols: &[EditColumn]| {
+            plan(
+                Driver::MySql,
+                d,
+                &TableEdit {
+                    schema: "shop",
+                    table: "items",
+                    new_name: "items",
+                    columns: cols,
+                    indexes: &initial_indexes(d),
+                },
+            )
+        };
         // MySQL 5.7: no RENAME COLUMN, so CHANGE with the full definition.
         d.version = "5.7.44".into();
         let p = edit(&d, &cols).unwrap();
         assert_eq!(
             p.statements,
-            ["alter table shop.items\n    change column id item_id int not null auto_increment,\n    \
-              change column name title varchar(50) collate utf8mb4_bin not null comment 'it''s'"]
+            [
+                "alter table shop.items\n    change column id item_id int not null auto_increment,\n    \
+              change column name title varchar(50) collate utf8mb4_bin not null comment 'it''s'"
+            ]
         );
         d.version = "8.0.36".into();
         let p = edit(&d, &cols).unwrap();
-        assert_eq!(p.statements, ["alter table shop.items\n    rename column id to item_id,\n    rename column name to title"]);
+        assert_eq!(
+            p.statements,
+            [
+                "alter table shop.items\n    rename column id to item_id,\n    rename column name to title"
+            ]
+        );
         // Making a column nullable says so explicitly.
         cols[1].column.not_null = false;
         let p = edit(&d, &cols).unwrap();
-        assert!(p.statements[0].contains("change column name title varchar(50) collate utf8mb4_bin null comment"), "{}", p.statements[0]);
+        assert!(
+            p.statements[0]
+                .contains("change column name title varchar(50) collate utf8mb4_bin null comment"),
+            "{}",
+            p.statements[0]
+        );
     }
 
     #[test]
@@ -1322,7 +1891,20 @@ mod tests {
         d.indexes.clear();
         // The primary key and indexes are fixed when the table is created.
         let (cols, indexes) = edit_all(&d);
-        assert!(plan(Driver::ClickHouse, &d, &TableEdit { schema: "db", table: "items", new_name: "goods", columns: &cols, indexes: &indexes }).is_err());
+        assert!(
+            plan(
+                Driver::ClickHouse,
+                &d,
+                &TableEdit {
+                    schema: "db",
+                    table: "items",
+                    new_name: "goods",
+                    columns: &cols,
+                    indexes: &indexes
+                }
+            )
+            .is_err()
+        );
         let mut cols = initial_columns(&d);
         cols[1].column.name = "title".into();
         cols[1].column.data_type = "LowCardinality(String)".into();
@@ -1331,9 +1913,26 @@ mod tests {
         cols.remove(3);
         cols.push(EditColumn {
             original: None,
-            column: NewColumn { name: "email".into(), data_type: "String".into(), not_null: false, primary_key: false, default: String::new() },
+            column: NewColumn {
+                name: "email".into(),
+                data_type: "String".into(),
+                not_null: false,
+                primary_key: false,
+                default: String::new(),
+            },
         });
-        let p = plan(Driver::ClickHouse, &d, &TableEdit { schema: "db", table: "items", new_name: "goods", columns: &cols, indexes: &[] }).unwrap();
+        let p = plan(
+            Driver::ClickHouse,
+            &d,
+            &TableEdit {
+                schema: "db",
+                table: "items",
+                new_name: "goods",
+                columns: &cols,
+                indexes: &[],
+            },
+        )
+        .unwrap();
         assert_eq!(
             p.statements,
             [
@@ -1349,8 +1948,22 @@ mod tests {
         // Removing a default alone.
         let mut cols = initial_columns(&d);
         cols[2].column.default = String::new();
-        let p = plan(Driver::ClickHouse, &d, &TableEdit { schema: "db", table: "items", new_name: "items", columns: &cols, indexes: &[] }).unwrap();
-        assert_eq!(p.statements, ["alter table db.items modify column price remove default"]);
+        let p = plan(
+            Driver::ClickHouse,
+            &d,
+            &TableEdit {
+                schema: "db",
+                table: "items",
+                new_name: "items",
+                columns: &cols,
+                indexes: &[],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            p.statements,
+            ["alter table db.items modify column price remove default"]
+        );
     }
 
     #[test]
@@ -1364,7 +1977,18 @@ mod tests {
         d.columns[2].default = None;
         let (mut cols, _) = edit_all(&d);
         cols[2].column.default = String::new();
-        let p = plan(Driver::Snowflake, &d, &TableEdit { schema: "PUBLIC", table: "ITEMS", new_name: "goods", columns: &cols, indexes: &[] }).unwrap();
+        let p = plan(
+            Driver::Snowflake,
+            &d,
+            &TableEdit {
+                schema: "PUBLIC",
+                table: "ITEMS",
+                new_name: "goods",
+                columns: &cols,
+                indexes: &[],
+            },
+        )
+        .unwrap();
         assert_eq!(
             p.statements,
             [
@@ -1380,7 +2004,20 @@ mod tests {
         );
         // A new default can't be set.
         cols[2].column.default = "1".into();
-        assert!(plan(Driver::Snowflake, &d, &TableEdit { schema: "PUBLIC", table: "ITEMS", new_name: "ITEMS", columns: &cols, indexes: &[] }).is_err());
+        assert!(
+            plan(
+                Driver::Snowflake,
+                &d,
+                &TableEdit {
+                    schema: "PUBLIC",
+                    table: "ITEMS",
+                    new_name: "ITEMS",
+                    columns: &cols,
+                    indexes: &[]
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1390,8 +2027,28 @@ mod tests {
         let mut cols = initial_columns(&d);
         cols[1].column.name = "title".into();
         cols.remove(3);
-        cols.push(EditColumn { original: None, column: NewColumn { name: "email".into(), data_type: "TEXT".into(), not_null: false, primary_key: false, default: String::new() } });
-        let p = plan(Driver::Sqlite, &d, &TableEdit { schema: "main", table: "items", new_name: "goods", columns: &cols, indexes: &[] }).unwrap();
+        cols.push(EditColumn {
+            original: None,
+            column: NewColumn {
+                name: "email".into(),
+                data_type: "TEXT".into(),
+                not_null: false,
+                primary_key: false,
+                default: String::new(),
+            },
+        });
+        let p = plan(
+            Driver::Sqlite,
+            &d,
+            &TableEdit {
+                schema: "main",
+                table: "items",
+                new_name: "goods",
+                columns: &cols,
+                indexes: &[],
+            },
+        )
+        .unwrap();
         assert_eq!(
             p.statements,
             [
@@ -1405,7 +2062,18 @@ mod tests {
         assert!(p.transaction);
         // Old SQLite has no DROP COLUMN: rebuild.
         d.version = "3.31.1".into();
-        let p = plan(Driver::Sqlite, &d, &TableEdit { schema: "main", table: "items", new_name: "goods", columns: &cols, indexes: &[] }).unwrap();
+        let p = plan(
+            Driver::Sqlite,
+            &d,
+            &TableEdit {
+                schema: "main",
+                table: "items",
+                new_name: "goods",
+                columns: &cols,
+                indexes: &[],
+            },
+        )
+        .unwrap();
         assert!(p.statements[0].starts_with("create table _dc_new_goods"));
     }
 
@@ -1433,21 +2101,69 @@ mod tests {
         let mut cols = initial_columns(&d);
         cols[1].column.name = "title".into();
         cols[2].column.not_null = true;
-        let p = plan(Driver::Sqlite, &d, &TableEdit { schema: "main", table: "items", new_name: "items", columns: &cols, indexes: &initial_indexes(&d) }).unwrap();
-        assert!(p.statements[0].contains("    id INTEGER not null primary key autoincrement,\n"), "{}", p.statements[0]);
+        let p = plan(
+            Driver::Sqlite,
+            &d,
+            &TableEdit {
+                schema: "main",
+                table: "items",
+                new_name: "items",
+                columns: &cols,
+                indexes: &initial_indexes(&d),
+            },
+        )
+        .unwrap();
+        assert!(
+            p.statements[0].contains("    id INTEGER not null primary key autoincrement,\n"),
+            "{}",
+            p.statements[0]
+        );
         assert!(!p.statements[0].contains("primary key (id)"));
-        assert_eq!(p.statements.last().unwrap(), "create index items_name on items (title)");
+        assert_eq!(
+            p.statements.last().unwrap(),
+            "create index items_name on items (title)"
+        );
         // Tables with constraints a rebuild would lose are refused.
         d.rebuild_blocker = Some("no".into());
-        assert_eq!(plan(Driver::Sqlite, &d, &TableEdit { schema: "main", table: "items", new_name: "items", columns: &cols, indexes: &[] }), Err("no".into()));
+        assert_eq!(
+            plan(
+                Driver::Sqlite,
+                &d,
+                &TableEdit {
+                    schema: "main",
+                    table: "items",
+                    new_name: "items",
+                    columns: &cols,
+                    indexes: &[]
+                }
+            ),
+            Err("no".into())
+        );
     }
 
     #[test]
     fn validation_errors() {
         let d = details("integer", "text");
         let mut cols = initial_columns(&d);
-        let ok = |cols: &[EditColumn], idx: &[EditIndex]| plan(Driver::Postgres, &d, &TableEdit { schema: "s", table: "items", new_name: "items", columns: cols, indexes: idx });
-        let idx = vec![EditIndex { original: None, name: "x".into(), columns: "nope".into(), unique: false }];
+        let ok = |cols: &[EditColumn], idx: &[EditIndex]| {
+            plan(
+                Driver::Postgres,
+                &d,
+                &TableEdit {
+                    schema: "s",
+                    table: "items",
+                    new_name: "items",
+                    columns: cols,
+                    indexes: idx,
+                },
+            )
+        };
+        let idx = vec![EditIndex {
+            original: None,
+            name: "x".into(),
+            columns: "nope".into(),
+            unique: false,
+        }];
         assert!(ok(&cols, &idx).is_err(), "unknown index column");
         cols[1].column.name = "ID".into();
         assert!(ok(&cols, &[]).is_err(), "duplicate column");
@@ -1456,15 +2172,37 @@ mod tests {
         d2.columns[3].generated = true;
         let mut cols = initial_columns(&d2);
         cols[3].column.data_type = "varchar".into();
-        assert!(plan(Driver::Postgres, &d2, &TableEdit { schema: "s", table: "items", new_name: "items", columns: &cols, indexes: &[] }).is_err());
+        assert!(
+            plan(
+                Driver::Postgres,
+                &d2,
+                &TableEdit {
+                    schema: "s",
+                    table: "items",
+                    new_name: "items",
+                    columns: &cols,
+                    indexes: &[]
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn types_and_versions() {
-        assert_eq!(oracle_type("NUMBER", "22", "0", Some("10"), Some("2")), "number(10,2)");
+        assert_eq!(
+            oracle_type("NUMBER", "22", "0", Some("10"), Some("2")),
+            "number(10,2)"
+        );
         assert_eq!(oracle_type("NUMBER", "22", "0", None, Some("0")), "integer");
-        assert_eq!(oracle_type("VARCHAR2", "400", "100", None, None), "varchar2(100)");
-        assert_eq!(snowflake_type("TEXT", None, None, Some("16777216")), "varchar(16777216)");
+        assert_eq!(
+            oracle_type("VARCHAR2", "400", "100", None, None),
+            "varchar2(100)"
+        );
+        assert_eq!(
+            snowflake_type("TEXT", None, None, Some("16777216")),
+            "varchar(16777216)"
+        );
         assert!(mysql_has_rename_column("10.5.1-MariaDB"));
         assert!(!mysql_has_rename_column("10.4.30-MariaDB-log"));
         assert!(mysql_has_rename_column("8.0.36"));

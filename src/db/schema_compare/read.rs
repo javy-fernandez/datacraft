@@ -3,10 +3,10 @@
 
 use super::{ForeignKeyDef, SchemaModel, TableModel, ViewModel, supported};
 use crate::db::alter::{ColumnDef, IndexDef, load_tables};
-use std::collections::HashMap;
 use crate::db::table_definition::lit;
 use crate::db::{ConnectionConfig, Driver, ResultSet, Session};
 use crate::i18n::{tr, trf};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -27,8 +27,16 @@ pub struct Progress {
 }
 
 async fn query(s: &mut Session, sql: &str) -> anyhow::Result<ResultSet> {
-    let set = s.execute(sql, 1_000_000).await?.into_iter().find(|r| !r.columns.is_empty()).unwrap_or_default();
-    anyhow::ensure!(!set.truncated, tr("The schema catalog is too large to compare"));
+    let set = s
+        .execute(sql, 1_000_000)
+        .await?
+        .into_iter()
+        .find(|r| !r.columns.is_empty())
+        .unwrap_or_default();
+    anyhow::ensure!(
+        !set.truncated,
+        tr("The schema catalog is too large to compare")
+    );
     Ok(set)
 }
 
@@ -154,7 +162,9 @@ fn generated_sql(driver: Driver, schema: &str) -> Option<String> {
              case when upper(extra) like '%STORED%' or upper(extra) like '%PERSISTENT%' then 'stored' else 'virtual' end) \
              from information_schema.columns where table_schema = {sch} and generation_expression is not null and generation_expression <> ''"
         ),
-        Driver::Oracle => format!("select table_name, column_name, data_default from all_tab_cols where owner = {sch} and virtual_column = 'YES' and hidden_column = 'NO'"),
+        Driver::Oracle => format!(
+            "select table_name, column_name, data_default from all_tab_cols where owner = {sch} and virtual_column = 'YES' and hidden_column = 'NO'"
+        ),
         _ => return None,
     })
 }
@@ -171,8 +181,12 @@ fn sequences_sql(driver: Driver, schema: &str) -> Option<String> {
              or (t.typtype = 'c' and (select relkind from pg_catalog.pg_class where oid = t.typrelid) = 'c')) \
              and not exists (select 1 from pg_catalog.pg_depend d where d.classid = 'pg_catalog.pg_type'::regclass and d.objid = t.oid and d.deptype = 'e')"
         ),
-        Driver::MsSql => format!("select name, 's' from sys.sequences where schema_id = schema_id({sch})"),
-        Driver::Oracle => format!("select sequence_name, 's' from all_sequences where sequence_owner = {sch}"),
+        Driver::MsSql => {
+            format!("select name, 's' from sys.sequences where schema_id = schema_id({sch})")
+        }
+        Driver::Oracle => {
+            format!("select sequence_name, 's' from all_sequences where sequence_owner = {sch}")
+        }
         _ => return None,
     })
 }
@@ -270,13 +284,24 @@ fn parse_foreign_keys(driver: Driver, rs: &ResultSet) -> Vec<(String, ForeignKey
 /// SQLite: each table's statement, constraints and options, UNIQUE constraints (auto-named
 /// indexes `load_tables` leaves out), triggers, and generated columns, which `pragma_table_info`
 /// leaves out (`pragma_table_xinfo` marks them hidden 2 or 3), in place. One query of each kind.
-async fn sqlite_tables(s: &mut Session, schema: &str, tables: &mut [TableModel]) -> anyhow::Result<()> {
+async fn sqlite_tables(
+    s: &mut Session,
+    schema: &str,
+    tables: &mut [TableModel],
+) -> anyhow::Result<()> {
     let d = Driver::Sqlite;
     let sch = lit(d, schema);
     let master = format!("{}.sqlite_master m", d.quote_ident(schema));
-    let mut by_name: HashMap<String, &mut TableModel> = tables.iter_mut().map(|t| (t.name.clone(), t)).collect();
+    let mut by_name: HashMap<String, &mut TableModel> =
+        tables.iter_mut().map(|t| (t.name.clone(), t)).collect();
     let mut generated: HashMap<String, HashMap<String, String>> = HashMap::new();
-    for r in &query(s, &format!("select m.name, m.sql from {master} where m.type = 'table'")).await?.rows {
+    for r in &query(
+        s,
+        &format!("select m.name, m.sql from {master} where m.type = 'table'"),
+    )
+    .await?
+    .rows
+    {
         if let Some(t) = by_name.get_mut(&text(r, 0)) {
             t.sql = text(r, 1);
             let (features, columns) = super::sqlite_features(&t.sql);
@@ -293,12 +318,25 @@ async fn sqlite_tables(s: &mut Session, schema: &str, tables: &mut [TableModel])
     )
     .await?;
     for r in &rs.rows {
-        let Some(t) = by_name.get_mut(&text(r, 0)) else { continue };
+        let Some(t) = by_name.get_mut(&text(r, 0)) else {
+            continue;
+        };
         let index = text(r, 1);
         if t.details.indexes.last().is_none_or(|x| x.name != index) {
-            t.details.indexes.push(IndexDef { name: index, unique: true, constraint: true, plain: true, columns: vec![] });
+            t.details.indexes.push(IndexDef {
+                name: index,
+                unique: true,
+                constraint: true,
+                plain: true,
+                columns: vec![],
+            });
         }
-        t.details.indexes.last_mut().expect("pushed").columns.push(text(r, 2));
+        t.details
+            .indexes
+            .last_mut()
+            .expect("pushed")
+            .columns
+            .push(text(r, 2));
     }
     let rs = query(
         s,
@@ -310,7 +348,9 @@ async fn sqlite_tables(s: &mut Session, schema: &str, tables: &mut [TableModel])
         columns.entry(text(r, 0)).or_default().push(r);
     }
     for (name, rows) in columns {
-        let Some(t) = by_name.get_mut(&name) else { continue };
+        let Some(t) = by_name.get_mut(&name) else {
+            continue;
+        };
         let exprs = generated.remove(&name).unwrap_or_default();
         let mut plain = std::mem::take(&mut t.details.columns).into_iter();
         for r in rows {
@@ -319,7 +359,10 @@ async fn sqlite_tables(s: &mut Session, schema: &str, tables: &mut [TableModel])
                     name: text(r, 1),
                     data_type: text(r, 2),
                     nullable: text(r, 3) == "0",
-                    extra: exprs.get(&text(r, 1).to_lowercase()).cloned().unwrap_or_default(),
+                    extra: exprs
+                        .get(&text(r, 1).to_lowercase())
+                        .cloned()
+                        .unwrap_or_default(),
                     generated: true,
                     ..Default::default()
                 }),
@@ -329,7 +372,15 @@ async fn sqlite_tables(s: &mut Session, schema: &str, tables: &mut [TableModel])
         }
         t.details.columns.extend(plain);
     }
-    for r in &query(s, &format!("select m.tbl_name, m.name from {master} where m.type = 'trigger' order by m.name")).await?.rows {
+    for r in &query(
+        s,
+        &format!(
+            "select m.tbl_name, m.name from {master} where m.type = 'trigger' order by m.name"
+        ),
+    )
+    .await?
+    .rows
+    {
         if let Some(t) = by_name.get_mut(&text(r, 0)) {
             t.triggers.push(text(r, 1));
         }
@@ -345,24 +396,42 @@ fn views_sql(driver: Driver, schema: &str) -> Option<String> {
             "select c.relname, pg_catalog.pg_get_viewdef(c.oid, true) from pg_catalog.pg_class c \
              join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = {sch} and c.relkind = 'v'"
         ),
-        Driver::MsSql => format!("select v.name, m.definition from sys.views v join sys.sql_modules m on m.object_id = v.object_id where v.schema_id = schema_id({sch})"),
+        Driver::MsSql => format!(
+            "select v.name, m.definition from sys.views v join sys.sql_modules m on m.object_id = v.object_id where v.schema_id = schema_id({sch})"
+        ),
         Driver::Oracle => format!("select view_name, text from all_views where owner = {sch}"),
-        Driver::Sqlite => format!("select name, sql from {}.sqlite_master where type = 'view'", driver.quote_ident(schema)),
+        Driver::Sqlite => format!(
+            "select name, sql from {}.sqlite_master where type = 'view'",
+            driver.quote_ident(schema)
+        ),
         _ => return None,
     })
 }
 
 /// The model of `schema` in the session's database: a fixed number of catalog queries,
 /// however many tables and views it has.
-pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progress: &Progress) -> anyhow::Result<SchemaModel> {
+pub async fn load(
+    s: &mut Session,
+    driver: Driver,
+    db: &str,
+    schema: &str,
+    progress: &Progress,
+) -> anyhow::Result<SchemaModel> {
     anyhow::ensure!(supported(driver), tr("Not available for this engine"));
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let objects = query(s, &objects_sql(driver, schema)).await?;
-    progress.total.fetch_add(objects.rows.len(), Ordering::Relaxed);
+    progress
+        .total
+        .fetch_add(objects.rows.len(), Ordering::Relaxed);
     let mut model = SchemaModel::new(driver, db, schema);
     if matches!(driver, Driver::MySql | Driver::MariaDb) {
         // 0: table names keep their case (Linux); 1 and 2 compare them ignoring it.
-        let lower = query(s, "select @@lower_case_table_names").await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
+        let lower = query(s, "select @@lower_case_table_names")
+            .await?
+            .rows
+            .first()
+            .map(|r| text(r, 0))
+            .unwrap_or_default();
         model.names_ignore_case = lower.trim() != "0";
     }
     let (mut tables, mut views) = (vec![], vec![]);
@@ -373,20 +442,37 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
             "h" => {}
             "v" => views.push(name),
             "t" => tables.push(name),
-            _ => model.skipped.extend(skipped_kind(&kind).map(|label| format!("{name} ({label})"))),
+            _ => model
+                .skipped
+                .extend(skipped_kind(&kind).map(|label| format!("{name} ({label})"))),
         }
     }
     anyhow::ensure!(!cancelled(), tr("Cancelled"));
     let mut details = load_tables(s, driver, schema, None).await?;
-    model.tables = tables.into_iter().map(|name| TableModel { details: details.remove(&name).unwrap_or_default(), name, ..Default::default() }).collect();
+    model.tables = tables
+        .into_iter()
+        .map(|name| TableModel {
+            details: details.remove(&name).unwrap_or_default(),
+            name,
+            ..Default::default()
+        })
+        .collect();
     if driver == Driver::Sqlite {
         sqlite_tables(s, schema, &mut model.tables).await?;
     }
-    progress.done.fetch_add(model.tables.len(), Ordering::Relaxed);
+    progress
+        .done
+        .fetch_add(model.tables.len(), Ordering::Relaxed);
     anyhow::ensure!(!cancelled(), tr("Cancelled"));
     let mut texts: HashMap<String, String> = HashMap::new();
     if let Some(sql) = views_sql(driver, schema) {
-        texts = query(s, &sql).await?.rows.iter().map(|r| (text(r, 0), text(r, 1))).filter(|(_, t)| !t.trim().is_empty()).collect();
+        texts = query(s, &sql)
+            .await?
+            .rows
+            .iter()
+            .map(|r| (text(r, 0), text(r, 1)))
+            .filter(|(_, t)| !t.trim().is_empty())
+            .collect();
     }
     for name in views {
         anyhow::ensure!(!cancelled(), tr("Cancelled"));
@@ -394,23 +480,38 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
             Some(text) => crate::db::views::parse_definition(driver, &text),
             None => s.view_definition(driver, db, schema, &name).await?,
         };
-        model.views.push(ViewModel { name, definition, ..Default::default() });
+        model.views.push(ViewModel {
+            name,
+            definition,
+            ..Default::default()
+        });
         progress.done.fetch_add(1, Ordering::Relaxed);
     }
     anyhow::ensure!(!cancelled(), tr("Cancelled"));
-    for (table, fk) in parse_foreign_keys(driver, &query(s, &foreign_keys_sql(driver, schema)).await?) {
+    for (table, fk) in
+        parse_foreign_keys(driver, &query(s, &foreign_keys_sql(driver, schema)).await?)
+    {
         if let Some(t) = model.tables.iter_mut().find(|t| t.name == table) {
             t.foreign_keys.push(fk);
         }
     }
     // Identity and generation clauses replace the column's EXTRA (and the default Oracle shows
     // for them: the identity's sequence, or the expression of a virtual column).
-    for sql in [identity_sql(driver, schema), generated_sql(driver, schema)].into_iter().flatten() {
+    for sql in [identity_sql(driver, schema), generated_sql(driver, schema)]
+        .into_iter()
+        .flatten()
+    {
         for r in &query(s, &sql).await?.rows {
-            let column = model.tables.iter_mut().find(|t| t.name == text(r, 0)).and_then(|t| t.details.columns.iter_mut().find(|c| c.name == text(r, 1)));
+            let column = model
+                .tables
+                .iter_mut()
+                .find(|t| t.name == text(r, 0))
+                .and_then(|t| t.details.columns.iter_mut().find(|c| c.name == text(r, 1)));
             if let Some(c) = column {
                 c.extra = match driver {
-                    Driver::Oracle if c.generated => format!("generated always as ({}) virtual", text(r, 2).trim()),
+                    Driver::Oracle if c.generated => {
+                        format!("generated always as ({}) virtual", text(r, 2).trim())
+                    }
                     _ => text(r, 2),
                 };
                 c.default = None;
@@ -419,7 +520,11 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
     }
     if let Some(sql) = sequences_sql(driver, schema) {
         for r in &query(s, &sql).await?.rows {
-            if text(r, 1) == "s" { model.sequences.push(text(r, 0)) } else { model.types.push(text(r, 0)) }
+            if text(r, 1) == "s" {
+                model.sequences.push(text(r, 0))
+            } else {
+                model.types.push(text(r, 0))
+            }
         }
     }
     if driver == Driver::Postgres {
@@ -436,13 +541,34 @@ pub async fn load(s: &mut Session, driver: Driver, db: &str, schema: &str, progr
     }
     if driver == Driver::Sqlite {
         for name in ["foreign_keys", "legacy_alter_table"] {
-            let value = query(s, &format!("pragma {name}")).await?.rows.first().map(|r| text(r, 0)).unwrap_or_default();
-            model.pragmas.push((name.into(), if value == "1" { "on".into() } else { "off".into() }));
+            let value = query(s, &format!("pragma {name}"))
+                .await?
+                .rows
+                .first()
+                .map(|r| text(r, 0))
+                .unwrap_or_default();
+            model.pragmas.push((
+                name.into(),
+                if value == "1" {
+                    "on".into()
+                } else {
+                    "off".into()
+                },
+            ));
         }
     }
     // SQLite keys that point at the primary key: its columns.
-    let pks: Vec<(String, Vec<String>)> = model.tables.iter().map(|t| (t.name.to_lowercase(), t.details.primary_key.clone())).collect();
-    for fk in model.tables.iter_mut().flat_map(|t| t.foreign_keys.iter_mut()).filter(|fk| fk.ref_columns.is_empty()) {
+    let pks: Vec<(String, Vec<String>)> = model
+        .tables
+        .iter()
+        .map(|t| (t.name.to_lowercase(), t.details.primary_key.clone()))
+        .collect();
+    for fk in model
+        .tables
+        .iter_mut()
+        .flat_map(|t| t.foreign_keys.iter_mut())
+        .filter(|fk| fk.ref_columns.is_empty())
+    {
         if let Some((_, pk)) = pks.iter().find(|(t, _)| *t == fk.ref_table.to_lowercase()) {
             fk.ref_columns.clone_from(pk);
         }
@@ -457,34 +583,65 @@ async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
     if !matches!(driver, Driver::Sqlite | Driver::Oracle) && !db.is_empty() {
         cfg.database = db.into();
     }
-    let mut s = tokio::time::timeout(Duration::from_secs(30), Session::connect(&cfg)).await.map_err(|_| anyhow::anyhow!(tr("Connection timed out")))??;
+    let mut s = tokio::time::timeout(Duration::from_secs(30), Session::connect(&cfg))
+        .await
+        .map_err(|_| anyhow::anyhow!(tr("Connection timed out")))??;
     if !db.is_empty() {
-        tokio::time::timeout(Duration::from_secs(30), s.use_database(db)).await.map_err(|_| anyhow::anyhow!(tr("Connection timed out")))??;
+        tokio::time::timeout(Duration::from_secs(30), s.use_database(db))
+            .await
+            .map_err(|_| anyhow::anyhow!(tr("Connection timed out")))??;
     }
     if driver == Driver::Postgres {
-        s.execute("select pg_catalog.set_config('search_path', '', false)", 1).await?;
+        s.execute("select pg_catalog.set_config('search_path', '', false)", 1)
+            .await?;
     }
     Ok(s)
 }
 
 /// Opens one side's session (its cancel handle goes to `handles`) and reads its schema.
-async fn read_side(cfg: ConnectionConfig, driver: Driver, side: &Side, handles: &std::sync::Mutex<Vec<crate::db::CancelHandle>>, progress: &Progress) -> anyhow::Result<SchemaModel> {
+async fn read_side(
+    cfg: ConnectionConfig,
+    driver: Driver,
+    side: &Side,
+    handles: &std::sync::Mutex<Vec<crate::db::CancelHandle>>,
+    progress: &Progress,
+) -> anyhow::Result<SchemaModel> {
     let mut session = open(cfg, &side.db).await?;
-    handles.lock().unwrap_or_else(|e| e.into_inner()).extend(session.cancel_handle());
+    handles
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(session.cancel_handle());
     load(&mut session, driver, &side.db, &side.schema, progress).await
 }
 
 /// Reads both schemas. A cancel stops a connection being opened, or interrupts the running
 /// catalog query.
-pub async fn run(source: ConnectionConfig, target: ConnectionConfig, src: Side, tgt: Side, progress: Arc<Progress>) -> anyhow::Result<(SchemaModel, SchemaModel)> {
+pub async fn run(
+    source: ConnectionConfig,
+    target: ConnectionConfig,
+    src: Side,
+    tgt: Side,
+    progress: Arc<Progress>,
+) -> anyhow::Result<(SchemaModel, SchemaModel)> {
     for cfg in [&source, &target] {
-        anyhow::ensure!(supported(cfg.driver), trf("Schemas can't be compared on {engine}", &[("engine", &cfg.driver.label())]));
+        anyhow::ensure!(
+            supported(cfg.driver),
+            trf(
+                "Schemas can't be compared on {engine}",
+                &[("engine", &cfg.driver.label())]
+            )
+        );
     }
     anyhow::ensure!(!progress.cancel.load(Ordering::Relaxed), tr("Cancelled"));
     let (sd, td) = (source.driver, target.driver);
     let handles = std::sync::Mutex::new(Vec::new());
     // Both sides at once, each on its own session: one still connecting doesn't hold up the other.
-    let work = async { tokio::try_join!(read_side(source, sd, &src, &handles, &progress), read_side(target, td, &tgt, &handles, &progress)) };
+    let work = async {
+        tokio::try_join!(
+            read_side(source, sd, &src, &handles, &progress),
+            read_side(target, td, &tgt, &handles, &progress)
+        )
+    };
     tokio::pin!(work);
     let cancelled = async {
         while !progress.cancel.load(Ordering::Relaxed) {

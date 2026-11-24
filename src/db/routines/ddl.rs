@@ -27,7 +27,11 @@ enum Verb {
 pub(crate) fn qualified(driver: Driver, schema: &str, name: &str) -> String {
     let name = quote_ident_if_needed(driver, name.trim());
     let schema = schema.trim();
-    if schema.is_empty() { name } else { format!("{}.{name}", quote_ident_if_needed(driver, schema)) }
+    if schema.is_empty() {
+        name
+    } else {
+        format!("{}.{name}", quote_ident_if_needed(driver, schema))
+    }
 }
 
 /// The name the routine will have on the server. Oracle and Snowflake fold a simple name
@@ -43,10 +47,20 @@ pub fn final_name(driver: Driver, spec: &RoutineSpec) -> String {
 /// A parameter or column name. Oracle and Snowflake fold simple names, so they are not quoted.
 fn ident(driver: Driver, name: &str) -> String {
     let name = name.trim();
-    let simple = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    let simple = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     match driver {
-        Driver::Oracle | Driver::Snowflake if simple && !crate::sql::KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name)) => name.to_string(),
+        Driver::Oracle | Driver::Snowflake
+            if simple
+                && !crate::sql::KEYWORDS
+                    .iter()
+                    .any(|k| k.eq_ignore_ascii_case(name)) =>
+        {
+            name.to_string()
+        }
         _ => quote_ident_if_needed(driver, name),
     }
 }
@@ -54,7 +68,11 @@ fn ident(driver: Driver, name: &str) -> String {
 /// SQL Server parameter names start with `@`.
 fn mssql_param(name: &str) -> String {
     let name = name.trim();
-    if name.starts_with('@') { name.to_string() } else { format!("@{name}") }
+    if name.starts_with('@') {
+        name.to_string()
+    } else {
+        format!("@{name}")
+    }
 }
 
 /// Types of the input parameters, which identify a PostgreSQL or Snowflake overload.
@@ -84,8 +102,16 @@ fn param_sql(driver: Driver, kind: RoutineKind, p: &Param) -> String {
                 ParamMode::InOut => "inout ",
                 ParamMode::Variadic => "variadic ",
             };
-            let name = if p.name.trim().is_empty() { String::new() } else { format!("{} ", ident(driver, &p.name)) };
-            let default = if default.is_empty() { String::new() } else { format!(" default {default}") };
+            let name = if p.name.trim().is_empty() {
+                String::new()
+            } else {
+                format!("{} ", ident(driver, &p.name))
+            };
+            let default = if default.is_empty() {
+                String::new()
+            } else {
+                format!(" default {default}")
+            };
             format!("{mode}{name}{ty}{default}")
         }
         Driver::MySql | Driver::MariaDb => {
@@ -97,8 +123,16 @@ fn param_sql(driver: Driver, kind: RoutineKind, p: &Param) -> String {
             format!("{mode}{} {ty}", ident(driver, &p.name))
         }
         Driver::MsSql => {
-            let default = if default.is_empty() { String::new() } else { format!(" = {default}") };
-            let output = if p.mode.returns_output() { " output" } else { "" };
+            let default = if default.is_empty() {
+                String::new()
+            } else {
+                format!(" = {default}")
+            };
+            let output = if p.mode.returns_output() {
+                " output"
+            } else {
+                ""
+            };
             format!("{} {ty}{default}{output}", mssql_param(&p.name))
         }
         Driver::Oracle => {
@@ -107,11 +141,19 @@ fn param_sql(driver: Driver, kind: RoutineKind, p: &Param) -> String {
                 ParamMode::Out => "out ",
                 ParamMode::InOut => "in out ",
             };
-            let default = if default.is_empty() { String::new() } else { format!(" default {default}") };
+            let default = if default.is_empty() {
+                String::new()
+            } else {
+                format!(" default {default}")
+            };
             format!("{} {mode}{ty}{default}", ident(driver, &p.name))
         }
         _ => {
-            let default = if default.is_empty() { String::new() } else { format!(" default {default}") };
+            let default = if default.is_empty() {
+                String::new()
+            } else {
+                format!(" default {default}")
+            };
             format!("{} {ty}{default}", ident(driver, &p.name))
         }
     }
@@ -122,12 +164,20 @@ fn param_block(driver: Driver, spec: &RoutineSpec) -> String {
     if spec.params.is_empty() {
         return "()".into();
     }
-    let lines: Vec<String> = spec.params.iter().map(|p| format!("    {}", param_sql(driver, spec.kind, p))).collect();
+    let lines: Vec<String> = spec
+        .params
+        .iter()
+        .map(|p| format!("    {}", param_sql(driver, spec.kind, p)))
+        .collect();
     format!("(\n{}\n)", lines.join(",\n"))
 }
 
 fn table_columns(driver: Driver, r: &Returns) -> String {
-    let cols: Vec<String> = r.columns.iter().map(|c| format!("    {} {}", ident(driver, &c.name), c.data_type.trim())).collect();
+    let cols: Vec<String> = r
+        .columns
+        .iter()
+        .map(|c| format!("    {} {}", ident(driver, &c.name), c.data_type.trim()))
+        .collect();
     format!("(\n{}\n)", cols.join(",\n"))
 }
 
@@ -136,7 +186,11 @@ fn dollar_quote(body: &str) -> String {
     let mut tag = "$$".to_string();
     let mut n = 0;
     while body.contains(&tag) {
-        tag = if n == 0 { "$body$".into() } else { format!("$body{n}$") };
+        tag = if n == 0 {
+            "$body$".into()
+        } else {
+            format!("$body{n}$")
+        };
         n += 1;
     }
     format!("{tag}\n{}\n{tag}", body.trim_matches('\n'))
@@ -157,25 +211,53 @@ fn snowflake_packages(packages: &str) -> String {
     if packages.contains('\'') {
         return packages.trim().to_string();
     }
-    packages.split(',').map(str::trim).filter(|p| !p.is_empty()).map(|p| format!("'{p}'")).collect::<Vec<_>>().join(", ")
+    packages
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("'{p}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Option keywords in the generated statements' case; quoted names (`'user'`) stay as they are.
 fn keyword(s: &str) -> String {
-    if s.chars().all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '_') { s.to_lowercase() } else { s.to_string() }
+    if s.chars()
+        .all(|c| c.is_ascii_alphabetic() || c == ' ' || c == '_')
+    {
+        s.to_lowercase()
+    } else {
+        s.to_string()
+    }
 }
 
 fn push_extra(lines: &mut Vec<String>, extra: &str) {
-    lines.extend(extra.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).map(str::to_string));
+    lines.extend(
+        extra
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string),
+    );
 }
 
 fn returns_line(driver: Driver, spec: &RoutineSpec) -> Option<String> {
     let r = &spec.returns;
-    let keyword = if driver == Driver::Oracle { "return" } else { "returns" };
+    let keyword = if driver == Driver::Oracle {
+        "return"
+    } else {
+        "returns"
+    };
     match r.kind {
-        ReturnKind::Table if driver == Driver::MsSql && r.columns.is_empty() => Some("returns table".into()),
+        ReturnKind::Table if driver == Driver::MsSql && r.columns.is_empty() => {
+            Some("returns table".into())
+        }
         ReturnKind::Table if driver == Driver::MsSql => {
-            let var = if r.table_variable.trim().is_empty() { "@result".to_string() } else { mssql_param(&r.table_variable) };
+            let var = if r.table_variable.trim().is_empty() {
+                "@result".to_string()
+            } else {
+                mssql_param(&r.table_variable)
+            };
             Some(format!("returns {var} table {}", table_columns(driver, r)))
         }
         ReturnKind::Table => Some(format!("{keyword} table {}", table_columns(driver, r))),
@@ -184,7 +266,9 @@ fn returns_line(driver: Driver, spec: &RoutineSpec) -> Option<String> {
             let ty = r.data_type.trim();
             if !ty.is_empty() {
                 Some(format!("{keyword} {ty}"))
-            } else if driver == Driver::Postgres && !spec.params.iter().any(|p| p.mode.returns_output()) {
+            } else if driver == Driver::Postgres
+                && !spec.params.iter().any(|p| p.mode.returns_output())
+            {
                 Some("returns void".into())
             } else {
                 None
@@ -207,7 +291,10 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
     let mut lines: Vec<String> = Vec::new();
     match driver {
         Driver::Postgres => {
-            lines.push(format!("{verb_sql} {kind} {name}{}", param_block(driver, spec)));
+            lines.push(format!(
+                "{verb_sql} {kind} {name}{}",
+                param_block(driver, spec)
+            ));
             if function && let Some(r) = returns_line(driver, spec) {
                 lines.push(r);
             }
@@ -236,13 +323,23 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
             lines.push(format!("as {}", dollar_quote(&spec.body)));
         }
         Driver::MySql | Driver::MariaDb => {
-            let definer = if o.definer.trim().is_empty() { String::new() } else { format!(" definer = {}", o.definer.trim()) };
-            lines.push(format!("{verb_sql}{definer} {kind} {name}{}", param_block(driver, spec)));
+            let definer = if o.definer.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" definer = {}", o.definer.trim())
+            };
+            lines.push(format!(
+                "{verb_sql}{definer} {kind} {name}{}",
+                param_block(driver, spec)
+            ));
             if function && let Some(r) = returns_line(driver, spec) {
                 lines.push(r);
             }
             if !o.comment.is_empty() {
-                lines.push(format!("comment {}", literal(driver, &Some(o.comment.clone()))));
+                lines.push(format!(
+                    "comment {}",
+                    literal(driver, &Some(o.comment.clone()))
+                ));
             }
             if o.deterministic {
                 lines.push("deterministic".into());
@@ -254,20 +351,33 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
                 lines.push(format!("sql security {}", keyword(&o.security)));
             }
             push_extra(&mut lines, &o.extra);
-            lines.push(spec.body.trim().trim_end_matches(';').trim_end().to_string());
+            lines.push(
+                spec.body
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim_end()
+                    .to_string(),
+            );
         }
         Driver::MsSql => {
             let r = &spec.returns;
             let inline = function && r.kind == ReturnKind::Table && r.columns.is_empty();
             let scalar = function && r.kind == ReturnKind::Scalar;
             if function {
-                lines.push(format!("{verb_sql} {kind} {name}{}", param_block(driver, spec)));
+                lines.push(format!(
+                    "{verb_sql} {kind} {name}{}",
+                    param_block(driver, spec)
+                ));
                 if let Some(r) = returns_line(driver, spec) {
                     lines.push(r);
                 }
             } else {
                 lines.push(format!("{verb_sql} {kind} {name}"));
-                let params: Vec<String> = spec.params.iter().map(|p| format!("    {}", param_sql(driver, spec.kind, p))).collect();
+                let params: Vec<String> = spec
+                    .params
+                    .iter()
+                    .map(|p| format!("    {}", param_sql(driver, spec.kind, p)))
+                    .collect();
                 if !params.is_empty() {
                     lines.push(params.join(",\n"));
                 }
@@ -293,7 +403,11 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
             lines.push(spec.body.trim().to_string());
         }
         Driver::Oracle => {
-            let params = if spec.params.is_empty() { String::new() } else { param_block(driver, spec) };
+            let params = if spec.params.is_empty() {
+                String::new()
+            } else {
+                param_block(driver, spec)
+            };
             lines.push(format!("{verb_sql} {kind} {name}{params}"));
             if function && let Some(r) = returns_line(driver, spec) {
                 lines.push(r);
@@ -302,7 +416,11 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
                 lines.push(format!("authid {}", keyword(&o.security)));
             }
             if function {
-                for (on, word) in [(o.deterministic, "deterministic"), (o.parallel_enable, "parallel_enable"), (o.pipelined, "pipelined")] {
+                for (on, word) in [
+                    (o.deterministic, "deterministic"),
+                    (o.parallel_enable, "parallel_enable"),
+                    (o.pipelined, "pipelined"),
+                ] {
                     if on {
                         lines.push(word.into());
                     }
@@ -311,11 +429,18 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
             push_extra(&mut lines, &o.extra);
             lines.push("as".into());
             let body = spec.body.trim();
-            lines.push(if body.ends_with(';') { body.to_string() } else { format!("{body};") });
+            lines.push(if body.ends_with(';') {
+                body.to_string()
+            } else {
+                format!("{body};")
+            });
         }
         Driver::Snowflake => {
             let secure = if o.secure { "secure " } else { "" };
-            lines.push(format!("{verb_sql} {secure}{kind} {name}{}", param_block(driver, spec)));
+            lines.push(format!(
+                "{verb_sql} {secure}{kind} {name}{}",
+                param_block(driver, spec)
+            ));
             if let Some(r) = returns_line(driver, spec) {
                 lines.push(r);
             }
@@ -323,13 +448,19 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
                 lines.push(format!("language {}", o.language.trim().to_lowercase()));
             }
             if !o.runtime_version.trim().is_empty() {
-                lines.push(format!("runtime_version = {}", literal(driver, &Some(o.runtime_version.trim().to_string()))));
+                lines.push(format!(
+                    "runtime_version = {}",
+                    literal(driver, &Some(o.runtime_version.trim().to_string()))
+                ));
             }
             if !o.packages.trim().is_empty() {
                 lines.push(format!("packages = ({})", snowflake_packages(&o.packages)));
             }
             if !o.handler.trim().is_empty() {
-                lines.push(format!("handler = {}", literal(driver, &Some(o.handler.trim().to_string()))));
+                lines.push(format!(
+                    "handler = {}",
+                    literal(driver, &Some(o.handler.trim().to_string()))
+                ));
             }
             if o.strict {
                 lines.push("returns null on null input".into());
@@ -338,7 +469,10 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
                 lines.push(keyword(&o.volatility));
             }
             if !o.comment.is_empty() {
-                lines.push(format!("comment = {}", literal(driver, &Some(o.comment.clone()))));
+                lines.push(format!(
+                    "comment = {}",
+                    literal(driver, &Some(o.comment.clone()))
+                ));
             }
             if !function && !o.security.is_empty() {
                 lines.push(format!("execute as {}", keyword(&o.security)));
@@ -353,15 +487,27 @@ fn create(driver: Driver, spec: &RoutineSpec, verb: Verb) -> String {
 
 /// The statement that creates the routine (with `OR REPLACE` / `OR ALTER` if `replace`).
 pub fn create_sql(driver: Driver, spec: &RoutineSpec, replace: bool) -> String {
-    create(driver, spec, if replace { Verb::Replace } else { Verb::Create })
+    create(
+        driver,
+        spec,
+        if replace { Verb::Replace } else { Verb::Create },
+    )
 }
 
 /// Drops routine `schema.name` as the server names it (PostgreSQL and Snowflake also need the
 /// argument types).
-pub fn drop_sql(driver: Driver, kind: RoutineKind, schema: &str, name: &str, signature: &str) -> String {
+pub fn drop_sql(
+    driver: Driver,
+    kind: RoutineKind,
+    schema: &str,
+    name: &str,
+    signature: &str,
+) -> String {
     let object = qualified(driver, schema, name);
     match driver {
-        Driver::Postgres | Driver::Snowflake => format!("drop {} {object}({signature})", kind.keyword()),
+        Driver::Postgres | Driver::Snowflake => {
+            format!("drop {} {object}({signature})", kind.keyword())
+        }
         _ => format!("drop {} {object}", kind.keyword()),
     }
 }
@@ -372,8 +518,17 @@ fn oracle_compile_check(spec: &RoutineSpec, cleanup: bool) -> String {
     let name = final_name(Driver::Oracle, spec).replace('\'', "''");
     let kind = spec.kind.keyword().to_uppercase();
     let cleanup = if cleanup {
-        let drop = drop_sql(Driver::Oracle, spec.kind, &spec.schema, &final_name(Driver::Oracle, spec), "");
-        format!("    execute immediate {};\n", literal(Driver::Oracle, &Some(drop)))
+        let drop = drop_sql(
+            Driver::Oracle,
+            spec.kind,
+            &spec.schema,
+            &final_name(Driver::Oracle, spec),
+            "",
+        );
+        format!(
+            "    execute immediate {};\n",
+            literal(Driver::Oracle, &Some(drop))
+        )
     } else {
         String::new()
     };
@@ -387,11 +542,19 @@ fn oracle_compile_check(spec: &RoutineSpec, cleanup: bool) -> String {
 
 /// PostgreSQL `COMMENT ON` for the routine as `spec` creates it.
 fn pg_comment(spec: &RoutineSpec) -> String {
-    let comment = if spec.options.comment.is_empty() { "null".to_string() } else { literal(Driver::Postgres, &Some(spec.options.comment.clone())) };
+    let comment = if spec.options.comment.is_empty() {
+        "null".to_string()
+    } else {
+        literal(Driver::Postgres, &Some(spec.options.comment.clone()))
+    };
     format!(
         "comment on {} {}({}) is {comment}",
         spec.kind.keyword(),
-        qualified(Driver::Postgres, &spec.schema, &final_name(Driver::Postgres, spec)),
+        qualified(
+            Driver::Postgres,
+            &spec.schema,
+            &final_name(Driver::Postgres, spec)
+        ),
         input_signature(Driver::Postgres, &spec.params)
     )
 }
@@ -408,14 +571,26 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
                 check.name = scratch_name(&spec.name);
                 statements.push(create(driver, &check, Verb::Create));
                 statements.push(drop_sql(driver, spec.kind, &spec.schema, &check.name, ""));
-                statements.push(format!("drop {} if exists {}", spec.kind.keyword(), qualified(driver, &spec.schema, &spec.name)));
+                statements.push(format!(
+                    "drop {} if exists {}",
+                    spec.kind.keyword(),
+                    qualified(driver, &spec.schema, &spec.name)
+                ));
                 statements.push(create(driver, spec, Verb::Create));
             }
             Driver::Oracle if spec.or_replace => {
                 oracle_scratch_check(spec, &mut statements);
                 statements.push(create(driver, spec, Verb::Replace));
             }
-            _ => statements.push(create(driver, spec, if spec.or_replace { Verb::Replace } else { Verb::Create })),
+            _ => statements.push(create(
+                driver,
+                spec,
+                if spec.or_replace {
+                    Verb::Replace
+                } else {
+                    Verb::Create
+                },
+            )),
         }
         match driver {
             Driver::Oracle => statements.push(oracle_compile_check(spec, false)),
@@ -425,13 +600,28 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
             }
             _ => {}
         }
-        return RoutineStatements { statements, transaction };
+        return RoutineStatements {
+            statements,
+            transaction,
+        };
     };
     let same_name = final_name(driver, spec) == original.name;
     let same_shape = spec.params == original.params && spec.returns == original.returns;
-    let types = |params: &[Param]| params.iter().filter(|p| p.mode.takes_input()).map(|p| p.data_type.trim().to_lowercase()).collect::<Vec<_>>();
+    let types = |params: &[Param]| {
+        params
+            .iter()
+            .filter(|p| p.mode.takes_input())
+            .map(|p| p.data_type.trim().to_lowercase())
+            .collect::<Vec<_>>()
+    };
     let same_inputs = types(&spec.params) == types(&original.params);
-    let drop_old = drop_sql(driver, spec.kind, &spec.schema, &original.name, &original.signature);
+    let drop_old = drop_sql(
+        driver,
+        spec.kind,
+        &spec.schema,
+        &original.name,
+        &original.signature,
+    );
     match driver {
         Driver::Postgres => {
             transaction = true;
@@ -452,7 +642,11 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
                 statements.push(create(driver, spec, Verb::Replace));
             }
             // Dropping the routine also drops its comment.
-            let comment = if same_shape { spec.options.comment != original.comment } else { !spec.options.comment.is_empty() };
+            let comment = if same_shape {
+                spec.options.comment != original.comment
+            } else {
+                !spec.options.comment.is_empty()
+            };
             if comment {
                 statements.push(pg_comment(spec));
             }
@@ -469,7 +663,11 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
             statements.push(create(driver, spec, Verb::Create));
         }
         Driver::MariaDb if same_name => statements.push(create(driver, spec, Verb::Replace)),
-        Driver::MsSql if same_name && spec.returns.kind == original.returns.kind && (spec.returns.columns.is_empty() == original.returns.columns.is_empty()) => {
+        Driver::MsSql
+            if same_name
+                && spec.returns.kind == original.returns.kind
+                && (spec.returns.columns.is_empty() == original.returns.columns.is_empty()) =>
+        {
             statements.push(create(driver, spec, Verb::Alter));
         }
         Driver::MsSql if same_name => {
@@ -480,21 +678,42 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
         }
         Driver::Oracle => {
             oracle_scratch_check(spec, &mut statements);
-            statements.push(create(driver, spec, if same_name { Verb::Replace } else { Verb::Create }));
+            statements.push(create(
+                driver,
+                spec,
+                if same_name {
+                    Verb::Replace
+                } else {
+                    Verb::Create
+                },
+            ));
             statements.push(oracle_compile_check(spec, false));
             if !same_name {
                 statements.push(drop_old);
             }
         }
         // Same name and argument types: the same overload, replaced in place.
-        Driver::Snowflake if same_name && same_inputs => statements.push(create(driver, spec, Verb::Replace)),
+        Driver::Snowflake if same_name && same_inputs => {
+            statements.push(create(driver, spec, Verb::Replace))
+        }
         // Renamed (or, on Snowflake, new argument types): create the new one, then drop the old.
         _ => {
-            statements.push(create(driver, spec, if driver == Driver::Snowflake { Verb::Replace } else { Verb::Create }));
+            statements.push(create(
+                driver,
+                spec,
+                if driver == Driver::Snowflake {
+                    Verb::Replace
+                } else {
+                    Verb::Create
+                },
+            ));
             statements.push(drop_old);
         }
     }
-    RoutineStatements { statements, transaction }
+    RoutineStatements {
+        statements,
+        transaction,
+    }
 }
 
 fn oracle_scratch_check(spec: &RoutineSpec, statements: &mut Vec<String>) {

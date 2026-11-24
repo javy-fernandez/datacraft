@@ -11,9 +11,16 @@ use std::collections::HashMap;
 /// table has none, every column with its original value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Change {
-    Update { key: Vec<(String, Cell)>, set: Vec<(String, Cell)> },
-    Insert { values: Vec<(String, Cell)> },
-    Delete { key: Vec<(String, Cell)> },
+    Update {
+        key: Vec<(String, Cell)>,
+        set: Vec<(String, Cell)>,
+    },
+    Insert {
+        values: Vec<(String, Cell)>,
+    },
+    Delete {
+        key: Vec<(String, Cell)>,
+    },
 }
 
 /// Identifier quoted for the dialect.
@@ -31,8 +38,16 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
                 Driver::MsSql => format!("N'{escaped}'"),
                 // MySQL and Snowflake also treat a backslash as an escape inside strings; ClickHouse
                 // does the same inside '…' (its `"…"` stays an identifier).
-                Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => format!("'{}'", escaped.replace('\\', "\\\\")),
-                Driver::Postgres | Driver::Sqlite | Driver::DuckDb | Driver::Oracle | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => format!("'{escaped}'"),
+                Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => {
+                    format!("'{}'", escaped.replace('\\', "\\\\"))
+                }
+                Driver::Postgres
+                | Driver::Sqlite
+                | Driver::DuckDb
+                | Driver::Oracle
+                | Driver::Redis
+                | Driver::MongoDb
+                | Driver::InfluxDb => format!("'{escaped}'"),
                 // KQL escapes both the quote and the backslash with a backslash.
                 Driver::Kusto => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")),
             }
@@ -58,10 +73,15 @@ pub fn change_sql(driver: Driver, schema: &str, table: &str, change: &Change) ->
         Change::Update { key, set } => {
             let assignments = set
                 .iter()
-                .map(|(col, val)| format!("{} = {}", quote_ident(driver, col), literal(driver, val)))
+                .map(|(col, val)| {
+                    format!("{} = {}", quote_ident(driver, col), literal(driver, val))
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("UPDATE {target} SET {assignments} WHERE {}", where_clause(driver, key))
+            format!(
+                "UPDATE {target} SET {assignments} WHERE {}",
+                where_clause(driver, key)
+            )
         }
         Change::Insert { values } => {
             if values.is_empty() {
@@ -72,11 +92,21 @@ pub fn change_sql(driver: Driver, schema: &str, table: &str, change: &Change) ->
                     _ => format!("INSERT INTO {target} DEFAULT VALUES"),
                 };
             }
-            let cols = values.iter().map(|(c, _)| quote_ident(driver, c)).collect::<Vec<_>>().join(", ");
-            let vals = values.iter().map(|(_, v)| literal(driver, v)).collect::<Vec<_>>().join(", ");
+            let cols = values
+                .iter()
+                .map(|(c, _)| quote_ident(driver, c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let vals = values
+                .iter()
+                .map(|(_, v)| literal(driver, v))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("INSERT INTO {target} ({cols}) VALUES ({vals})")
         }
-        Change::Delete { key } => format!("DELETE FROM {target} WHERE {}", where_clause(driver, key)),
+        Change::Delete { key } => {
+            format!("DELETE FROM {target} WHERE {}", where_clause(driver, key))
+        }
     }
 }
 
@@ -95,7 +125,9 @@ pub fn change_statements(
         match driver {
             Driver::Redis => out.extend(crate::db::redis_db::change_commands(ch, types)?),
             Driver::MongoDb => out.push(crate::db::mongo::change_command(table, ch, types)?),
-            Driver::InfluxDb | Driver::Kusto => return Err(crate::i18n::tr("Editing is not available for this engine").into()),
+            Driver::InfluxDb | Driver::Kusto => {
+                return Err(crate::i18n::tr("Editing is not available for this engine").into());
+            }
             _ => out.push(change_sql(driver, schema, table, ch)),
         }
     }
@@ -105,7 +137,9 @@ pub fn change_statements(
 /// true for values the grid shows truncated (BLOB/binary in hex with "…"): they can't
 /// be edited or used as a key because they aren't the real value.
 pub fn is_lossy_display(value: &Cell) -> bool {
-    value.as_deref().is_some_and(|v| v.starts_with("0x") && v.ends_with('…'))
+    value
+        .as_deref()
+        .is_some_and(|v| v.starts_with("0x") && v.ends_with('…'))
 }
 
 #[cfg(test)]
@@ -118,7 +152,10 @@ mod tests {
 
     #[test]
     fn update_with_pk_and_quotes() {
-        let ch = Change::Update { key: vec![kv("id", Some("7"))], set: vec![kv("name", Some("O'Brien")), kv("note", None)] };
+        let ch = Change::Update {
+            key: vec![kv("id", Some("7"))],
+            set: vec![kv("name", Some("O'Brien")), kv("note", None)],
+        };
         assert_eq!(
             change_sql(Driver::MsSql, "dbo", "users", &ch),
             "UPDATE [dbo].[users] SET [name] = N'O''Brien', [note] = NULL WHERE [id] = N'7'"
@@ -131,16 +168,29 @@ mod tests {
 
     #[test]
     fn null_key_uses_is_null() {
-        let ch = Change::Delete { key: vec![kv("a", Some("1")), kv("b", None)] };
-        assert_eq!(change_sql(Driver::Sqlite, "main", "t", &ch), "DELETE FROM \"t\" WHERE \"a\" = '1' AND \"b\" IS NULL");
+        let ch = Change::Delete {
+            key: vec![kv("a", Some("1")), kv("b", None)],
+        };
+        assert_eq!(
+            change_sql(Driver::Sqlite, "main", "t", &ch),
+            "DELETE FROM \"t\" WHERE \"a\" = '1' AND \"b\" IS NULL"
+        );
     }
 
     #[test]
     fn insert_with_and_without_values() {
-        let ch = Change::Insert { values: vec![kv("x", Some("1")), kv("y", None)] };
-        assert_eq!(change_sql(Driver::Sqlite, "main", "t", &ch), "INSERT INTO \"t\" (\"x\", \"y\") VALUES ('1', NULL)");
+        let ch = Change::Insert {
+            values: vec![kv("x", Some("1")), kv("y", None)],
+        };
+        assert_eq!(
+            change_sql(Driver::Sqlite, "main", "t", &ch),
+            "INSERT INTO \"t\" (\"x\", \"y\") VALUES ('1', NULL)"
+        );
         let empty = Change::Insert { values: vec![] };
-        assert_eq!(change_sql(Driver::MsSql, "dbo", "t", &empty), "INSERT INTO [dbo].[t] DEFAULT VALUES");
+        assert_eq!(
+            change_sql(Driver::MsSql, "dbo", "t", &empty),
+            "INSERT INTO [dbo].[t] DEFAULT VALUES"
+        );
     }
 
     #[test]

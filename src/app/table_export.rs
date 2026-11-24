@@ -38,27 +38,40 @@ enum Intent {
 
 impl Dialog {
     fn choose_folder(&mut self, folder: PathBuf) {
-        let filename = std::path::Path::new(self.path.trim()).file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_else(|| {
-            let stem = self
-                .table
-                .table
-                .chars()
-                .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
-                .collect::<String>();
-            let mut stem = stem.trim_matches([' ', '.']).to_string();
-            if stem.is_empty() {
-                stem = "table".into();
-            }
-            let device = stem.split('.').next().unwrap_or("").to_ascii_uppercase();
-            if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-                || ["COM", "LPT"]
-                    .iter()
-                    .any(|prefix| device.strip_prefix(prefix).is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")))
-            {
-                stem.insert(0, '_');
-            }
-            format!("{stem}.{}", extension(self.kind)).into()
-        });
+        let filename = std::path::Path::new(self.path.trim())
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_else(|| {
+                let stem = self
+                    .table
+                    .table
+                    .chars()
+                    .map(|c| {
+                        if c.is_control()
+                            || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                        {
+                            '_'
+                        } else {
+                            c
+                        }
+                    })
+                    .collect::<String>();
+                let mut stem = stem.trim_matches([' ', '.']).to_string();
+                if stem.is_empty() {
+                    stem = "table".into();
+                }
+                let device = stem.split('.').next().unwrap_or("").to_ascii_uppercase();
+                if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                    || ["COM", "LPT"].iter().any(|prefix| {
+                        device.strip_prefix(prefix).is_some_and(|n| {
+                            matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                        })
+                    })
+                {
+                    stem.insert(0, '_');
+                }
+                format!("{stem}.{}", extension(self.kind)).into()
+            });
         let path = folder.join(filename).to_string_lossy().into_owned();
         if path != self.path {
             self.overwrite = false;
@@ -75,11 +88,20 @@ impl Dialog {
 
     fn show(&mut self, ctx: &egui::Context) -> Option<Intent> {
         let title = self.title();
-        let subtitle = format!("{} / {} / {}", self.table.db, self.table.schema, self.table.table);
+        let subtitle = format!(
+            "{} / {} / {}",
+            self.table.db, self.table.schema, self.table.table
+        );
         let mut intent = None;
-        crate::ui::workflow_dialog::show(ctx, egui::Id::new("table_export"), title, &subtitle, vec2(680.0, 540.0), |root, regions| {
-            let mut body = regions.body_ui(root);
-            egui::ScrollArea::both().auto_shrink([false, false]).show(&mut body, |ui| {
+        crate::ui::workflow_dialog::show(
+            ctx,
+            egui::Id::new("table_export"),
+            title,
+            &subtitle,
+            vec2(680.0, 540.0),
+            |root, regions| {
+                let mut body = regions.body_ui(root);
+                egui::ScrollArea::both().auto_shrink([false, false]).show(&mut body, |ui| {
                 ui.add_enabled_ui(!self.pending, |ui| {
                     match &mut self.kind {
                         ExportKind::Print { data } => {
@@ -126,33 +148,46 @@ impl Dialog {
                     ui.add(egui::Label::new(success).wrap());
                 }
             });
-            let mut footer = regions.footer_ui(root);
-            footer.horizontal(|ui| {
-                if self.pending {
-                    ui.spinner();
-                    ui.label(trf("{n} rows processed", &[("n", &self.progress.rows.load(Ordering::Relaxed))]));
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(tr(if self.pending { "Cancel" } else { "Close" })).clicked() {
-                        if self.pending {
-                            self.progress.cancel.store(true, Ordering::Relaxed);
-                        } else {
-                            intent = Some(Intent::Close);
+                let mut footer = regions.footer_ui(root);
+                footer.horizontal(|ui| {
+                    if self.pending {
+                        ui.spinner();
+                        ui.label(trf(
+                            "{n} rows processed",
+                            &[("n", &self.progress.rows.load(Ordering::Relaxed))],
+                        ));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(tr(if self.pending { "Cancel" } else { "Close" }))
+                            .clicked()
+                        {
+                            if self.pending {
+                                self.progress.cancel.store(true, Ordering::Relaxed);
+                            } else {
+                                intent = Some(Intent::Close);
+                            }
                         }
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.pending && !self.path.trim().is_empty(),
-                            egui::Button::new(tr(if matches!(self.kind, ExportKind::Print { .. }) { "Create report" } else { "Export" })),
-                        )
-                        .clicked()
-                    {
-                        intent = Some(Intent::Export);
-                    }
+                        if ui
+                            .add_enabled(
+                                !self.pending && !self.path.trim().is_empty(),
+                                egui::Button::new(tr(
+                                    if matches!(self.kind, ExportKind::Print { .. }) {
+                                        "Create report"
+                                    } else {
+                                        "Export"
+                                    },
+                                )),
+                            )
+                            .clicked()
+                        {
+                            intent = Some(Intent::Export);
+                        }
+                    });
                 });
-            });
-        });
+            },
+        );
         if !self.pending && ctx.input(|i| i.key_pressed(Key::Escape)) {
             intent = Some(Intent::Close);
         }
@@ -185,7 +220,9 @@ impl DataCraftApp {
             self.error(tr("Wait for the current table operation to finish"));
             return;
         }
-        let Some(connection) = self.conn(table.conn) else { return };
+        let Some(connection) = self.conn(table.conn) else {
+            return;
+        };
         if connection.status != ConnStatus::Connected {
             self.error(tr("The connection is not open"));
             return;
@@ -195,7 +232,10 @@ impl DataCraftApp {
             self.error(tr("Complete table export is not available for this engine"));
             return;
         }
-        if !self.table_info(table.conn, Some(&table.db), &table.schema, &table.table).is_some_and(|t| t.kind == crate::db::ObjectKind::Table) {
+        if !self
+            .table_info(table.conn, Some(&table.db), &table.schema, &table.table)
+            .is_some_and(|t| t.kind == crate::db::ObjectKind::Table)
+        {
             self.error(tr("Select one supported table"));
             return;
         }
@@ -214,9 +254,20 @@ impl DataCraftApp {
     }
 
     fn start_table_export(&mut self) {
-        let Some(d) = self.table_export.dialog.as_mut().filter(|d| !d.pending && !d.path.trim().is_empty()) else { return };
+        let Some(d) = self
+            .table_export
+            .dialog
+            .as_mut()
+            .filter(|d| !d.pending && !d.path.trim().is_empty())
+        else {
+            return;
+        };
         let path = PathBuf::from(d.path.trim());
-        if matches!(d.kind, ExportKind::Print { .. }) && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm")) {
+        if matches!(d.kind, ExportKind::Print { .. })
+            && !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+        {
             d.error = Some(tr("Choose an HTML file for the print report").into());
             return;
         }
@@ -229,7 +280,13 @@ impl DataCraftApp {
             conn: d.table.conn,
             db: d.table.db.clone(),
             request_id: d.id,
-            request: Box::new(ExportRequest { schema: d.table.schema.clone(), table: d.table.table.clone(), path, kind: d.kind, overwrite: d.overwrite }),
+            request: Box::new(ExportRequest {
+                schema: d.table.schema.clone(),
+                table: d.table.table.clone(),
+                path,
+                kind: d.kind,
+                overwrite: d.overwrite,
+            }),
             progress: d.progress.clone(),
         });
     }
@@ -243,8 +300,17 @@ impl DataCraftApp {
     }
 
     /// Returns a report path only for the current, explicitly submitted Print operation.
-    pub(super) fn table_export_received(&mut self, conn: ConnId, request_id: u64, result: Result<(PathBuf, u64), String>) -> Option<PathBuf> {
-        let d = self.table_export.dialog.as_mut().filter(|d| d.table.conn == conn && d.id == request_id && d.pending)?;
+    pub(super) fn table_export_received(
+        &mut self,
+        conn: ConnId,
+        request_id: u64,
+        result: Result<(PathBuf, u64), String>,
+    ) -> Option<PathBuf> {
+        let d = self
+            .table_export
+            .dialog
+            .as_mut()
+            .filter(|d| d.table.conn == conn && d.id == request_id && d.pending)?;
         d.pending = false;
         match result {
             Err(error) => {
@@ -252,14 +318,23 @@ impl DataCraftApp {
                 None
             }
             Ok((path, rows)) => {
-                d.success = Some(trf("Exported {n} rows to {path}", &[("n", &rows), ("path", &path.to_string_lossy())]));
-                (matches!(d.kind, ExportKind::Print { .. }) && !d.progress.cancel.load(Ordering::Relaxed)).then_some(path)
+                d.success = Some(trf(
+                    "Exported {n} rows to {path}",
+                    &[("n", &rows), ("path", &path.to_string_lossy())],
+                ));
+                (matches!(d.kind, ExportKind::Print { .. })
+                    && !d.progress.cancel.load(Ordering::Relaxed))
+                .then_some(path)
             }
         }
     }
 
     pub(super) fn table_report_opened(&mut self, request_id: u64, result: Result<PathBuf, String>) {
-        if let Some(d) = self.table_export.dialog.as_mut().filter(|d| d.id == request_id)
+        if let Some(d) = self
+            .table_export
+            .dialog
+            .as_mut()
+            .filter(|d| d.id == request_id)
             && let Err(error) = result
         {
             d.error = Some(error);
@@ -289,7 +364,10 @@ mod tests {
         dialog.table.table = "../outside".into();
         dialog.path.clear();
         dialog.choose_folder(folder.clone());
-        assert_eq!(std::path::Path::new(&dialog.path).parent(), Some(folder.as_path()));
+        assert_eq!(
+            std::path::Path::new(&dialog.path).parent(),
+            Some(folder.as_path())
+        );
     }
 
     fn app_and_table() -> (DataCraftApp, TableRef) {
@@ -301,11 +379,23 @@ mod tests {
             current: true,
             schemas: Some(vec![SchemaInfo {
                 name: "main".into(),
-                tables: vec![TableInfo { name: "notes".into(), kind: crate::db::ObjectKind::Table, columns: vec![] }],
+                tables: vec![TableInfo {
+                    name: "notes".into(),
+                    kind: crate::db::ObjectKind::Table,
+                    columns: vec![],
+                }],
             }]),
         }];
         app.conns.push(connection);
-        (app, TableRef { conn: 7, db: "main".into(), schema: "main".into(), table: "notes".into() })
+        (
+            app,
+            TableRef {
+                conn: 7,
+                db: "main".into(),
+                schema: "main".into(),
+                table: "notes".into(),
+            },
+        )
     }
 
     #[test]
@@ -314,13 +404,19 @@ mod tests {
         app.conns[0].cfg.read_only = true;
         for (action, title) in [
             (ExplorerAction::ExportTable(table.clone()), "Export Table"),
-            (ExplorerAction::DumpTable(table.clone(), false, true), "Dump SQL File"),
+            (
+                ExplorerAction::DumpTable(table.clone(), false, true),
+                "Dump SQL File",
+            ),
             (ExplorerAction::PrintTable(table.clone()), "Print Table"),
         ] {
             app.handle_explorer(&egui::Context::default(), vec![action]);
             assert_eq!(app.table_export.dialog.as_ref().unwrap().title(), tr(title));
         }
-        assert!(matches!(app.table_export.dialog.as_ref().unwrap().kind, ExportKind::Print { data: false }));
+        assert!(matches!(
+            app.table_export.dialog.as_ref().unwrap().kind,
+            ExportKind::Print { data: false }
+        ));
         app.table_export.dialog = None;
         app.conns[0].status = ConnStatus::Disconnected;
         app.open_table_export(table, ExportKind::Csv);
@@ -335,7 +431,10 @@ mod tests {
             let d = app.table_export.dialog.as_mut().unwrap();
             d.id = 12;
             d.pending = true;
-            assert!(app.table_export_received(7, 11, Ok(("old.html".into(), 9))).is_none());
+            assert!(
+                app.table_export_received(7, 11, Ok(("old.html".into(), 9)))
+                    .is_none()
+            );
             assert!(app.table_export.dialog.as_ref().unwrap().pending);
             let path = app.table_export_received(7, 12, Ok(("report.html".into(), 1200)));
             assert_eq!(path.is_some(), matches!(kind, ExportKind::Print { .. }));
@@ -358,15 +457,35 @@ mod tests {
         fn press(app: &mut DataCraftApp, key: Key, modifiers: Modifiers) {
             let ctx = egui::Context::default();
             let mut output = ctx.run_ui(
-                egui::RawInput { events: vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }], ..Default::default() },
+                egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    ..Default::default()
+                },
                 |ui| app.shortcuts(ui.ctx()),
             );
             // This headless input test has no renderer to apply texture deltas.
             output.textures_delta.clear();
         }
-        for kind in [ExportKind::Csv, ExportKind::Sql { structure: true, data: true }, ExportKind::Print { data: false }] {
+        for kind in [
+            ExportKind::Csv,
+            ExportKind::Sql {
+                structure: true,
+                data: true,
+            },
+            ExportKind::Print { data: false },
+        ] {
             for pending in [false, true] {
-                for (key, modifiers) in [(Key::Enter, Modifiers::COMMAND), (Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT), (Key::S, Modifiers::COMMAND)] {
+                for (key, modifiers) in [
+                    (Key::Enter, Modifiers::COMMAND),
+                    (Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT),
+                    (Key::S, Modifiers::COMMAND),
+                ] {
                     let (mut app, table) = app_and_table();
                     let active = app.active;
                     app.object_browser.active = false;
@@ -391,19 +510,33 @@ mod tests {
                             has_pk: true,
                             insert_only: false,
                         }));
-                        view.edit.as_mut().unwrap().state.set_value(&view.rs, RowRef::Existing(0), 1, Some("after".into()));
+                        view.edit.as_mut().unwrap().state.set_value(
+                            &view.rs,
+                            RowRef::Existing(0),
+                            1,
+                            Some("after".into()),
+                        );
                         app.consoles[active].results.push(view);
                         app.consoles[active].result_tab = ResultTab::Result(0);
                     }
                     app.open_table_export(table, kind);
                     app.table_export.dialog.as_mut().unwrap().pending = pending;
                     press(&mut app, key, modifiers);
-                    assert!(!app.consoles[active].running, "{kind:?}, pending={pending}, key={key:?}");
+                    assert!(
+                        !app.consoles[active].running,
+                        "{kind:?}, pending={pending}, key={key:?}"
+                    );
                     assert!(app.preview.is_none());
-                    assert!(app.modal_open(), "native-menu commands must use the same gate");
+                    assert!(
+                        app.modal_open(),
+                        "native-menu commands must use the same gate"
+                    );
                     app.table_export.dialog = None;
                     press(&mut app, key, modifiers);
-                    assert!(app.consoles[active].running, "the same shortcut must work after closing the dialog: {key:?}");
+                    assert!(
+                        app.consoles[active].running,
+                        "the same shortcut must work after closing the dialog: {key:?}"
+                    );
                     if key == Key::S {
                         assert!(app.preview.as_ref().unwrap().applying);
                     }
@@ -423,25 +556,43 @@ mod tests {
                 other.table = "other".into();
                 tables.push(other);
             }
-            let mut h = egui_kittest::Harness::builder().with_size(vec2(800.0, 700.0)).build_ui_state(
-                move |ui, actions: &mut Vec<ExplorerAction>| {
-                    crate::ui::table_menu::show(
-                        ui,
-                        &tables,
-                        Some(crate::db::ObjectKind::Table),
-                        crate::ui::table_menu::TableContext { driver: Driver::Sqlite, connected: true, read_only: true },
-                        actions,
-                    );
-                },
-                Vec::new(),
-            );
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(vec2(800.0, 700.0))
+                .build_ui_state(
+                    move |ui, actions: &mut Vec<ExplorerAction>| {
+                        crate::ui::table_menu::show(
+                            ui,
+                            &tables,
+                            Some(crate::db::ObjectKind::Table),
+                            crate::ui::table_menu::TableContext {
+                                driver: Driver::Sqlite,
+                                connected: true,
+                                read_only: true,
+                            },
+                            actions,
+                        );
+                    },
+                    Vec::new(),
+                );
             h.run_steps(2);
-            assert_eq!(h.get_by_label("Export Table…").accesskit_node().is_disabled(), count == 2);
-            assert_eq!(h.get_by_label("Print Table…").accesskit_node().is_disabled(), count == 2);
+            assert_eq!(
+                h.get_by_label("Export Table…")
+                    .accesskit_node()
+                    .is_disabled(),
+                count == 2
+            );
+            assert_eq!(
+                h.get_by_label("Print Table…")
+                    .accesskit_node()
+                    .is_disabled(),
+                count == 2
+            );
             if count == 1 {
                 h.get_by_label("Export Table…").click();
                 h.run_steps(2);
-                assert!(matches!(h.state().first(), Some(ExplorerAction::ExportTable(t)) if t.table == "notes"));
+                assert!(
+                    matches!(h.state().first(), Some(ExplorerAction::ExportTable(t)) if t.table == "notes")
+                );
             }
         }
     }
@@ -450,27 +601,44 @@ mod tests {
     fn snowflake_dump_menu_offers_structure_without_enabling_data_export() {
         use egui_kittest::kittest::Queryable;
         let (_, table) = app_and_table();
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(800.0, 700.0)).build_ui_state(
-            move |ui, actions: &mut Vec<ExplorerAction>| {
-                crate::ui::table_menu::show(
-                    ui,
-                    std::slice::from_ref(&table),
-                    Some(crate::db::ObjectKind::Table),
-                    crate::ui::table_menu::TableContext { driver: Driver::Snowflake, connected: true, read_only: true },
-                    actions,
-                );
-            },
-            Vec::new(),
-        );
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(800.0, 700.0))
+            .build_ui_state(
+                move |ui, actions: &mut Vec<ExplorerAction>| {
+                    crate::ui::table_menu::show(
+                        ui,
+                        std::slice::from_ref(&table),
+                        Some(crate::db::ObjectKind::Table),
+                        crate::ui::table_menu::TableContext {
+                            driver: Driver::Snowflake,
+                            connected: true,
+                            read_only: true,
+                        },
+                        actions,
+                    );
+                },
+                Vec::new(),
+            );
         h.run_steps(2);
-        assert!(h.get_by_label("Export Table…").accesskit_node().is_disabled());
+        assert!(
+            h.get_by_label("Export Table…")
+                .accesskit_node()
+                .is_disabled()
+        );
         h.get_by_label("Dump SQL File").click();
         h.run_steps(2);
-        assert!(h.get_by_label("Structure and Data").accesskit_node().is_disabled());
+        assert!(
+            h.get_by_label("Structure and Data")
+                .accesskit_node()
+                .is_disabled()
+        );
         assert!(h.get_by_label("Data Only").accesskit_node().is_disabled());
         h.get_by_label("Structure Only").click();
         h.run_steps(2);
-        assert!(matches!(h.state().first(), Some(ExplorerAction::DumpTable(_, true, false))));
+        assert!(matches!(
+            h.state().first(),
+            Some(ExplorerAction::DumpTable(_, true, false))
+        ));
     }
 
     #[test]
@@ -482,16 +650,18 @@ mod tests {
         d.pending = true;
         d.error = Some("Long error\n".repeat(80));
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(600.0, 370.0)).build_ui_state(
-            move |ui, app: &mut DataCraftApp| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    return;
-                }
-                app.show_table_export(ui.ctx());
-            },
-            app,
-        );
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(600.0, 370.0))
+            .build_ui_state(
+                move |ui, app: &mut DataCraftApp| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    app.show_table_export(ui.ctx());
+                },
+                app,
+            );
         h.run_steps(3);
         assert!(h.get_by_label("Cancel").rect().bottom() < 370.0);
         h.get_by_label("Cancel").click();

@@ -11,16 +11,31 @@ pub struct TableContext {
     pub read_only: bool,
 }
 
-pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx: TableContext, actions: &mut Vec<ExplorerAction>) {
+pub fn show(
+    ui: &mut egui::Ui,
+    tables: &[TableRef],
+    kind: Option<ObjectKind>,
+    cx: TableContext,
+    actions: &mut Vec<ExplorerAction>,
+) {
     let sql = !cx.driver.is_nosql();
     let single = tables.len() == 1 && kind.is_some();
     let writable = cx.connected && !cx.read_only && sql;
     let table = single && kind == Some(ObjectKind::Table);
     let data_export = crate::db::table_export::supported(cx.driver);
-    let structure_export = crate::db::table_export::supported_kind(cx.driver, crate::db::table_export::ExportKind::Sql { structure: true, data: false });
+    let structure_export = crate::db::table_export::supported_kind(
+        cx.driver,
+        crate::db::table_export::ExportKind::Sql {
+            structure: true,
+            data: false,
+        },
+    );
     macro_rules! button {
         ($ui:expr, $enabled:expr, $label:expr, $action:expr) => {{
-            if $ui.add_enabled($enabled, egui::Button::new(tr($label))).clicked() {
+            if $ui
+                .add_enabled($enabled, egui::Button::new(tr($label)))
+                .clicked()
+            {
                 if let Some(t) = tables.first() {
                     actions.push($action(t));
                 }
@@ -48,74 +63,132 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
             }
         }};
     }
-    if ui.add_enabled(cx.connected, egui::Button::new(tr("Open data"))).clicked() {
+    if ui
+        .add_enabled(cx.connected, egui::Button::new(tr("Open data")))
+        .clicked()
+    {
         for t in tables {
             actions.push(ExplorerAction::OpenTable(t.clone()));
         }
         ui.close();
     }
     if sql {
-        let groups: Vec<_> = crate::db::table_structure::Group::ALL.into_iter().filter(|g| g.supported(cx.driver)).collect();
+        let groups: Vec<_> = crate::db::table_structure::Group::ALL
+            .into_iter()
+            .filter(|g| g.supported(cx.driver))
+            .collect();
         if !groups.is_empty() {
             ui.add_enabled_ui(cx.connected && table, |ui| {
                 ui.menu_button(tr("Structure"), |ui| {
                     for group in groups {
                         if ui.button(group.label()).clicked() {
-                            if let Some(t) = tables.first() { actions.push(ExplorerAction::ShowTableObjects(t.clone(), group)); }
+                            if let Some(t) = tables.first() {
+                                actions.push(ExplorerAction::ShowTableObjects(t.clone(), group));
+                            }
                             ui.close();
                         }
                     }
                 });
             });
         }
-        button!(writable && table, "Modify Table…", &|t: &TableRef| ExplorerAction::ModifyTable(t.clone()));
+        button!(writable && table, "Modify Table…", &|t: &TableRef| {
+            ExplorerAction::ModifyTable(t.clone())
+        });
         let grants = writable && table && crate::db::table_privileges::supported(cx.driver);
-        button!(grants, "Set Privileges…", &|t: &TableRef| ExplorerAction::TablePrivileges(t.clone()));
+        button!(grants, "Set Privileges…", &|t: &TableRef| {
+            ExplorerAction::TablePrivileges(t.clone())
+        });
         if kind == Some(ObjectKind::View) {
-            button!(writable && single, "Edit View…", &|t: &TableRef| ExplorerAction::EditView(t.clone()));
+            button!(writable && single, "Edit View…", &|t: &TableRef| {
+                ExplorerAction::EditView(t.clone())
+            });
         }
-        button!(writable && single, "New Table…", &|t: &TableRef| ExplorerAction::NewTable {
-            conn: t.conn,
-            db: t.db.clone(),
-            schema: Some(t.schema.clone())
+        button!(writable && single, "New Table…", &|t: &TableRef| {
+            ExplorerAction::NewTable {
+                conn: t.conn,
+                db: t.db.clone(),
+                schema: Some(t.schema.clone()),
+            }
         });
-        button!(writable && single, "New View…", &|t: &TableRef| ExplorerAction::NewView { conn: t.conn, db: t.db.clone(), schema: Some(t.schema.clone()) });
+        button!(writable && single, "New View…", &|t: &TableRef| {
+            ExplorerAction::NewView {
+                conn: t.conn,
+                db: t.db.clone(),
+                schema: Some(t.schema.clone()),
+            }
+        });
         ui.separator();
-        button!(writable && table, "Empty Table…", &|t: &TableRef| ExplorerAction::EmptyTable(t.clone()));
-        button!(writable && table, "Truncate…", &|t: &TableRef| ExplorerAction::TruncateTable(t.clone()));
-        ui.add_enabled_ui(writable && table && crate::db::table_definition::supported(cx.driver), |ui| {
-            ui.menu_button(tr("Duplicate Table"), |ui| {
-                for (data, label) in [(true, "Structure and Data"), (false, "Structure Only")] {
-                    if ui.button(tr(label)).clicked() {
-                        if let Some(table) = tables.first() {
-                            actions.push(ExplorerAction::DuplicateTable(table.clone(), data));
+        button!(writable && table, "Empty Table…", &|t: &TableRef| {
+            ExplorerAction::EmptyTable(t.clone())
+        });
+        button!(writable && table, "Truncate…", &|t: &TableRef| {
+            ExplorerAction::TruncateTable(t.clone())
+        });
+        ui.add_enabled_ui(
+            writable && table && crate::db::table_definition::supported(cx.driver),
+            |ui| {
+                ui.menu_button(tr("Duplicate Table"), |ui| {
+                    for (data, label) in [(true, "Structure and Data"), (false, "Structure Only")] {
+                        if ui.button(tr(label)).clicked() {
+                            if let Some(table) = tables.first() {
+                                actions.push(ExplorerAction::DuplicateTable(table.clone(), data));
+                            }
+                            ui.close();
                         }
-                        ui.close();
                     }
-                }
-            });
+                });
+            },
+        );
+        button!(
+            writable && table,
+            "Import Data from File…",
+            &|t: &TableRef| ExplorerAction::ImportData(t.clone())
+        );
+        button!(
+            cx.connected && table && data_export,
+            "Export Table…",
+            &|t: &TableRef| ExplorerAction::ExportTable(t.clone())
+        );
+        ui.add_enabled_ui(
+            cx.connected && table && (data_export || structure_export),
+            |ui| {
+                ui.menu_button(tr("Dump SQL File"), |ui| {
+                    button!(ui, data_export, "Structure and Data", &|t: &TableRef| {
+                        ExplorerAction::DumpTable(t.clone(), true, true)
+                    });
+                    button!(ui, structure_export, "Structure Only", &|t: &TableRef| {
+                        ExplorerAction::DumpTable(t.clone(), true, false)
+                    });
+                    button!(ui, data_export, "Data Only", &|t: &TableRef| {
+                        ExplorerAction::DumpTable(t.clone(), false, true)
+                    });
+                });
+            },
+        );
+        button!(cx.connected && table, "Print Table…", &|t: &TableRef| {
+            ExplorerAction::PrintTable(t.clone())
         });
-        button!(writable && table, "Import Data from File…", &|t: &TableRef| ExplorerAction::ImportData(t.clone()));
-        button!(cx.connected && table && data_export, "Export Table…", &|t: &TableRef| ExplorerAction::ExportTable(t.clone()));
-        ui.add_enabled_ui(cx.connected && table && (data_export || structure_export), |ui| {
-            ui.menu_button(tr("Dump SQL File"), |ui| {
-                button!(ui, data_export, "Structure and Data", &|t: &TableRef| ExplorerAction::DumpTable(t.clone(), true, true));
-                button!(ui, structure_export, "Structure Only", &|t: &TableRef| ExplorerAction::DumpTable(t.clone(), true, false));
-                button!(ui, data_export, "Data Only", &|t: &TableRef| ExplorerAction::DumpTable(t.clone(), false, true));
-            });
-        });
-        button!(cx.connected && table, "Print Table…", &|t: &TableRef| ExplorerAction::PrintTable(t.clone()));
         ui.separator();
-        button!(cx.connected && single, "Generate SELECT", &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone()));
-        button!(cx.connected && table, "Generate INSERT", &|t: &TableRef| ExplorerAction::GenerateInsert(t.clone()));
+        button!(
+            cx.connected && single,
+            "Generate SELECT",
+            &|t: &TableRef| ExplorerAction::GenerateSelect(t.clone())
+        );
+        button!(cx.connected && table, "Generate INSERT", &|t: &TableRef| {
+            ExplorerAction::GenerateInsert(t.clone())
+        });
     }
     if sql || cx.driver == Driver::Kusto {
-        button!(single, "Show DDL", &|t: &TableRef| ExplorerAction::GenerateDdl(t.clone()));
+        button!(single, "Show DDL", &|t: &TableRef| {
+            ExplorerAction::GenerateDdl(t.clone())
+        });
     }
     if sql
         && ui
             .add_enabled(
-                cx.connected && kind == Some(ObjectKind::Table) && crate::db::table_model::supported(cx.driver),
+                cx.connected
+                    && kind == Some(ObjectKind::Table)
+                    && crate::db::table_model::supported(cx.driver),
                 egui::Button::new(tr("Reverse Tables to Model…")),
             )
             .on_disabled_hover_text(tr("Not available for this engine"))
@@ -125,22 +198,47 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         ui.close();
     }
     if cx.driver.can_copy() {
-        button!(cx.connected && single, "Copy Table To…", &|t: &TableRef| ExplorerAction::CopyTable(t.clone()));
+        button!(
+            cx.connected && single,
+            "Copy Table To…",
+            &|t: &TableRef| ExplorerAction::CopyTable(t.clone())
+        );
     }
     if ui.button(tr("Copy Name")).clicked() {
-        ui.ctx().copy_text(tables.iter().map(|t| t.table.as_str()).collect::<Vec<_>>().join("\n"));
+        ui.ctx().copy_text(
+            tables
+                .iter()
+                .map(|t| t.table.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         ui.close();
     }
-    button!(single, "Create Open Table Shortcut…", &|t: &TableRef| ExplorerAction::TableShortcut(t.clone()));
+    button!(single, "Create Open Table Shortcut…", &|t: &TableRef| {
+        ExplorerAction::TableShortcut(t.clone())
+    });
     if sql {
-        button!(writable && table, "Rename…", &|t: &TableRef| ExplorerAction::RenameTable(t.clone()));
+        button!(writable && table, "Rename…", &|t: &TableRef| {
+            ExplorerAction::RenameTable(t.clone())
+        });
     }
     ui.separator();
-    button!(cx.connected && single, "Refresh", &|t: &TableRef| ExplorerAction::RefreshObject(t.clone()));
-    button!(cx.connected && single, "Object Information", &|t: &TableRef| ExplorerAction::ObjectInformation(t.clone()));
+    button!(cx.connected && single, "Refresh", &|t: &TableRef| {
+        ExplorerAction::RefreshObject(t.clone())
+    });
+    button!(
+        cx.connected && single,
+        "Object Information",
+        &|t: &TableRef| ExplorerAction::ObjectInformation(t.clone())
+    );
     if sql {
         ui.separator();
-        let response = ui.add_enabled(writable && single, egui::Button::new(egui::RichText::new(tr("Drop…")).color(crate::ui::theme::pal(ui).error)));
+        let response = ui.add_enabled(
+            writable && single,
+            egui::Button::new(
+                egui::RichText::new(tr("Drop…")).color(crate::ui::theme::pal(ui).error),
+            ),
+        );
         let response = response.on_disabled_hover_text(if !cx.connected {
             tr("The connection is not open")
         } else if cx.read_only {
@@ -150,7 +248,10 @@ pub fn show(ui: &mut egui::Ui, tables: &[TableRef], kind: Option<ObjectKind>, cx
         });
         if response.clicked() {
             if let Some(t) = tables.first() {
-                actions.push(ExplorerAction::DropObject(t.clone(), kind.unwrap_or(ObjectKind::Table)));
+                actions.push(ExplorerAction::DropObject(
+                    t.clone(),
+                    kind.unwrap_or(ObjectKind::Table),
+                ));
             }
             ui.close();
         }
@@ -167,11 +268,31 @@ mod tests {
         for driver in Driver::ALL {
             for connected in [false, true] {
                 let h = Harness::new_ui(|ui| {
-                    let table = TableRef { conn: 1, db: "db".into(), schema: "s".into(), table: "t".into() };
-                    show(ui, &[table], Some(ObjectKind::Table), TableContext { driver, connected, read_only: false }, &mut vec![]);
+                    let table = TableRef {
+                        conn: 1,
+                        db: "db".into(),
+                        schema: "s".into(),
+                        table: "t".into(),
+                    };
+                    show(
+                        ui,
+                        &[table],
+                        Some(ObjectKind::Table),
+                        TableContext {
+                            driver,
+                            connected,
+                            read_only: false,
+                        },
+                        &mut vec![],
+                    );
                 });
-                let expected = !matches!(driver, Driver::Redis | Driver::MongoDb | Driver::InfluxDb);
-                assert_eq!(h.query_by_label("Show DDL").is_some(), expected, "{driver:?}, connected={connected}");
+                let expected =
+                    !matches!(driver, Driver::Redis | Driver::MongoDb | Driver::InfluxDb);
+                assert_eq!(
+                    h.query_by_label("Show DDL").is_some(),
+                    expected,
+                    "{driver:?}, connected={connected}"
+                );
             }
         }
     }
@@ -180,31 +301,66 @@ mod tests {
     fn drop_action_is_painted_with_the_theme_error_color() {
         fn drop_color(shape: &egui::Shape) -> Option<egui::Color32> {
             match shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Drop…" => text.override_text_color.or_else(|| {
-                    text.galley
-                        .job
-                        .sections
-                        .first()
-                        .map(|section| if section.format.color == egui::Color32::PLACEHOLDER { text.fallback_color } else { section.format.color })
-                }),
+                egui::Shape::Text(text) if text.galley.job.text == "Drop…" => {
+                    text.override_text_color.or_else(|| {
+                        text.galley.job.sections.first().map(|section| {
+                            if section.format.color == egui::Color32::PLACEHOLDER {
+                                text.fallback_color
+                            } else {
+                                section.format.color
+                            }
+                        })
+                    })
+                }
                 egui::Shape::Vec(shapes) => shapes.iter().find_map(drop_color),
                 _ => None,
             }
         }
         for dark in [false, true] {
             let ctx = egui::Context::default();
-            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            ctx.set_visuals(if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
             let mut expected = egui::Color32::TRANSPARENT;
             let mut output = ctx.run_ui(
-                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 1400.0))), ..Default::default() },
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 1400.0),
+                    )),
+                    ..Default::default()
+                },
                 |ui| {
                     expected = crate::ui::theme::pal(ui).error;
-                    let table = TableRef { conn: 1, db: "db".into(), schema: "s".into(), table: "t".into() };
-                    show(ui, &[table], Some(ObjectKind::Table), TableContext { driver: Driver::Sqlite, connected: true, read_only: false }, &mut vec![]);
+                    let table = TableRef {
+                        conn: 1,
+                        db: "db".into(),
+                        schema: "s".into(),
+                        table: "t".into(),
+                    };
+                    show(
+                        ui,
+                        &[table],
+                        Some(ObjectKind::Table),
+                        TableContext {
+                            driver: Driver::Sqlite,
+                            connected: true,
+                            read_only: false,
+                        },
+                        &mut vec![],
+                    );
                 },
             );
             output.textures_delta.clear();
-            assert_eq!(output.shapes.iter().find_map(|shape| drop_color(&shape.shape)), Some(expected));
+            assert_eq!(
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| drop_color(&shape.shape)),
+                Some(expected)
+            );
         }
     }
 }
@@ -217,52 +373,165 @@ mod grants_tests {
     #[test]
     fn keys_and_foreign_keys_menus_open_the_matching_folder_on_read_only_tables() {
         use crate::db::table_structure::Group;
-        let table = TableRef { conn: 7, db: "shop".into(), schema: "public".into(), table: "orders".into() };
+        let table = TableRef {
+            conn: 7,
+            db: "shop".into(),
+            schema: "public".into(),
+            table: "orders".into(),
+        };
         for group in [Group::Keys, Group::ForeignKeys] {
             let target = table.clone();
-            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 1100.0)).build_ui_state(
-                move |ui, actions: &mut Vec<ExplorerAction>| show(ui, std::slice::from_ref(&target), Some(ObjectKind::Table), TableContext { driver: Driver::Postgres, connected: true, read_only: true }, actions), Vec::new());
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(600.0, 1100.0))
+                .build_ui_state(
+                    move |ui, actions: &mut Vec<ExplorerAction>| {
+                        show(
+                            ui,
+                            std::slice::from_ref(&target),
+                            Some(ObjectKind::Table),
+                            TableContext {
+                                driver: Driver::Postgres,
+                                connected: true,
+                                read_only: true,
+                            },
+                            actions,
+                        )
+                    },
+                    Vec::new(),
+                );
             h.run_steps(2);
-            assert!(h.query_by_label(group.label()).is_none(), "structure folders live in a submenu");
-            h.get_by_label("Structure").click(); h.run_steps(2);
-            h.get_by_label(group.label()).click(); h.run_steps(2);
-            assert!(matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, g)] if t == &table && *g == group));
+            assert!(
+                h.query_by_label(group.label()).is_none(),
+                "structure folders live in a submenu"
+            );
+            h.get_by_label("Structure").click();
+            h.run_steps(2);
+            h.get_by_label(group.label()).click();
+            h.run_steps(2);
+            assert!(
+                matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, g)] if t == &table && *g == group)
+            );
         }
     }
 
     #[test]
     fn indexes_menu_is_available_on_read_only_tables_and_targets_the_selected_table() {
-        let table = TableRef { conn: 7, db: "shop".into(), schema: "public".into(), table: "notes".into() };
+        let table = TableRef {
+            conn: 7,
+            db: "shop".into(),
+            schema: "public".into(),
+            table: "notes".into(),
+        };
         for (driver, connected, read_only, kind, count, visible, enabled) in [
-            (Driver::Postgres, true, false, ObjectKind::Table, 1, true, true),
+            (
+                Driver::Postgres,
+                true,
+                false,
+                ObjectKind::Table,
+                1,
+                true,
+                true,
+            ),
             (Driver::Sqlite, true, true, ObjectKind::Table, 1, true, true),
-            (Driver::ClickHouse, true, true, ObjectKind::Table, 1, true, true),
-            (Driver::MsSql, false, false, ObjectKind::Table, 1, true, false),
+            (
+                Driver::ClickHouse,
+                true,
+                true,
+                ObjectKind::Table,
+                1,
+                true,
+                true,
+            ),
+            (
+                Driver::MsSql,
+                false,
+                false,
+                ObjectKind::Table,
+                1,
+                true,
+                false,
+            ),
             (Driver::MySql, true, false, ObjectKind::View, 1, true, false),
-            (Driver::Oracle, true, false, ObjectKind::Table, 2, true, false),
-            (Driver::Snowflake, true, false, ObjectKind::Table, 1, false, false),
-            (Driver::Redis, true, false, ObjectKind::Table, 1, false, false),
+            (
+                Driver::Oracle,
+                true,
+                false,
+                ObjectKind::Table,
+                2,
+                true,
+                false,
+            ),
+            (
+                Driver::Snowflake,
+                true,
+                false,
+                ObjectKind::Table,
+                1,
+                false,
+                false,
+            ),
+            (
+                Driver::Redis,
+                true,
+                false,
+                ObjectKind::Table,
+                1,
+                false,
+                false,
+            ),
         ] {
             let tables = vec![table.clone(); count];
-            let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 1100.0)).build_ui_state(
-                move |ui, actions: &mut Vec<ExplorerAction>| show(ui, &tables, Some(kind), TableContext { driver, connected, read_only }, actions), Vec::new());
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(600.0, 1100.0))
+                .build_ui_state(
+                    move |ui, actions: &mut Vec<ExplorerAction>| {
+                        show(
+                            ui,
+                            &tables,
+                            Some(kind),
+                            TableContext {
+                                driver,
+                                connected,
+                                read_only,
+                            },
+                            actions,
+                        )
+                    },
+                    Vec::new(),
+                );
             h.run_steps(2);
-            assert_eq!(h.query_by_label("Structure").is_some(), visible || driver == Driver::Snowflake);
-            if !visible { continue; }
+            assert_eq!(
+                h.query_by_label("Structure").is_some(),
+                visible || driver == Driver::Snowflake
+            );
+            if !visible {
+                continue;
+            }
             let button = h.get_by_label("Structure");
             assert_eq!(!button.accesskit_node().is_disabled(), enabled);
-            button.click(); h.run_steps(2);
+            button.click();
+            h.run_steps(2);
             assert_eq!(h.query_by_label("Indexes").is_some(), enabled);
             if enabled {
-                h.get_by_label("Indexes").click(); h.run_steps(2);
-                assert!(matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, crate::db::table_structure::Group::Indexes)] if t == &table));
-            } else { assert!(h.state().is_empty()); }
+                h.get_by_label("Indexes").click();
+                h.run_steps(2);
+                assert!(
+                    matches!(h.state().as_slice(), [ExplorerAction::ShowTableObjects(t, crate::db::table_structure::Group::Indexes)] if t == &table)
+                );
+            } else {
+                assert!(h.state().is_empty());
+            }
         }
     }
 
     #[test]
     fn grants_menu_is_available_only_for_one_writable_server_table() {
-        let table = TableRef { conn: 7, db: "main".into(), schema: "dbo".into(), table: "notes".into() };
+        let table = TableRef {
+            conn: 7,
+            db: "main".into(),
+            schema: "dbo".into(),
+            table: "notes".into(),
+        };
         for (driver, connected, read_only, kind, count, enabled) in [
             (Driver::MsSql, true, false, ObjectKind::Table, 1, true),
             (Driver::Postgres, false, false, ObjectKind::Table, 1, false),
@@ -272,10 +541,24 @@ mod grants_tests {
             (Driver::Sqlite, true, false, ObjectKind::Table, 1, false),
         ] {
             let tables = vec![table.clone(); count];
-            let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 900.0)).build_ui_state(
-                move |ui, actions: &mut Vec<ExplorerAction>| show(ui, &tables, Some(kind), TableContext { driver, connected, read_only }, actions),
-                Vec::new(),
-            );
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(600.0, 900.0))
+                .build_ui_state(
+                    move |ui, actions: &mut Vec<ExplorerAction>| {
+                        show(
+                            ui,
+                            &tables,
+                            Some(kind),
+                            TableContext {
+                                driver,
+                                connected,
+                                read_only,
+                            },
+                            actions,
+                        )
+                    },
+                    Vec::new(),
+                );
             harness.run_steps(2);
             let button = harness.get_by_label("Set Privileges…");
             assert_eq!(!button.accesskit_node().is_disabled(), enabled);

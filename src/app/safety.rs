@@ -37,7 +37,9 @@ pub(super) struct SafetyState {
 
 /// Name and badge colour of a Production data source.
 fn production(cfg: &ConnectionConfig) -> Option<(String, Color32)> {
-    theme::environment(cfg).filter(|(env, _)| *env == Environment::Production).map(|(_, color)| (cfg.name.clone(), color))
+    theme::environment(cfg)
+        .filter(|(env, _)| *env == Environment::Production)
+        .map(|(_, color)| (cfg.name.clone(), color))
 }
 
 /// Shown at most; the rest are counted.
@@ -75,46 +77,82 @@ fn effect(danger: Danger) -> &'static str {
 
 impl DataCraftApp {
     /// The confirmation `statements` of `console` need before they run on `conn`, if any.
-    pub(super) fn run_confirmation(&self, conn: ConnId, console: u64, statements: &[String]) -> Option<Confirm> {
+    pub(super) fn run_confirmation(
+        &self,
+        conn: ConnId,
+        console: u64,
+        statements: &[String],
+    ) -> Option<Confirm> {
         let cfg = &self.conn(conn)?.cfg;
         let dangerous: Vec<Dangerous> = if cfg.confirm_dangerous {
-            statements.iter().flat_map(|s| sql::dangerous_statements(s, cfg.driver)).collect()
+            statements
+                .iter()
+                .flat_map(|s| sql::dangerous_statements(s, cfg.driver))
+                .collect()
         } else {
             Vec::new()
         };
-        let writes = || statements.iter().flat_map(|s| sql::split_statements(s, cfg.driver)).any(|s| !is_read_statement(cfg.driver, &s.text));
+        let writes = || {
+            statements
+                .iter()
+                .flat_map(|s| sql::split_statements(s, cfg.driver))
+                .any(|s| !is_read_statement(cfg.driver, &s.text))
+        };
         let production = production(cfg).filter(|_| writes());
-        (!dangerous.is_empty() || production.is_some()).then(|| Confirm { console, what: Guarded::Run(statements.to_vec()), dangerous, production, analyze: false })
+        (!dangerous.is_empty() || production.is_some()).then(|| Confirm {
+            console,
+            what: Guarded::Run(statements.to_vec()),
+            dangerous,
+            production,
+            analyze: false,
+        })
     }
 
     /// The confirmation saving grid changes on `conn` needs (Production data sources).
     pub(super) fn changes_confirmation(&self, conn: ConnId, console: u64) -> Option<Confirm> {
         let production = production(&self.conn(conn)?.cfg)?;
-        Some(Confirm { console, what: Guarded::Changes, dangerous: Vec::new(), production: Some(production), analyze: false })
+        Some(Confirm {
+            console,
+            what: Guarded::Changes,
+            dangerous: Vec::new(),
+            production: Some(production),
+            analyze: false,
+        })
     }
 
     /// Explain Analyze of console `idx`: it runs `statement`, so one that writes asks once,
     /// with the dangerous statement / Production prompt when it needs one, else its own. One the
     /// console can't run (read-only, Manual transaction) is refused before asking.
     pub(super) fn explain_analyze(&mut self, idx: usize, statement: &str, explain: String) {
-        let Some(c) = self.consoles.get(idx) else { return };
+        let Some(c) = self.consoles.get(idx) else {
+            return;
+        };
         let (id, conn) = (c.id, c.conn);
-        let driver = conn.and_then(|id| self.conn(id)).map_or(Driver::Postgres, |c| c.cfg.driver);
+        let driver = conn
+            .and_then(|id| self.conn(id))
+            .map_or(Driver::Postgres, |c| c.cfg.driver);
         if is_query(driver, statement) {
             return self.run_statements(idx, vec![explain]);
         }
         if conn.is_some_and(|conn| self.refused(idx, conn, std::slice::from_ref(&explain))) {
             return;
         }
-        if let Some(confirm) = conn.and_then(|conn| self.run_confirmation(conn, id, std::slice::from_ref(&explain))) {
-            self.safety.confirm = Some(Confirm { analyze: true, ..confirm });
+        if let Some(confirm) =
+            conn.and_then(|conn| self.run_confirmation(conn, id, std::slice::from_ref(&explain)))
+        {
+            self.safety.confirm = Some(Confirm {
+                analyze: true,
+                ..confirm
+            });
         } else {
             self.confirm_analyze = Some((idx, explain));
         }
     }
 
     pub(super) fn confirm_dialog(&mut self, ctx: &egui::Context, frame: egui::Frame) {
-        let Some(c) = &self.safety.confirm else { return };
+        let Some(c) = &self.safety.confirm else {
+            return;
+        };
         let mut decision = None;
         egui::Modal::new(egui::Id::new("confirm_guarded")).frame(frame).show(ctx, |ui| {
             let p = theme::pal(ui);
@@ -175,7 +213,9 @@ impl DataCraftApp {
             decision = Some(false);
         }
         let Some(ok) = decision else { return };
-        let Some(c) = self.safety.confirm.take() else { return };
+        let Some(c) = self.safety.confirm.take() else {
+            return;
+        };
         match c.what {
             Guarded::Run(statements) if ok => {
                 if let Some(idx) = self.consoles.iter().position(|x| x.id == c.console) {
@@ -228,7 +268,13 @@ mod tests {
         assert_eq!(c.dangerous.len(), 1);
         assert!(c.production.is_none() && !sent(&a));
         // Confirming runs exactly what was held back.
-        let Some(Confirm { what: Guarded::Run(statements), .. }) = a.safety.confirm.take() else { panic!() };
+        let Some(Confirm {
+            what: Guarded::Run(statements),
+            ..
+        }) = a.safety.confirm.take()
+        else {
+            panic!()
+        };
         a.send_statements(0, statements, true);
         assert!(sent(&a) && a.consoles[0].last_statements == ["DELETE FROM orders"]);
     }
@@ -249,9 +295,20 @@ mod tests {
         a.run_statements(0, vec!["SELECT * FROM orders".into()]);
         assert!(a.safety.confirm.is_none() && sent(&a));
         let mut a = app(Driver::Postgres, Environment::Production, true);
-        a.run_statements(0, vec!["UPDATE orders SET a = 1 WHERE id = 1".into(), "INSERT INTO t VALUES (1)".into()]);
+        a.run_statements(
+            0,
+            vec![
+                "UPDATE orders SET a = 1 WHERE id = 1".into(),
+                "INSERT INTO t VALUES (1)".into(),
+            ],
+        );
         let c = a.safety.confirm.as_ref().expect("asks");
-        assert!(c.dangerous.is_empty() && c.production.as_ref().is_some_and(|(n, _)| n == "orders-prod"));
+        assert!(
+            c.dangerous.is_empty()
+                && c.production
+                    .as_ref()
+                    .is_some_and(|(n, _)| n == "orders-prod")
+        );
         // One prompt covers a dangerous statement on Production too, even with the check off.
         let mut a = app(Driver::Postgres, Environment::Production, false);
         a.run_statements(0, vec!["DROP TABLE orders".into()]);
@@ -297,24 +354,54 @@ mod tests {
         // A dangerous statement: only the new prompt, which says Explain Analyze runs it.
         let mut a = app(Driver::Postgres, Environment::None, true);
         a.explain_analyze(0, "DELETE FROM orders", explain("DELETE FROM orders"));
-        assert!(a.safety.confirm.as_ref().is_some_and(|c| c.analyze && c.dangerous.len() == 1) && a.confirm_analyze.is_none());
-        let Some(Confirm { what: Guarded::Run(statements), .. }) = a.safety.confirm.take() else { panic!() };
+        assert!(
+            a.safety
+                .confirm
+                .as_ref()
+                .is_some_and(|c| c.analyze && c.dangerous.len() == 1)
+                && a.confirm_analyze.is_none()
+        );
+        let Some(Confirm {
+            what: Guarded::Run(statements),
+            ..
+        }) = a.safety.confirm.take()
+        else {
+            panic!()
+        };
         a.send_statements(0, statements, true);
         assert!(sent(&a));
         // On Production, any write.
         let mut a = app(Driver::Postgres, Environment::Production, true);
-        a.explain_analyze(0, "UPDATE orders SET a = 1 WHERE id = 1", explain("UPDATE orders SET a = 1 WHERE id = 1"));
-        assert!(a.safety.confirm.as_ref().is_some_and(|c| c.analyze && c.production.is_some()) && a.confirm_analyze.is_none());
+        a.explain_analyze(
+            0,
+            "UPDATE orders SET a = 1 WHERE id = 1",
+            explain("UPDATE orders SET a = 1 WHERE id = 1"),
+        );
+        assert!(
+            a.safety
+                .confirm
+                .as_ref()
+                .is_some_and(|c| c.analyze && c.production.is_some())
+                && a.confirm_analyze.is_none()
+        );
         // Otherwise its own prompt, and Run there doesn't ask again.
         let mut a = app(Driver::Postgres, Environment::Staging, true);
-        a.explain_analyze(0, "UPDATE orders SET a = 1 WHERE id = 1", explain("UPDATE orders SET a = 1 WHERE id = 1"));
+        a.explain_analyze(
+            0,
+            "UPDATE orders SET a = 1 WHERE id = 1",
+            explain("UPDATE orders SET a = 1 WHERE id = 1"),
+        );
         assert!(a.safety.confirm.is_none() && a.confirm_analyze.is_some());
         let (idx, statement) = a.confirm_analyze.take().unwrap();
         a.run_statements(idx, vec![statement]);
         assert!(a.safety.confirm.is_none() && sent(&a));
         // A read runs at once, on Production too.
         let mut a = app(Driver::MySql, Environment::Production, true);
-        a.explain_analyze(0, "SELECT * FROM orders", "EXPLAIN ANALYZE SELECT * FROM orders".into());
+        a.explain_analyze(
+            0,
+            "SELECT * FROM orders",
+            "EXPLAIN ANALYZE SELECT * FROM orders".into(),
+        );
         assert!(a.safety.confirm.is_none() && a.confirm_analyze.is_none() && sent(&a));
         // A write a read-only data source refuses is refused before any prompt.
         for environment in [Environment::Production, Environment::None] {
@@ -333,17 +420,34 @@ mod tests {
         let mut a = app(Driver::Postgres, Environment::Production, true);
         a.consoles[0].manual_tx = true;
         a.run_statements(0, vec!["UPDATE orders SET a = 1 WHERE id = 1".into()]);
-        assert!(a.safety.confirm.as_ref().is_some_and(|c| c.production.is_some()) && !sent(&a));
+        assert!(
+            a.safety
+                .confirm
+                .as_ref()
+                .is_some_and(|c| c.production.is_some())
+                && !sent(&a)
+        );
         // Esc / Cancel: nothing ran, the transaction (none yet) is untouched.
         a.safety.confirm = None;
         a.run_statements(0, vec!["DELETE FROM orders".into()]);
-        let Some(Confirm { what: Guarded::Run(statements), dangerous, .. }) = a.safety.confirm.take() else { panic!() };
+        let Some(Confirm {
+            what: Guarded::Run(statements),
+            dangerous,
+            ..
+        }) = a.safety.confirm.take()
+        else {
+            panic!()
+        };
         assert_eq!(dangerous.len(), 1);
         a.send_statements(0, statements, true);
         assert!(sent(&a) && a.consoles[0].manual_tx);
         // The worker opened the transaction; Commit and Roll Back don't ask.
         a.consoles[0].running = false;
-        a.consoles[0].tx = Some(crate::worker::TxInfo { began: std::time::Instant::now(), statements: 1, aborted: false });
+        a.consoles[0].tx = Some(crate::worker::TxInfo {
+            began: std::time::Instant::now(),
+            statements: 1,
+            aborted: false,
+        });
         assert!(a.end_transaction(0, true));
         assert!(a.safety.confirm.is_none());
         a.consoles[0].ending_tx = false;
@@ -353,20 +457,41 @@ mod tests {
         let mut a = app(Driver::Postgres, Environment::Production, true);
         a.consoles[0].manual_tx = true;
         a.run_statements(0, vec!["VACUUM orders".into()]);
-        assert!(a.safety.confirm.is_none() && !sent(&a) && a.consoles[0].log.last().is_some_and(|e| e.is_error));
+        assert!(
+            a.safety.confirm.is_none()
+                && !sent(&a)
+                && a.consoles[0].log.last().is_some_and(|e| e.is_error)
+        );
     }
 
     #[test]
     fn grid_saves_on_production_ask_first() {
         let mut a = app(Driver::Postgres, Environment::Production, true);
-        a.preview = Some(super::super::PreviewState { console: 1, view: 0, statements: vec!["UPDATE t SET a = 1 WHERE id = 1".into()], error: None, applying: false, visible: false });
+        a.preview = Some(super::super::PreviewState {
+            console: 1,
+            view: 0,
+            statements: vec!["UPDATE t SET a = 1 WHERE id = 1".into()],
+            error: None,
+            applying: false,
+            visible: false,
+        });
         a.submit_preview(false);
-        assert!(matches!(a.safety.confirm.as_ref().map(|c| &c.what), Some(Guarded::Changes)));
+        assert!(matches!(
+            a.safety.confirm.as_ref().map(|c| &c.what),
+            Some(Guarded::Changes)
+        ));
         assert!(!a.preview.as_ref().unwrap().applying);
         a.submit_preview(true);
         assert!(a.preview.as_ref().unwrap().applying);
         let mut a = app(Driver::Postgres, Environment::Staging, true);
-        a.preview = Some(super::super::PreviewState { console: 1, view: 0, statements: vec!["DELETE FROM t WHERE id = 1".into()], error: None, applying: false, visible: true });
+        a.preview = Some(super::super::PreviewState {
+            console: 1,
+            view: 0,
+            statements: vec!["DELETE FROM t WHERE id = 1".into()],
+            error: None,
+            applying: false,
+            visible: true,
+        });
         a.submit_preview(false);
         assert!(a.safety.confirm.is_none() && a.preview.as_ref().unwrap().applying);
     }
@@ -381,7 +506,12 @@ mod tests {
         let table = |name: &str| TableInfo {
             name: name.into(),
             kind: ObjectKind::Table,
-            columns: vec![ColumnInfo { name: "id".into(), data_type: "int".into(), nullable: false, primary_key: true }],
+            columns: vec![ColumnInfo {
+                name: "id".into(),
+                data_type: "int".into(),
+                nullable: false,
+                primary_key: true,
+            }],
         };
         for (id, name, driver, environment) in [
             (7, "orders-prod", Driver::Postgres, Environment::Production),
@@ -399,20 +529,42 @@ mod tests {
                 current: true,
                 schemas: Some(vec![SchemaInfo {
                     name: "public".into(),
-                    tables: ["audit_log", "customers", "log", "orders", "tmp_import"].map(table).to_vec(),
+                    tables: ["audit_log", "customers", "log", "orders", "tmp_import"]
+                        .map(table)
+                        .to_vec(),
                 }]),
             }];
             app.conns.push(conn);
         }
-        app.explorer.expanded.extend(["c:7".into(), "d:7:shop".into(), "s:7:shop:public".into(), "g:7:shop:public:t".into()]);
+        app.explorer.expanded.extend([
+            "c:7".into(),
+            "d:7:shop".into(),
+            "s:7:shop:public".into(),
+            "g:7:shop:public:t".into(),
+        ]);
         let prod = "-- Close the orders paid before the migration\n\
                     UPDATE orders\n   SET status = 'closed'\n WHERE status = 'paid'\n   AND paid_at < '2026-10-01';";
-        app.consoles.push(Console::new(1, "Close paid orders".into(), prod.into(), Some(7)));
+        app.consoles.push(Console::new(
+            1,
+            "Close paid orders".into(),
+            prod.into(),
+            Some(7),
+        ));
         let cleanup = "-- Reset the staging copy before the next import\n\
                        DELETE FROM log;\nTRUNCATE TABLE audit_log;\nDROP TABLE IF EXISTS tmp_import;\n\
                        ALTER TABLE orders DROP COLUMN legacy_note;\nUPDATE orders SET status = 'new' WHERE id > 1000;";
-        app.consoles.push(Console::new(2, "Staging cleanup".into(), cleanup.into(), Some(8)));
-        app.consoles.push(Console::new(3, "Local".into(), "SELECT count(*) FROM orders;".into(), Some(9)));
+        app.consoles.push(Console::new(
+            2,
+            "Staging cleanup".into(),
+            cleanup.into(),
+            Some(8),
+        ));
+        app.consoles.push(Console::new(
+            3,
+            "Local".into(),
+            "SELECT count(*) FROM orders;".into(),
+            Some(9),
+        ));
         app.active = 0;
         app.next_console_id = 4;
         app
@@ -422,21 +574,23 @@ mod tests {
         let dark = app.dark;
         let mut first = true;
         let mut frame = eframe::Frame::_new_kittest();
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 860.0)).build_ui_state(
-            move |ui, app: &mut DataCraftApp| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    theme::apply(ui.ctx(), dark);
-                    return;
-                }
-                // The app owns its full root layout; remove the harness's outer padding.
-                let bounds = ui.ctx().content_rect();
-                let mut root = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
-                root.set_clip_rect(bounds);
-                eframe::App::ui(app, &mut root, &mut frame);
-            },
-            app,
-        );
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1440.0, 860.0))
+            .build_ui_state(
+                move |ui, app: &mut DataCraftApp| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        theme::apply(ui.ctx(), dark);
+                        return;
+                    }
+                    // The app owns its full root layout; remove the harness's outer padding.
+                    let bounds = ui.ctx().content_rect();
+                    let mut root = ui.new_child(egui::UiBuilder::new().max_rect(bounds));
+                    root.set_clip_rect(bounds);
+                    eframe::App::ui(app, &mut root, &mut frame);
+                },
+                app,
+            );
         h.run_steps(4);
         h
     }
@@ -459,7 +613,13 @@ mod tests {
         shot(&mut h, "production-console-dark.png");
 
         h.state_mut().run_console(0, true);
-        assert!(h.state().safety.confirm.as_ref().is_some_and(|c| c.production.is_some() && c.dangerous.is_empty()));
+        assert!(
+            h.state()
+                .safety
+                .confirm
+                .as_ref()
+                .is_some_and(|c| c.production.is_some() && c.dangerous.is_empty())
+        );
         shot(&mut h, "production-confirm-dark.png");
         h.key_press(egui::Key::Escape);
         h.run_steps(2);
@@ -468,7 +628,10 @@ mod tests {
         h.state_mut().active = 1;
         h.run_steps(2);
         h.state_mut().run_console(1, true);
-        assert_eq!(h.state().safety.confirm.as_ref().map(|c| c.dangerous.len()), Some(4));
+        assert_eq!(
+            h.state().safety.confirm.as_ref().map(|c| c.dangerous.len()),
+            Some(4)
+        );
         shot(&mut h, "dangerous-confirm-dark.png");
         // A closed modal forgets its size before the next one opens.
         h.state_mut().safety.confirm = None;
@@ -480,9 +643,14 @@ mod tests {
         h.state_mut().safety.confirm = None;
 
         let cfgs = h.state().conn_configs();
-        h.state_mut().dialog = Some(crate::ui::connection_dialog::ConnectionDialog::edit(7, &cfgs));
+        h.state_mut().dialog = Some(crate::ui::connection_dialog::ConnectionDialog::edit(
+            7, &cfgs,
+        ));
         h.run_steps(3);
-        h.query_all_by_label("Options").last().expect("Options tab").click();
+        h.query_all_by_label("Options")
+            .last()
+            .expect("Options tab")
+            .click();
         h.hover_at(egui::pos2(-10.0, -10.0));
         shot(&mut h, "data-source-options-dark.png");
     }

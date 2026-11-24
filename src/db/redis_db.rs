@@ -35,7 +35,11 @@ pub struct RedisSession {
 pub fn db_number(name: &str) -> Option<i64> {
     let n = name.trim();
     let n = n.strip_prefix("db").unwrap_or(n);
-    if n.is_empty() { Some(0) } else { n.parse().ok().filter(|d| *d >= 0) }
+    if n.is_empty() {
+        Some(0)
+    } else {
+        n.parse().ok().filter(|d| *d >= 0)
+    }
 }
 
 fn truthy(v: Option<&str>) -> bool {
@@ -44,12 +48,24 @@ fn truthy(v: Option<&str>) -> bool {
 
 impl RedisSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
-        let db = db_number(&cfg.database).ok_or_else(|| anyhow!(tr("The Redis database must be a number (0, 1, 2…)")))?;
-        let host = if cfg.host.trim().is_empty() { "localhost".to_string() } else { cfg.host.trim().to_string() };
+        let db = db_number(&cfg.database)
+            .ok_or_else(|| anyhow!(tr("The Redis database must be a number (0, 1, 2…)")))?;
+        let host = if cfg.host.trim().is_empty() {
+            "localhost".to_string()
+        } else {
+            cfg.host.trim().to_string()
+        };
         // TLS: the `tls` / `ssl` driver property, or a `?tls=true` URL parameter.
-        let tls = truthy(cfg.property("tls")) || truthy(cfg.property("ssl")) || cfg.url_extra.to_ascii_lowercase().contains("tls=true");
+        let tls = truthy(cfg.property("tls"))
+            || truthy(cfg.property("ssl"))
+            || cfg.url_extra.to_ascii_lowercase().contains("tls=true");
         let addr = if tls {
-            ConnectionAddr::TcpTls { host: host.clone(), port: cfg.port, insecure: truthy(cfg.property("tls_insecure")), tls_params: None }
+            ConnectionAddr::TcpTls {
+                host: host.clone(),
+                port: cfg.port,
+                insecure: truthy(cfg.property("tls_insecure")),
+                tls_params: None,
+            }
         } else {
             ConnectionAddr::Tcp(host.clone(), cfg.port)
         };
@@ -60,12 +76,22 @@ impl RedisSession {
         if !cfg.password.is_empty() {
             redis = redis.set_password(&cfg.password);
         }
-        let info = (host, cfg.port).into_connection_info()?.set_addr(addr).set_redis_settings(redis);
+        let info = (host, cfg.port)
+            .into_connection_info()?
+            .set_addr(addr)
+            .set_redis_settings(redis);
         let client = redis::Client::open(info)?;
-        let conn = tokio::time::timeout(Duration::from_secs(10), client.get_multiplexed_async_connection())
-            .await
-            .map_err(|_| anyhow!(tr("Connection timed out")))??;
-        let mut s = Self { conn, db, closed: false };
+        let conn = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.get_multiplexed_async_connection(),
+        )
+        .await
+        .map_err(|_| anyhow!(tr("Connection timed out")))??;
+        let mut s = Self {
+            conn,
+            db,
+            closed: false,
+        };
         s.query(&["PING"]).await?;
         Ok(s)
     }
@@ -80,7 +106,11 @@ impl RedisSession {
 
     async fn run(&mut self, cmd: redis::Cmd) -> anyhow::Result<Value> {
         match cmd.query_async::<Value>(&mut self.conn).await {
-            Ok(Value::ServerError(e)) => Err(anyhow!("{}", e.details().map_or_else(|| format!("{e:?}"), |d| format!("{} {d}", e.code())))),
+            Ok(Value::ServerError(e)) => Err(anyhow!(
+                "{}",
+                e.details()
+                    .map_or_else(|| format!("{e:?}"), |d| format!("{} {d}", e.code()))
+            )),
             Ok(v) => Ok(v),
             Err(e) => {
                 if e.is_connection_dropped() || e.is_io_error() || e.is_unrecoverable_error() {
@@ -102,7 +132,10 @@ impl RedisSession {
     /// The databases that have keys (`INFO keyspace`) plus the current one.
     pub async fn list_databases(&mut self) -> anyhow::Result<Vec<String>> {
         let info = text(&self.query(&["INFO", "keyspace"]).await?).unwrap_or_default();
-        let mut dbs: Vec<i64> = info.lines().filter_map(|l| l.split(':').next()?.strip_prefix("db")?.parse().ok()).collect();
+        let mut dbs: Vec<i64> = info
+            .lines()
+            .filter_map(|l| l.split(':').next()?.strip_prefix("db")?.parse().ok())
+            .collect();
         if !dbs.contains(&self.db) {
             dbs.push(self.db);
         }
@@ -111,7 +144,8 @@ impl RedisSession {
     }
 
     pub async fn use_database(&mut self, db: &str) -> anyhow::Result<()> {
-        let n = db_number(db).ok_or_else(|| anyhow!(trf("Unknown database {db}", &[("db", &db)])))?;
+        let n =
+            db_number(db).ok_or_else(|| anyhow!(trf("Unknown database {db}", &[("db", &db)])))?;
         if n != self.db {
             self.query(&["SELECT", &n.to_string()]).await?;
             self.db = n;
@@ -134,8 +168,18 @@ impl RedisSession {
         groups.sort();
         groups.insert(0, "*".into());
         let columns = key_columns();
-        let tables = groups.into_iter().map(|name| TableInfo { name, kind: ObjectKind::Table, columns: columns.clone() }).collect();
-        Ok(vec![SchemaInfo { name: format!("db{}", self.db), tables }])
+        let tables = groups
+            .into_iter()
+            .map(|name| TableInfo {
+                name,
+                kind: ObjectKind::Table,
+                columns: columns.clone(),
+            })
+            .collect();
+        Ok(vec![SchemaInfo {
+            name: format!("db{}", self.db),
+            tables,
+        }])
     }
 
     /// Keys matching `pattern`, walking the SCAN cursor until `limit` keys.
@@ -143,10 +187,16 @@ impl RedisSession {
         let mut cursor = "0".to_string();
         let mut keys = Vec::new();
         loop {
-            let v = self.query(&["SCAN", &cursor, "MATCH", pattern, "COUNT", "1000"]).await?;
+            let v = self
+                .query(&["SCAN", &cursor, "MATCH", pattern, "COUNT", "1000"])
+                .await?;
             let Value::Array(parts) = v else { break };
             let mut parts = parts.into_iter();
-            cursor = parts.next().as_ref().and_then(text).unwrap_or_else(|| "0".into());
+            cursor = parts
+                .next()
+                .as_ref()
+                .and_then(text)
+                .unwrap_or_else(|| "0".into());
             if let Some(Value::Array(batch)) = parts.next() {
                 keys.extend(batch.iter().filter_map(text));
             }
@@ -160,7 +210,13 @@ impl RedisSession {
 
     pub async fn server_version(&mut self) -> Option<String> {
         let info = text(&self.query(&["INFO", "server"]).await.ok()?)?;
-        let field = |name: &str| info.lines().find_map(|l| l.strip_prefix(name)?.strip_prefix(':').map(|v| v.trim().to_string()));
+        let field = |name: &str| {
+            info.lines().find_map(|l| {
+                l.strip_prefix(name)?
+                    .strip_prefix(':')
+                    .map(|v| v.trim().to_string())
+            })
+        };
         match field("valkey_version") {
             Some(v) => Some(format!("Valkey {v}")),
             None => field("redis_version").map(|v| format!("Redis {v}")),
@@ -168,9 +224,17 @@ impl RedisSession {
     }
 
     /// Runs each non-empty line as a command (lines starting with `#` or `//` are comments).
-    pub async fn execute(&mut self, script: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute(
+        &mut self,
+        script: &str,
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let mut out = Vec::new();
-        for line in script.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//")) {
+        for line in script
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"))
+        {
             let start = Instant::now();
             let args = split_args(line)?;
             if args.is_empty() {
@@ -183,7 +247,11 @@ impl RedisSession {
                     let pattern = if name == "KEYS" {
                         args.get(1).cloned().unwrap_or_else(|| "*".into())
                     } else {
-                        args.iter().position(|a| a.eq_ignore_ascii_case("MATCH")).and_then(|i| args.get(i + 1)).cloned().unwrap_or_else(|| "*".into())
+                        args.iter()
+                            .position(|a| a.eq_ignore_ascii_case("MATCH"))
+                            .and_then(|i| args.get(i + 1))
+                            .cloned()
+                            .unwrap_or_else(|| "*".into())
                     };
                     let mut keys = self.scan(&pattern, max_rows + 1).await?;
                     let truncated = keys.len() > max_rows;
@@ -222,7 +290,10 @@ impl RedisSession {
         let mut cmds = Vec::with_capacity(statements.len());
         for stmt in statements {
             let args = split_args(stmt)?;
-            let name = args.first().map(|a| a.to_ascii_uppercase()).unwrap_or_default();
+            let name = args
+                .first()
+                .map(|a| a.to_ascii_uppercase())
+                .unwrap_or_default();
             if !matches!(name.as_str(), "SET" | "EXPIRE" | "PERSIST" | "DEL") || args.len() < 2 {
                 anyhow::bail!(trf("Not a data editor change: {stmt}", &[("stmt", stmt)]));
             }
@@ -251,15 +322,23 @@ impl RedisSession {
         for (_, _, args) in cmds {
             p.cmd("TYPE").arg(&args[1]);
         }
-        let types: Vec<Value> = p.query_async(&mut self.conn).await.map_err(|e| self.pipe_error(e))?;
+        let types: Vec<Value> = p
+            .query_async(&mut self.conn)
+            .await
+            .map_err(|e| self.pipe_error(e))?;
         for ((stmt, name, args), ty) in cmds.iter().zip(&types) {
             // TYPE says "none" for a missing key.
             let ty = text(ty).unwrap_or_default();
             let nx = name == "SET" && args.iter().skip(3).any(|a| a.eq_ignore_ascii_case("NX"));
             match name.as_str() {
-                "SET" if nx && ty != "none" => anyhow::bail!(trf("The key “{key}” already exists", &[("key", &args[1])])),
+                "SET" if nx && ty != "none" => {
+                    anyhow::bail!(trf("The key “{key}” already exists", &[("key", &args[1])]))
+                }
                 "SET" if !nx && ty != "string" && ty != "none" => {
-                    anyhow::bail!(trf("Only string values can be edited; “{key}” is a {type}", &[("key", &args[1]), ("type", &ty)]))
+                    anyhow::bail!(trf(
+                        "Only string values can be edited; “{key}” is a {type}",
+                        &[("key", &args[1]), ("type", &ty)]
+                    ))
                 }
                 _ if !nx && ty == "none" => return Err(super::not_single_row(0, stmt)),
                 _ => {}
@@ -274,21 +353,33 @@ impl RedisSession {
             }
             p.add_command(c);
         }
-        let reply: Value = p.query_async(&mut self.conn).await.map_err(|e| self.pipe_error(e))?;
+        let reply: Value = p
+            .query_async(&mut self.conn)
+            .await
+            .map_err(|e| self.pipe_error(e))?;
         let Value::Array(items) = reply else {
             // EXEC answers nil when a watched key changed: nothing ran.
-            anyhow::bail!(tr("The keys changed while saving; nothing was saved. Refresh and try again"));
+            anyhow::bail!(tr(
+                "The keys changed while saving; nothing was saved. Refresh and try again"
+            ));
         };
         for ((stmt, name, _), item) in cmds.iter().zip(&items) {
             let n = match item {
                 Value::Okay | Value::SimpleString(_) => 1,
                 Value::Int(n) => *n,
-                Value::ServerError(e) => anyhow::bail!("{}\n{stmt}", e.details().map_or_else(|| format!("{e:?}"), |d| format!("{} {d}", e.code()))),
+                Value::ServerError(e) => anyhow::bail!(
+                    "{}\n{stmt}",
+                    e.details()
+                        .map_or_else(|| format!("{e:?}"), |d| format!("{} {d}", e.code()))
+                ),
                 _ => 0,
             };
             // PERSIST answers 0 for a key that had no TTL.
             if n != 1 && !(name == "PERSIST" && n == 0) {
-                anyhow::bail!(trf("The statement affected {n} rows (expected 1):\n{stmt}", &[("n", &n), ("stmt", stmt)]));
+                anyhow::bail!(trf(
+                    "The statement affected {n} rows (expected 1):\n{stmt}",
+                    &[("n", &n), ("stmt", stmt)]
+                ));
             }
         }
         Ok(cmds.len() as u64)
@@ -309,13 +400,25 @@ impl RedisSession {
             for k in chunk {
                 p.cmd("TYPE").arg(k).cmd("TTL").arg(k);
             }
-            let meta: Vec<Value> = p.query_async(&mut self.conn).await.map_err(|e| anyhow!("{e}"))?;
-            let types: Vec<String> = meta.iter().step_by(2).map(|v| text(v).unwrap_or_default()).collect();
-            let ttls: Vec<Option<String>> = meta.iter().skip(1).step_by(2).map(|v| match v {
-                Value::Int(-1) => None,
-                Value::Int(n) => Some(n.to_string()),
-                _ => None,
-            }).collect();
+            let meta: Vec<Value> = p
+                .query_async(&mut self.conn)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+            let types: Vec<String> = meta
+                .iter()
+                .step_by(2)
+                .map(|v| text(v).unwrap_or_default())
+                .collect();
+            let ttls: Vec<Option<String>> = meta
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .map(|v| match v {
+                    Value::Int(-1) => None,
+                    Value::Int(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .collect();
             let mut p = redis::pipe();
             for (k, ty) in chunk.iter().zip(&types) {
                 match ty.as_str() {
@@ -323,19 +426,29 @@ impl RedisSession {
                     "hash" => p.cmd("HGETALL").arg(k),
                     "list" => p.cmd("LRANGE").arg(k).arg(0).arg(PREVIEW_ITEMS - 1),
                     "set" => p.cmd("SSCAN").arg(k).arg(0).arg("COUNT").arg(PREVIEW_ITEMS),
-                    "zset" => p.cmd("ZRANGE").arg(k).arg(0).arg(PREVIEW_ITEMS - 1).arg("WITHSCORES"),
+                    "zset" => p
+                        .cmd("ZRANGE")
+                        .arg(k)
+                        .arg(0)
+                        .arg(PREVIEW_ITEMS - 1)
+                        .arg("WITHSCORES"),
                     "stream" => p.cmd("XLEN").arg(k),
                     _ => p.cmd("TYPE").arg(k),
                 };
             }
-            let values: Vec<Value> = p.query_async(&mut self.conn).await.map_err(|e| anyhow!("{e}"))?;
+            let values: Vec<Value> = p
+                .query_async(&mut self.conn)
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
             for (((k, ty), ttl), v) in chunk.iter().zip(types).zip(ttls).zip(values) {
                 let preview = match ty.as_str() {
                     "string" => text(&v),
                     "hash" => Some(pairs_json(&v)),
                     "list" => Some(array_json(&v)),
                     "set" => match &v {
-                        Value::Array(parts) => Some(array_json(parts.get(1).unwrap_or(&Value::Nil))),
+                        Value::Array(parts) => {
+                            Some(array_json(parts.get(1).unwrap_or(&Value::Nil)))
+                        }
                         _ => None,
                     },
                     "zset" => Some(pairs_json(&v)),
@@ -345,14 +458,20 @@ impl RedisSession {
                 // String values are shown whole so editing them saves exactly what the cell holds;
                 // only huge ones are cut, and then their type says so and the grid refuses to edit them.
                 let (ty, preview) = match (ty.as_str(), preview) {
-                    ("string", Some(p)) if p.chars().count() > EDITABLE_STRING_CHARS => (tr("string (truncated)").to_string(), Some(cut(&p))),
+                    ("string", Some(p)) if p.chars().count() > EDITABLE_STRING_CHARS => {
+                        (tr("string (truncated)").to_string(), Some(cut(&p)))
+                    }
                     ("string", p) => (ty, p),
                     (_, p) => (ty, p.map(|p| cut(&p))),
                 };
                 rows.push(vec![Some(k.clone()), Some(ty), ttl, preview]);
             }
         }
-        Ok(ResultSet { columns: ["key", "type", "ttl", "value"].map(String::from).to_vec(), rows, ..Default::default() })
+        Ok(ResultSet {
+            columns: ["key", "type", "ttl", "value"].map(String::from).to_vec(),
+            rows,
+            ..Default::default()
+        })
     }
 }
 
@@ -360,12 +479,21 @@ impl RedisSession {
 fn key_columns() -> Vec<ColumnInfo> {
     ["key", "type", "ttl", "value"]
         .iter()
-        .map(|n| ColumnInfo { name: n.to_string(), data_type: "string".into(), nullable: *n != "key", primary_key: *n == "key" })
+        .map(|n| ColumnInfo {
+            name: n.to_string(),
+            data_type: "string".into(),
+            nullable: *n != "key",
+            primary_key: *n == "key",
+        })
         .collect()
 }
 
 fn cut(s: &str) -> String {
-    if s.chars().count() > PREVIEW_CHARS { format!("{}…", s.chars().take(PREVIEW_CHARS).collect::<String>()) } else { s.to_string() }
+    if s.chars().count() > PREVIEW_CHARS {
+        format!("{}…", s.chars().take(PREVIEW_CHARS).collect::<String>())
+    } else {
+        s.to_string()
+    }
 }
 
 /// A scalar reply as text (None for NULL and arrays).
@@ -397,7 +525,10 @@ fn json(v: &Value) -> String {
         Value::Boolean(b) => b.to_string(),
         Value::Array(items) | Value::Set(items) => array_json(&Value::Array(items.clone())),
         Value::Map(pairs) => {
-            let fields: Vec<String> = pairs.iter().map(|(k, v)| format!("{}:{}", json_str(&text(k).unwrap_or_default()), json(v))).collect();
+            let fields: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{}:{}", json_str(&text(k).unwrap_or_default()), json(v)))
+                .collect();
             format!("{{{}}}", fields.join(","))
         }
         other => json_str(&text(other).unwrap_or_default()),
@@ -406,7 +537,9 @@ fn json(v: &Value) -> String {
 
 fn array_json(v: &Value) -> String {
     match v {
-        Value::Array(items) | Value::Set(items) => format!("[{}]", items.iter().map(json).collect::<Vec<_>>().join(",")),
+        Value::Array(items) | Value::Set(items) => {
+            format!("[{}]", items.iter().map(json).collect::<Vec<_>>().join(","))
+        }
         other => json(other),
     }
 }
@@ -417,7 +550,13 @@ fn pairs_json(v: &Value) -> String {
         Value::Array(items) => {
             let fields: Vec<String> = items
                 .chunks(2)
-                .map(|p| format!("{}:{}", json_str(&text(&p[0]).unwrap_or_default()), p.get(1).map_or("null".into(), json)))
+                .map(|p| {
+                    format!(
+                        "{}:{}",
+                        json_str(&text(&p[0]).unwrap_or_default()),
+                        p.get(1).map_or("null".into(), json)
+                    )
+                })
                 .collect();
             format!("{{{}}}", fields.join(","))
         }
@@ -435,12 +574,32 @@ fn value_result(name: &str, args: &[String], v: Value, max_rows: usize) -> Resul
     let with_scores = args.iter().any(|a| a.eq_ignore_ascii_case("WITHSCORES"));
     let paired = matches!(name, "HGETALL" | "CONFIG" | "HRANDFIELD" | "XINFO") || with_scores;
     let (columns, mut rows): (Vec<String>, Vec<Vec<Cell>>) = match &v {
-        Value::Map(pairs) => (cols(&["field", "value"]), pairs.iter().map(|(k, v)| vec![text(k), cell(v)]).collect()),
+        Value::Map(pairs) => (
+            cols(&["field", "value"]),
+            pairs.iter().map(|(k, v)| vec![text(k), cell(v)]).collect(),
+        ),
         Value::Array(items) if paired && items.len() % 2 == 0 => {
-            let header = if with_scores { cols(&["member", "score"]) } else { cols(&["field", "value"]) };
-            (header, items.chunks(2).map(|p| vec![cell(&p[0]), cell(&p[1])]).collect())
+            let header = if with_scores {
+                cols(&["member", "score"])
+            } else {
+                cols(&["field", "value"])
+            };
+            (
+                header,
+                items
+                    .chunks(2)
+                    .map(|p| vec![cell(&p[0]), cell(&p[1])])
+                    .collect(),
+            )
         }
-        Value::Array(items) | Value::Set(items) => (cols(&["#", "value"]), items.iter().enumerate().map(|(i, v)| vec![Some((i + 1).to_string()), cell(v)]).collect()),
+        Value::Array(items) | Value::Set(items) => (
+            cols(&["#", "value"]),
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, v)| vec![Some((i + 1).to_string()), cell(v)])
+                .collect(),
+        ),
         // INFO: one row per `field:value` line, with its section.
         Value::BulkString(_) | Value::VerbatimString { .. } if name == "INFO" => {
             let body = text(&v).unwrap_or_default();
@@ -450,7 +609,11 @@ fn value_result(name: &str, args: &[String], v: Value, max_rows: usize) -> Resul
                 if let Some(s) = line.strip_prefix("# ") {
                     section = s.trim().to_string();
                 } else if let Some((k, val)) = line.split_once(':') {
-                    rows.push(vec![Some(section.clone()), Some(k.to_string()), Some(val.trim().to_string())]);
+                    rows.push(vec![
+                        Some(section.clone()),
+                        Some(k.to_string()),
+                        Some(val.trim().to_string()),
+                    ]);
                 }
             }
             (cols(&["section", "field", "value"]), rows)
@@ -459,7 +622,12 @@ fn value_result(name: &str, args: &[String], v: Value, max_rows: usize) -> Resul
     };
     let truncated = rows.len() > max_rows;
     rows.truncate(max_rows);
-    ResultSet { columns, rows, truncated, ..Default::default() }
+    ResultSet {
+        columns,
+        rows,
+        truncated,
+        ..Default::default()
+    }
 }
 
 /// Splits a command line as `redis-cli` does: spaces separate arguments, `"…"` takes escapes
@@ -489,7 +657,8 @@ pub fn split_args(line: &str) -> anyhow::Result<Vec<String>> {
                             Some('t') => arg.push('\t'),
                             Some('x') => {
                                 let hex: String = chars.by_ref().take(2).collect();
-                                let b = u8::from_str_radix(&hex, 16).map_err(|_| anyhow!(tr("Invalid \\x escape")))?;
+                                let b = u8::from_str_radix(&hex, 16)
+                                    .map_err(|_| anyhow!(tr("Invalid \\x escape")))?;
                                 arg.push(char::from(b));
                             }
                             Some(other) => arg.push(other),
@@ -542,7 +711,11 @@ pub fn split_args(line: &str) -> anyhow::Result<Vec<String>> {
 /// An argument quoted so `split_args` reads it back as is: bare when it is a plain word,
 /// otherwise in double quotes with `\"`, `\\`, `\n`, `\r`, `\t` and `\xHH` escapes.
 pub fn quote_arg(s: &str) -> String {
-    if !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\')) {
+    if !s.is_empty()
+        && !s
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\'))
+    {
         return s.to_string();
     }
     let mut out = String::with_capacity(s.len() + 2);
@@ -568,7 +741,10 @@ fn ttl_command(key: &str, ttl: &Cell) -> Result<String, String> {
         None => Ok(format!("PERSIST {}", quote_arg(key))),
         Some(t) => match t.parse::<i64>() {
             Ok(n) if n > 0 => Ok(format!("EXPIRE {} {n}", quote_arg(key))),
-            _ => Err(trf("“{value}” is not a valid TTL (seconds)", &[("value", &t)])),
+            _ => Err(trf(
+                "“{value}” is not a valid TTL (seconds)",
+                &[("value", &t)],
+            )),
         },
     }
 }
@@ -576,9 +752,15 @@ fn ttl_command(key: &str, ttl: &Cell) -> Result<String, String> {
 /// Commands that apply a change to a key group's grid (columns key / type / ttl / value).
 /// Only string values can be written (the others are JSON previews); the TTL can be set or
 /// removed, keys deleted and new string keys added. `types` maps each existing key to its type.
-pub fn change_commands(change: &Change, types: &HashMap<String, String>) -> Result<Vec<String>, String> {
+pub fn change_commands(
+    change: &Change,
+    types: &HashMap<String, String>,
+) -> Result<Vec<String>, String> {
     let key_of = |key: &[(String, Cell)]| -> Result<String, String> {
-        key.iter().find(|(c, _)| c == "key").and_then(|(_, v)| v.clone()).ok_or_else(|| tr("Key column does not exist").to_string())
+        key.iter()
+            .find(|(c, _)| c == "key")
+            .and_then(|(_, v)| v.clone())
+            .ok_or_else(|| tr("Key column does not exist").to_string())
     };
     match change {
         Change::Update { key, set } => {
@@ -587,10 +769,19 @@ pub fn change_commands(change: &Change, types: &HashMap<String, String>) -> Resu
             let mut out = Vec::new();
             for (col, v) in set {
                 match (col.as_str(), v) {
-                    ("value", Some(v)) if ty == "string" => out.push(format!("SET {} {} XX KEEPTTL", quote_arg(&k), quote_arg(v))),
-                    ("value", None) if ty == "string" => return Err(tr("A Redis value cannot be NULL; delete the key instead").into()),
+                    ("value", Some(v)) if ty == "string" => {
+                        out.push(format!("SET {} {} XX KEEPTTL", quote_arg(&k), quote_arg(v)))
+                    }
+                    ("value", None) if ty == "string" => {
+                        return Err(
+                            tr("A Redis value cannot be NULL; delete the key instead").into()
+                        );
+                    }
                     ("value", _) => {
-                        return Err(trf("Only string values can be edited; “{key}” is a {type}", &[("key", &k), ("type", &ty)]));
+                        return Err(trf(
+                            "Only string values can be edited; “{key}” is a {type}",
+                            &[("key", &k), ("type", &ty)],
+                        ));
                     }
                     ("ttl", ttl) => out.push(ttl_command(&k, ttl)?),
                     ("key", _) => return Err(tr("Keys cannot be renamed from the grid").into()),
@@ -601,8 +792,15 @@ pub fn change_commands(change: &Change, types: &HashMap<String, String>) -> Resu
             Ok(out)
         }
         Change::Insert { values } => {
-            let get = |c: &str| values.iter().find(|(n, _)| n == c).and_then(|(_, v)| v.clone());
-            let k = get("key").filter(|k| !k.is_empty()).ok_or_else(|| tr("A new key needs a name").to_string())?;
+            let get = |c: &str| {
+                values
+                    .iter()
+                    .find(|(n, _)| n == c)
+                    .and_then(|(_, v)| v.clone())
+            };
+            let k = get("key")
+                .filter(|k| !k.is_empty())
+                .ok_or_else(|| tr("A new key needs a name").to_string())?;
             if get("type").is_some_and(|t| !t.trim().is_empty() && t.trim() != "string") {
                 return Err(tr("New keys can only be strings").into());
             }
@@ -621,23 +819,36 @@ pub fn change_commands(change: &Change, types: &HashMap<String, String>) -> Resu
 
 /// Commands that only read, allowed on read-only connections.
 pub fn is_read_command(line: &str) -> bool {
-    let Ok(args) = split_args(line) else { return false };
-    let Some(name) = args.first().map(|a| a.to_ascii_uppercase()) else { return true };
-    let sub = args.get(1).map(|a| a.to_ascii_uppercase()).unwrap_or_default();
+    let Ok(args) = split_args(line) else {
+        return false;
+    };
+    let Some(name) = args.first().map(|a| a.to_ascii_uppercase()) else {
+        return true;
+    };
+    let sub = args
+        .get(1)
+        .map(|a| a.to_ascii_uppercase())
+        .unwrap_or_default();
     match name.as_str() {
-        "GET" | "MGET" | "STRLEN" | "GETRANGE" | "SUBSTR" | "EXISTS" | "TYPE" | "TTL" | "PTTL" | "EXPIRETIME" | "KEYS" | "SCAN"
-        | "HGET" | "HMGET" | "HGETALL" | "HKEYS" | "HVALS" | "HLEN" | "HEXISTS" | "HSCAN" | "HSTRLEN" | "HRANDFIELD" | "LRANGE"
-        | "LLEN" | "LINDEX" | "LPOS" | "SMEMBERS" | "SISMEMBER" | "SMISMEMBER" | "SCARD" | "SSCAN" | "SRANDMEMBER" | "SINTER"
-        | "SUNION" | "SDIFF" | "ZRANGE" | "ZRANGEBYSCORE" | "ZRANGEBYLEX" | "ZREVRANGE" | "ZREVRANGEBYSCORE" | "ZSCORE"
-        | "ZMSCORE" | "ZCARD" | "ZCOUNT" | "ZLEXCOUNT" | "ZRANK" | "ZREVRANK" | "ZSCAN" | "XRANGE" | "XREVRANGE" | "XLEN"
-        | "XINFO" | "XPENDING" | "INFO" | "PING" | "ECHO" | "DBSIZE" | "SELECT" | "TIME" | "LASTSAVE" | "RANDOMKEY" | "DUMP"
-        | "BITCOUNT" | "BITPOS" | "GETBIT" | "PFCOUNT" | "GEOPOS" | "GEODIST" | "GEOSEARCH" | "GEOHASH" | "JSON.GET"
-        | "JSON.MGET" | "JSON.TYPE" | "JSON.STRLEN" | "JSON.ARRLEN" | "JSON.OBJKEYS" | "LOLWUT" | "ROLE" | "LATENCY" => true,
+        "GET" | "MGET" | "STRLEN" | "GETRANGE" | "SUBSTR" | "EXISTS" | "TYPE" | "TTL" | "PTTL"
+        | "EXPIRETIME" | "KEYS" | "SCAN" | "HGET" | "HMGET" | "HGETALL" | "HKEYS" | "HVALS"
+        | "HLEN" | "HEXISTS" | "HSCAN" | "HSTRLEN" | "HRANDFIELD" | "LRANGE" | "LLEN"
+        | "LINDEX" | "LPOS" | "SMEMBERS" | "SISMEMBER" | "SMISMEMBER" | "SCARD" | "SSCAN"
+        | "SRANDMEMBER" | "SINTER" | "SUNION" | "SDIFF" | "ZRANGE" | "ZRANGEBYSCORE"
+        | "ZRANGEBYLEX" | "ZREVRANGE" | "ZREVRANGEBYSCORE" | "ZSCORE" | "ZMSCORE" | "ZCARD"
+        | "ZCOUNT" | "ZLEXCOUNT" | "ZRANK" | "ZREVRANK" | "ZSCAN" | "XRANGE" | "XREVRANGE"
+        | "XLEN" | "XINFO" | "XPENDING" | "INFO" | "PING" | "ECHO" | "DBSIZE" | "SELECT"
+        | "TIME" | "LASTSAVE" | "RANDOMKEY" | "DUMP" | "BITCOUNT" | "BITPOS" | "GETBIT"
+        | "PFCOUNT" | "GEOPOS" | "GEODIST" | "GEOSEARCH" | "GEOHASH" | "JSON.GET" | "JSON.MGET"
+        | "JSON.TYPE" | "JSON.STRLEN" | "JSON.ARRLEN" | "JSON.OBJKEYS" | "LOLWUT" | "ROLE"
+        | "LATENCY" => true,
         "CONFIG" => sub == "GET",
         "MEMORY" => matches!(sub.as_str(), "USAGE" | "STATS" | "DOCTOR"),
         "OBJECT" => matches!(sub.as_str(), "ENCODING" | "FREQ" | "IDLETIME" | "REFCOUNT"),
         "CLIENT" => matches!(sub.as_str(), "LIST" | "INFO" | "GETNAME" | "ID"),
-        "COMMAND" | "SLOWLOG" => matches!(sub.as_str(), "" | "COUNT" | "INFO" | "DOCS" | "GET" | "LEN"),
+        "COMMAND" | "SLOWLOG" => {
+            matches!(sub.as_str(), "" | "COUNT" | "INFO" | "DOCS" | "GET" | "LEN")
+        }
         _ => false,
     }
 }
@@ -648,17 +859,38 @@ mod tests {
 
     #[test]
     fn splits_like_redis_cli() {
-        assert_eq!(split_args(r#"SET "a b" 'it\'s' x\y"#).unwrap(), vec!["SET", "a b", "it's", "x\\y"]);
-        assert_eq!(split_args(r#"SET k "line\nnext \x41""#).unwrap(), vec!["SET", "k", "line\nnext A"]);
+        assert_eq!(
+            split_args(r#"SET "a b" 'it\'s' x\y"#).unwrap(),
+            vec!["SET", "a b", "it's", "x\\y"]
+        );
+        assert_eq!(
+            split_args(r#"SET k "line\nnext \x41""#).unwrap(),
+            vec!["SET", "k", "line\nnext A"]
+        );
         assert!(split_args(r#"GET "open"#).is_err());
         assert!(split_args("   ").unwrap().is_empty());
     }
 
     #[test]
     fn quoted_args_split_back() {
-        for s in ["plain", "", "a b", "it's", r#"say "hi""#, "back\\slash", "line\nnext\ttab\r", "bell\u{7}", "ñandú 雪", "#not-a-comment"] {
+        for s in [
+            "plain",
+            "",
+            "a b",
+            "it's",
+            r#"say "hi""#,
+            "back\\slash",
+            "line\nnext\ttab\r",
+            "bell\u{7}",
+            "ñandú 雪",
+            "#not-a-comment",
+        ] {
             let line = format!("SET {} {}", quote_arg(s), quote_arg("v"));
-            assert_eq!(split_args(&line).unwrap(), vec!["SET".to_string(), s.to_string(), "v".to_string()], "{line}");
+            assert_eq!(
+                split_args(&line).unwrap(),
+                vec!["SET".to_string(), s.to_string(), "v".to_string()],
+                "{line}"
+            );
         }
         assert_eq!(quote_arg("user:1"), "user:1");
         assert_eq!(quote_arg("a b"), r#""a b""#);
@@ -666,15 +898,41 @@ mod tests {
 
     #[test]
     fn grid_changes_become_commands() {
-        let types: HashMap<String, String> = [("s", "string"), ("h", "hash")].map(|(a, b)| (a.to_string(), b.to_string())).into();
+        let types: HashMap<String, String> = [("s", "string"), ("h", "hash")]
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .into();
         let kv = |c: &str, v: Option<&str>| (c.to_string(), v.map(str::to_string));
-        let up = |k: &str, set: Vec<(String, Cell)>| change_commands(&Change::Update { key: vec![kv("key", Some(k))], set }, &types);
-        assert_eq!(up("s", vec![kv("value", Some("hola mundo"))]).unwrap(), vec![r#"SET s "hola mundo" XX KEEPTTL"#]);
-        assert_eq!(up("s", vec![kv("value", Some(""))]).unwrap(), vec![r#"SET s "" XX KEEPTTL"#]);
-        assert_eq!(up("s", vec![kv("ttl", Some("60")), kv("value", Some("x"))]).unwrap(), vec!["EXPIRE s 60", "SET s x XX KEEPTTL"]);
+        let up = |k: &str, set: Vec<(String, Cell)>| {
+            change_commands(
+                &Change::Update {
+                    key: vec![kv("key", Some(k))],
+                    set,
+                },
+                &types,
+            )
+        };
+        assert_eq!(
+            up("s", vec![kv("value", Some("hola mundo"))]).unwrap(),
+            vec![r#"SET s "hola mundo" XX KEEPTTL"#]
+        );
+        assert_eq!(
+            up("s", vec![kv("value", Some(""))]).unwrap(),
+            vec![r#"SET s "" XX KEEPTTL"#]
+        );
+        assert_eq!(
+            up("s", vec![kv("ttl", Some("60")), kv("value", Some("x"))]).unwrap(),
+            vec!["EXPIRE s 60", "SET s x XX KEEPTTL"]
+        );
         assert_eq!(up("h", vec![kv("ttl", None)]).unwrap(), vec!["PERSIST h"]);
-        assert_eq!(up("h", vec![kv("ttl", Some(" "))]).unwrap(), vec!["PERSIST h"]);
-        assert!(up("h", vec![kv("value", Some("{}"))]).unwrap_err().contains("hash"));
+        assert_eq!(
+            up("h", vec![kv("ttl", Some(" "))]).unwrap(),
+            vec!["PERSIST h"]
+        );
+        assert!(
+            up("h", vec![kv("value", Some("{}"))])
+                .unwrap_err()
+                .contains("hash")
+        );
         assert!(up("s", vec![kv("value", None)]).is_err());
         assert!(up("s", vec![kv("ttl", Some("0"))]).is_err());
         assert!(up("s", vec![kv("ttl", Some("soon"))]).is_err());
@@ -682,14 +940,46 @@ mod tests {
         assert!(up("s", vec![kv("type", Some("hash"))]).is_err());
 
         let ins = |values: Vec<(String, Cell)>| change_commands(&Change::Insert { values }, &types);
-        assert_eq!(ins(vec![kv("key", Some("new key")), kv("value", Some("1"))]).unwrap(), vec![r#"SET "new key" 1 NX"#]);
-        assert_eq!(ins(vec![kv("key", Some("k")), kv("type", Some("string")), kv("ttl", Some("30")), kv("value", Some("v"))]).unwrap(), vec!["SET k v NX EX 30"]);
+        assert_eq!(
+            ins(vec![kv("key", Some("new key")), kv("value", Some("1"))]).unwrap(),
+            vec![r#"SET "new key" 1 NX"#]
+        );
+        assert_eq!(
+            ins(vec![
+                kv("key", Some("k")),
+                kv("type", Some("string")),
+                kv("ttl", Some("30")),
+                kv("value", Some("v"))
+            ])
+            .unwrap(),
+            vec!["SET k v NX EX 30"]
+        );
         assert!(ins(vec![kv("value", Some("v"))]).is_err());
         assert!(ins(vec![kv("key", Some("k"))]).is_err());
-        assert!(ins(vec![kv("key", Some("k")), kv("type", Some("list")), kv("value", Some("v"))]).is_err());
-        assert!(ins(vec![kv("key", Some("k")), kv("ttl", Some("-5")), kv("value", Some("v"))]).is_err());
+        assert!(
+            ins(vec![
+                kv("key", Some("k")),
+                kv("type", Some("list")),
+                kv("value", Some("v"))
+            ])
+            .is_err()
+        );
+        assert!(
+            ins(vec![
+                kv("key", Some("k")),
+                kv("ttl", Some("-5")),
+                kv("value", Some("v"))
+            ])
+            .is_err()
+        );
 
-        let del = change_commands(&Change::Delete { key: vec![kv("key", Some("a \"b\""))] }, &types).unwrap();
+        let del = change_commands(
+            &Change::Delete {
+                key: vec![kv("key", Some("a \"b\""))],
+            },
+            &types,
+        )
+        .unwrap();
         assert_eq!(del, vec![r#"DEL "a \"b\"""#]);
         assert_eq!(split_args(&del[0]).unwrap(), vec!["DEL", "a \"b\""]);
     }
@@ -715,15 +1005,38 @@ mod tests {
     #[test]
     fn replies_become_results() {
         let bulk = |s: &str| Value::BulkString(s.as_bytes().to_vec());
-        let rs = value_result("HGETALL", &[], Value::Array(vec![bulk("name"), bulk("Ana"), bulk("age"), Value::Int(3)]), 100);
+        let rs = value_result(
+            "HGETALL",
+            &[],
+            Value::Array(vec![bulk("name"), bulk("Ana"), bulk("age"), Value::Int(3)]),
+            100,
+        );
         assert_eq!(rs.columns, vec!["field", "value"]);
         assert_eq!(rs.rows[1], vec![Some("age".into()), Some("3".into())]);
         let rs = value_result("LRANGE", &[], Value::Array(vec![bulk("a"), Value::Nil]), 1);
         assert_eq!(rs.columns, vec!["#", "value"]);
         assert!(rs.truncated && rs.rows.len() == 1);
-        let rs = value_result("INFO", &[], bulk("# Server\r\nredis_version:7.2.4\r\n\r\n# Clients\r\nconnected_clients:1\r\n"), 100);
-        assert_eq!(rs.rows[1], vec![Some("Clients".into()), Some("connected_clients".into()), Some("1".into())]);
-        assert_eq!(value_result("GET", &[], Value::Nil, 10).rows, vec![vec![None]]);
-        assert_eq!(pairs_json(&Value::Array(vec![bulk("m"), bulk("1.5")])), r#"{"m":"1.5"}"#);
+        let rs = value_result(
+            "INFO",
+            &[],
+            bulk("# Server\r\nredis_version:7.2.4\r\n\r\n# Clients\r\nconnected_clients:1\r\n"),
+            100,
+        );
+        assert_eq!(
+            rs.rows[1],
+            vec![
+                Some("Clients".into()),
+                Some("connected_clients".into()),
+                Some("1".into())
+            ]
+        );
+        assert_eq!(
+            value_result("GET", &[], Value::Nil, 10).rows,
+            vec![vec![None]]
+        );
+        assert_eq!(
+            pairs_json(&Value::Array(vec![bulk("m"), bulk("1.5")])),
+            r#"{"m":"1.5"}"#
+        );
     }
 }
