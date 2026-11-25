@@ -112,11 +112,14 @@ impl InfluxSession {
             .user_agent(format!("DataCraft/{}", env!("CARGO_PKG_VERSION")))
             .tls_danger_accept_invalid_certs(flag(cfg, "tls_insecure"));
         // HTTPS through an SSH tunnel: the server's own name (for its certificate), resolved to
-        // the tunnel's listener; the URL's port is the listener's.
+        // the tunnel's listener; the URL's port is the listener's. An IP address can't be
+        // resolved (reqwest would connect to it directly, around the tunnel), so the address
+        // stays 127.0.0.1 and the certificate is checked against that.
         if let Some(name) = cfg
             .tunnel_host
             .as_deref()
             .filter(|_| base.starts_with("https://"))
+            .filter(|name| !super::ssh::is_ip_address(name))
         {
             base = format!("https://{name}:{}", cfg.port);
             builder = builder.resolve(name, std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port)));

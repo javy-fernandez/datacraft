@@ -152,6 +152,17 @@ pub fn host_port(host: &str, port: u16) -> (String, u16) {
         .unwrap_or_else(|| (authority.to_string(), port))
 }
 
+/// Whether a host is an IP address (`10.0.0.5`, `[fd00::12]`) rather than a name. Through a
+/// tunnel, an HTTPS driver resolves the server's name to the listener
+/// (`reqwest::ClientBuilder::resolve`); that only overrides names, so a URL with an IP address
+/// would connect to it directly, around the tunnel.
+pub fn is_ip_address(host: &str) -> bool {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .is_ok()
+}
+
 /// The host name of the host field, without a scheme or path (`https://influx.example/` →
 /// `influx.example`); `localhost` when empty.
 pub fn bare_host(host: &str) -> &str {
@@ -714,6 +725,23 @@ mod tests {
         // An `@` in the path isn't in the address.
         cfg.host = "http://vmselect:8481/select/0/prometheus/@x".into();
         assert_eq!(destination(&cfg).unwrap(), ("vmselect".to_string(), 8481));
+    }
+
+    /// Only names are resolved to a tunnel's listener (`ClientBuilder::resolve`).
+    #[test]
+    fn ip_addresses_and_names() {
+        for host in ["10.0.0.5", "127.0.0.1", "fd00::12", "[fd00::12]", "[::1]"] {
+            assert!(is_ip_address(host), "{host}");
+        }
+        for host in [
+            "influx.example.com",
+            "localhost",
+            "vmselect",
+            "10.0.0.5.nip.io",
+            "",
+        ] {
+            assert!(!is_ip_address(host), "{host}");
+        }
     }
 
     /// A Prometheus API's host field takes a URL with a port: the tunnel goes to that port, and

@@ -201,12 +201,7 @@ impl PromSession {
             .tunnel_host
             .as_deref()
             .filter(|_| base.starts_with("https://"))
-            .filter(|name| {
-                name.trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<IpAddr>()
-                    .is_err()
-            })
+            .filter(|name| !super::ssh::is_ip_address(name))
         {
             base = base.replacen("127.0.0.1", name, 1);
             builder = builder.resolve(name, SocketAddr::from(([127, 0, 0, 1], cfg.port)));
