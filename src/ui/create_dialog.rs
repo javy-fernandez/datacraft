@@ -70,7 +70,9 @@ pub(crate) fn common_types(driver: Driver) -> &'static [&'static str] {
             "number", "number(10)", "number(10,2)", "binary_double", "varchar2(255)", "nvarchar2(255)", "char(1)",
             "clob", "date", "timestamp", "blob", "raw(16)",
         ],
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => &[],
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
+            &[]
+        }
         Driver::ClickHouse => &[
             "UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64", "Float32", "Float64",
             "Decimal(18, 2)", "String", "UUID", "Date", "DateTime", "DateTime64(3)", "Bool", "LowCardinality(String)",
@@ -90,7 +92,9 @@ pub fn default_schema(driver: Driver) -> &'static str {
         Driver::MsSql => "dbo",
         Driver::Sqlite | Driver::DuckDb => "main",
         Driver::Snowflake => "PUBLIC",
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => "",
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
+            ""
+        }
         // ClickHouse has no schemas: the (only) database is the schema shown.
         Driver::ClickHouse => "default",
         // MySQL: the database itself; Oracle: the connected user (filled in by the caller).
@@ -107,7 +111,9 @@ fn id_column(driver: Driver) -> NewColumn {
         Driver::Oracle => "number(10)",
         Driver::Snowflake => "number(38,0)",
         Driver::ClickHouse => "UInt64",
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => "string",
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
+            "string"
+        }
     };
     NewColumn { name: "id".into(), data_type: data_type.into(), not_null: true, primary_key: true, default: String::new() }
 }

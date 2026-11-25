@@ -978,6 +978,7 @@ fn object_groups(
         Driver::MongoDb => &[(ObjectKind::Table, tr("collections"), "t"), (ObjectKind::View, tr("views"), "v")],
         Driver::InfluxDb => &[(ObjectKind::Table, tr("measurements"), "t")],
         Driver::Kusto => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Materialized views"), "v")],
+        Driver::Prometheus => &[(ObjectKind::Table, tr("metrics"), "t")],
         _ => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Views"), "v")],
     };
     for &(kind, label, gk) in groups {

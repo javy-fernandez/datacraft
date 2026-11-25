@@ -1166,7 +1166,7 @@ impl DataCraftApp {
                 _ if read_only => Err(tr("Read-only connection").to_string()),
                 // Points are written with line protocol, which the data editor doesn't produce, and
                 // Kusto ingests rows rather than editing them.
-                _ if matches!(driver, Some(Driver::InfluxDb | Driver::Kusto)) => Err(tr("Editing is not available for this engine").to_string()),
+                _ if matches!(driver, Some(Driver::InfluxDb | Driver::Kusto | Driver::Prometheus)) => Err(tr("Editing is not available for this engine").to_string()),
                 // Redis and MongoDB: only a key group or a collection opened in the data editor.
                 (Some(_), None) if nosql => Err(tr("Only data opened from the explorer can be edited on this engine").to_string()),
                 // Grid changes are saved on the shared session, outside the console's transaction.
@@ -4591,6 +4591,8 @@ pub(crate) fn is_read_statement(driver: Driver, statement: &str) -> bool {
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
         Driver::InfluxDb => crate::db::influx::is_read_command(statement),
         Driver::Kusto => crate::db::kusto::is_read_command(statement),
+        // PromQL only reads.
+        Driver::Prometheus => true,
         _ => is_query(driver, statement),
     }
 }
@@ -4668,6 +4670,8 @@ pub fn table_query(driver: Driver, schema: &str, table: &str, where_clause: &str
         Driver::InfluxDb => return crate::db::influx::table_query(schema, table, w, o, max_rows),
         // A KQL predicate and sort (`State == "TEXAS"`, `StartTime desc`).
         Driver::Kusto => return crate::db::kusto::table_query(table, w, o, max_rows),
+        // Label matchers and a range (`job="node"`, `15m`).
+        Driver::Prometheus => return crate::db::prometheus::table_query(table, w, o),
         _ => {}
     }
     let t = Session::quote_table(driver, schema, table);

@@ -170,7 +170,7 @@ mod tests {
                     let table = TableRef { conn: 1, db: "db".into(), schema: "s".into(), table: "t".into() };
                     show(ui, &[table], Some(ObjectKind::Table), TableContext { driver, connected, read_only: false }, &mut vec![]);
                 });
-                let expected = !matches!(driver, Driver::Redis | Driver::MongoDb | Driver::InfluxDb);
+                let expected = !matches!(driver, Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Prometheus);
                 assert_eq!(h.query_by_label("Show DDL").is_some(), expected, "{driver:?}, connected={connected}");
             }
         }

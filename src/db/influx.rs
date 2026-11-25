@@ -38,7 +38,7 @@ pub struct InfluxSession {
 }
 
 /// A `true`/`1`/`yes`/`on` driver property (`tls`, `tls_insecure`).
-fn flag(cfg: &ConnectionConfig, name: &str) -> bool {
+pub(super) fn flag(cfg: &ConnectionConfig, name: &str) -> bool {
     cfg.property(name).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
 }
 
