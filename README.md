@@ -87,6 +87,8 @@ Redis/Valkey and MongoDB consoles use their own commands, including <code>HGETAL
 
 The Kusto console takes KQL queries and control commands, such as <code>StormEvents | summarize count() by State</code> and <code>.show tables</code>; requests are separated by blank lines, and the result grids are read-only too.
 
+The Prometheus console takes PromQL, such as <code>rate(http_requests_total[5m])</code>; a comment line like <code># range: 6h step: 1m</code> above a query turns it into a range query, with one row per sample.
+
 ## Edit data with clear feedback
 
 Navigate with arrow keys and Tab; the grid scrolls to keep the active cell visible. Extend selections with Shift, select a column by its name, paste clipboard matrices or fill selected cells with one value.
@@ -175,6 +177,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
 | InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
 | Kusto / Azure Data Explorer | REST API over HTTPS, signed in with the Azure CLI's account (`az login`), an Entra ID application (client ID and secret), or no authentication for the Kusto emulator; KQL console with control commands (requests separated by blank lines, as in Kusto Explorer), databases with their tables and materialized views, and read-only result grids filtered and sorted with KQL. Read-only connections are also enforced by the server |
+| Prometheus / VictoriaMetrics | Prometheus HTTP API (port 9090, HTTPS with "Use TLS"), also under a path prefix for VictoriaMetrics, Mimir or Grafana's proxy (paste `http://vmselect:8481/select/0/prometheus` as the host); no auth, basic auth, or a bearer token (a password without a user), and extra headers through `header.<Name>` driver properties (`header.X-Scope-OrgID`). PromQL console with requests separated by blank lines: instant queries by default, range queries with `# range: 6h step: 1m` or `# start: … end: …` comment lines. The explorer lists the metrics with samples in the last hour; the data editor filters them with label matchers and shows raw samples over a range (`5m`). Result grids are read-only |
 
 ### Feature matrix
 
@@ -194,13 +197,14 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | MongoDB | ✅ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
 | InfluxDB 2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | Kusto / Azure Data Explorer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Prometheus / VictoriaMetrics | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 
-- **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2 and Kusto) use their own command language and have read-only result grids.
+- **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2, Kusto and Prometheus) use their own command language and have read-only result grids.
 - **Transactions:** manual Commit / Roll Back in the SQL console.
 - **Cancel query:** the running statement is cancelled without closing the session; elsewhere a cancel abandons the query and closes the session.
 - **SSH tunnel:** the engine is reached over one TCP address that a bastion can forward (not the file-based or cloud services).
 - **Copy table:** Copy Table To… is offered for the engine's tables or collections.
-- **Create databases:** **New Database…** and **Drop…** create and drop the server's databases from the explorer. The NoSQL engines list their databases or buckets but don't create them: Redis has a fixed set of numbered databases, MongoDB creates a database on its first write, and InfluxDB buckets and Kusto databases are managed through their own APIs.
+- **Create databases:** **New Database…** and **Drop…** create and drop the server's databases from the explorer. The NoSQL engines list their databases or buckets but don't create them: Redis has a fixed set of numbered databases, MongoDB creates a database on its first write, InfluxDB buckets and Kusto databases are managed through their own APIs, and Prometheus has none.
 
 ¹ Oracle needs [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) installed separately.
 

@@ -299,7 +299,8 @@ pub fn list_sql(driver: Driver, nonce: &str) -> Option<String> {
         | Driver::Redis
         | Driver::MongoDb
         | Driver::InfluxDb
-        | Driver::Kusto => return None,
+        | Driver::Kusto
+        | Driver::Prometheus => return None,
     };
     Some(sql)
 }

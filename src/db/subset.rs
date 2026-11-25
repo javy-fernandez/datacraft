@@ -82,7 +82,7 @@ pub fn fk_sql(driver: Driver, db: &str, schema: &str) -> String {
             .into(),
         Driver::Snowflake => format!("SHOW IMPORTED KEYS IN SCHEMA {}", Session::quote_table(driver, db, schema)),
         // No foreign keys (copies are not offered for them).
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => String::new(),
         // ClickHouse declares FOREIGN KEY constraints but never enforces them: subsets
         // have no graph to walk.
         Driver::ClickHouse => String::new(),

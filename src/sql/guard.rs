@@ -81,6 +81,8 @@ pub fn dangerous_statements(script: &str, driver: Driver) -> Vec<Dangerous> {
                 .filter_map(|s| kusto(&s.text))
                 .collect();
         }
+        // PromQL only reads.
+        Driver::Prometheus => return Vec::new(),
         _ => {}
     }
     let mut out = Vec::new();

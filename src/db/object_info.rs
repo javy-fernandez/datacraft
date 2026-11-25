@@ -54,7 +54,7 @@ fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>
              LEFT JOIN all_tab_comments c ON c.owner = o.owner AND c.table_name = o.object_name WHERE o.object_type IN ('TABLE','VIEW') AND o.owner NOT IN ({excluded})"),
             "o.owner", "o.object_name", "")
         },
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => (String::new(), "", "", ""),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => (String::new(), "", "", ""),
         Driver::Snowflake => (
             "SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, ROW_COUNT AS row_count, BYTES AS data_bytes, CREATED AS created, LAST_ALTERED AS modified, COMMENT AS object_comment \
              FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA'".to_string(), "TABLE_SCHEMA", "TABLE_NAME", ""

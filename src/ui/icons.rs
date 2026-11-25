@@ -639,5 +639,7 @@ pub fn driver_color(driver: Driver, p: &Palette) -> Color32 {
         Driver::Kusto => Color32::from_rgb(0x00, 0x78, 0xD4),
         // DuckDB yellow, a shade warmer than ClickHouse's.
         Driver::DuckDb => Color32::from_rgb(0xFF, 0xC1, 0x07),
+        // Prometheus' orange.
+        Driver::Prometheus => Color32::from_rgb(0xE6, 0x52, 0x2C),
     }
 }

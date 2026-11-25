@@ -350,7 +350,9 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             lit(schema),
             lit(view)
         ),
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
+            String::new()
+        }
     }
 }
 

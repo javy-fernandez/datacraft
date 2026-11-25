@@ -46,7 +46,8 @@ impl UserModel {
             | Driver::Redis
             | Driver::MongoDb
             | Driver::InfluxDb
-            | Driver::Kusto => None,
+            | Driver::Kusto
+            | Driver::Prometheus => None,
         }
     }
 }

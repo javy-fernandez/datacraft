@@ -286,8 +286,10 @@ mod tests {
                         &mut vec![],
                     );
                 });
-                let expected =
-                    !matches!(driver, Driver::Redis | Driver::MongoDb | Driver::InfluxDb);
+                let expected = !matches!(
+                    driver,
+                    Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Prometheus
+                );
                 assert_eq!(
                     h.query_by_label("Show DDL").is_some(),
                     expected,

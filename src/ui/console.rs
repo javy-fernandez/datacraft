@@ -963,10 +963,10 @@ impl Console {
             // KQL's comments are `//`.
             EditCmd::ToggleComment => self.edit_lines(
                 ctx,
-                if cx.driver == Driver::Kusto {
-                    toggle_slash_comment
-                } else {
-                    toggle_line_comment
+                match cx.driver {
+                    Driver::Kusto => toggle_slash_comment,
+                    Driver::Prometheus => toggle_hash_comment,
+                    _ => toggle_line_comment,
                 },
             ),
             EditCmd::Duplicate => self.edit_lines(ctx, duplicate_lines),
@@ -2402,6 +2402,8 @@ impl Console {
         let (where_hint, order_hint) = match driver {
             Driver::InfluxDb => ("r.host == \"web-1\"", "start: -1h"),
             Driver::Kusto => ("| where", "| order by"),
+            // Prometheus: label matchers and a range (see `prometheus::table_query`).
+            Driver::Prometheus => ("job=\"node\"", "5m"),
             _ => ("WHERE", "ORDER BY"),
         };
         for (r, ico, hint, text, salt) in [
@@ -3410,9 +3412,15 @@ fn toggle_slash_comment(text: &str, a: usize, b: usize) -> (String, usize, usize
     toggle_comment(text, a, b, "// ")
 }
 
-/// `marker`: the two comment characters and a space.
+/// `toggle_line_comment` with `# ` (PromQL).
+fn toggle_hash_comment(text: &str, a: usize, b: usize) -> (String, usize, usize) {
+    toggle_comment(text, a, b, "# ")
+}
+
+/// `marker`: the comment characters (`--`, `//`, `#`) and a space.
 fn toggle_comment(text: &str, a: usize, b: usize, marker: &'static str) -> (String, usize, usize) {
-    let mark: Vec<char> = marker.chars().collect();
+    let token: Vec<char> = marker.trim_end().chars().collect();
+    let n = token.len();
     let chars: Vec<char> = text.chars().collect();
     let (a, b) = (a.min(b).min(chars.len()), a.max(b).min(chars.len()));
     let lines = touched_lines(&chars, a, b);
@@ -3423,7 +3431,7 @@ fn toggle_comment(text: &str, a: usize, b: usize, marker: &'static str) -> (Stri
     }
     let commented = |&(s, e): &(usize, usize)| {
         let first = (s..e).find(|&i| !chars[i].is_whitespace());
-        first.is_some_and(|i| i + 1 < e && chars[i] == mark[0] && chars[i + 1] == mark[1])
+        first.is_some_and(|i| i + n <= e && chars[i..i + n] == token[..])
     };
     let uncomment =
         targets.iter().filter(|l| content(l)).count() > 0 && targets.iter().all(commented);
@@ -3433,10 +3441,10 @@ fn toggle_comment(text: &str, a: usize, b: usize, marker: &'static str) -> (Stri
         .map(|&(s, e)| {
             if uncomment {
                 let i = (s..e).find(|&i| !chars[i].is_whitespace()).unwrap_or(s);
-                let del = if i + 2 < e && chars[i + 2] == ' ' {
-                    3
+                let del = if i + n < e && chars[i + n] == ' ' {
+                    n + 1
                 } else {
-                    2
+                    n
                 };
                 (i, del, "")
             } else {
@@ -4663,6 +4671,11 @@ mod tests {
         assert_eq!(run(k, "[T\n  take 1]"), "[// T\n//   take 1]");
         assert_eq!(run(k, "[// T\n  //take 1]"), "[T\n  take 1]");
         assert_eq!(run(k, "-- x|"), "// -- x|");
+        // PromQL: `#`.
+        let h = toggle_hash_comment;
+        assert_eq!(run(h, "[up\n  sum(x)]"), "[# up\n#   sum(x)]");
+        assert_eq!(run(h, "[# up\n  #sum(x)]"), "[up\n  sum(x)]");
+        assert_eq!(run(h, "-- x|"), "# -- x|");
     }
 
     #[test]
