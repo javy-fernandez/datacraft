@@ -666,6 +666,7 @@
     "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB：{message}。InfluxQL 需要该存储桶的数据库/保留策略映射（自 InfluxDB 2.4 起自动创建；更早版本请使用 `influx v1 dbrp create` 创建）；Flux 不需要。",
     "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "登录 Kusto 需要 HTTPS：请开启“使用 TLS”",
     "Signing in to Prometheus needs HTTPS: turn on \"Use TLS\"": "登录 Prometheus 需要 HTTPS：请开启“使用 TLS”",
+    "Put the user and password in their fields, not in the address": "请在对应字段中填写用户和密码，不要写在地址中",
     "HTTP {status} from Prometheus: {message}": "Prometheus 返回 HTTP {status}：{message}",
     "Unknown result type from Prometheus: {kind}": "Prometheus 返回未知的结果类型：{kind}",
     "Invalid directive: {directive}": "无效的指令：{directive}",

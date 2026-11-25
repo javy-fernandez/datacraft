@@ -666,6 +666,7 @@
     "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}。InfluxQL にはバケットのデータベース/保持ポリシーのマッピングが必要です（InfluxDB 2.4 以降は自動で作成されます。それ以前は `influx v1 dbrp create` で作成します）。Flux には不要です。",
     "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "Kusto へのサインインには HTTPS が必要です:「TLS を使用」をオンにしてください",
     "Signing in to Prometheus needs HTTPS: turn on \"Use TLS\"": "Prometheus へのサインインには HTTPS が必要です:「TLS を使用」をオンにしてください",
+    "Put the user and password in their fields, not in the address": "ユーザーとパスワードはアドレスではなく、それぞれの欄に入力してください",
     "HTTP {status} from Prometheus: {message}": "Prometheus からの HTTP {status}: {message}",
     "Unknown result type from Prometheus: {kind}": "Prometheus からの不明な結果タイプ: {kind}",
     "Invalid directive: {directive}": "無効なディレクティブ: {directive}",

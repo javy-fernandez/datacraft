@@ -66,6 +66,11 @@ fn sends_securely(base: &str) -> bool {
     host == "localhost" || ip.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Whether the address carries a user or a password (`http://user:password@host`).
+fn has_credentials(base: &str) -> bool {
+    reqwest::Url::parse(base).is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
+}
+
 /// Driver properties named `header.<Name>` (`header.X-Scope-OrgID` = `tenant-1`), sent with every
 /// request. Not the headers that sign in: a property is saved in the clear and would skip the
 /// HTTPS check, so those are refused and the password field is named instead.
@@ -163,6 +168,11 @@ impl PromSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
         let auth = Auth::from_config(cfg);
         let mut base = base_url(cfg);
+        // `http://user:password@host` would sign in without the HTTPS check, and the address
+        // shows up in error messages.
+        if has_credentials(&base) {
+            bail!(tr("Put the user and password in their fields, not in the address"));
+        }
         if auth != Auth::None && !sends_securely(&base) {
             bail!(tr(
                 "Signing in to Prometheus needs HTTPS: turn on \"Use TLS\""
@@ -175,13 +185,20 @@ impl PromSession {
             .tcp_keepalive(Duration::from_secs(60))
             .user_agent(format!("DataCraft/{}", env!("CARGO_PKG_VERSION")))
             .default_headers(extra_headers(cfg)?)
-            .tls_danger_accept_invalid_certs(super::influx::flag(cfg, "tls_insecure"));
+            .tls_danger_accept_invalid_certs(super::influx::flag(cfg, "tls_insecure"))
+            // A redirect could take the token and the `header.*` properties to another host or
+            // to plain HTTP; the API never needs one.
+            .redirect(reqwest::redirect::Policy::none());
         // HTTPS through an SSH tunnel: the server's own name (from its certificates), resolves to
         // the tunnel's listener.
+        // An IP address can't be resolved to the listener (reqwest connects to it directly,
+        // around the tunnel), so the address stays 127.0.0.1 and its certificate is checked
+        // against that.
         if let Some(name) = cfg
             .tunnel_host
             .as_deref()
             .filter(|_| base.starts_with("https://"))
+            .filter(|name| name.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().is_err())
         {
             base = base.replacen("127.0.0.1", name, 1);
             builder = builder.resolve(name, SocketAddr::from(([127, 0, 0, 1], cfg.port)));
@@ -558,8 +575,13 @@ pub fn base_url(cfg: &ConnectionConfig) -> String {
     } else {
         cfg.port
     };
-    let (mut host, port) = super::url::parse_authority(authority, field_port)
-        .unwrap_or_else(|| (authority.to_string(), field_port));
+    // A bare IPv6 address (`fd00::12`) has colons and no port, as in `ssh::host_port`.
+    let bare_ipv6 = !authority.starts_with('[') && authority.matches(':').count() > 1;
+    let (mut host, port) = if bare_ipv6 {
+        (format!("[{authority}]"), field_port)
+    } else {
+        super::url::parse_authority(authority, field_port).unwrap_or_else(|| (authority.to_string(), field_port))
+    };
     if host.is_empty() {
         host = "localhost".to_string();
     };
@@ -1107,6 +1129,11 @@ mod tests {
         assert!(!sends_securely("http://localhost:80@attacker.example"));
         assert!(!sends_securely("http://127.0.0.1@attacker.example:9090"));
         assert!(!sends_securely("http://[::1"));
+        // A user or password typed in the address is refused before anything is sent.
+        assert!(has_credentials("http://admin:secret@prom.example.com:9090"));
+        assert!(has_credentials("https://token@prom.example.com"));
+        assert!(has_credentials("http://localhost:80@attacker.example"));
+        assert!(!has_credentials("https://prom.example.com/select/0/prometheus"));
     }
 
     #[test]
@@ -1227,6 +1254,9 @@ mod tests {
             "https://grafana.example.com/api/datasources/proxy/uid/abc"
         );
         assert_eq!(base_url(&cfg("[::1]:8428", 9090)), "http://[::1]:8428");
+        // A bare IPv6 address takes the port field's port.
+        assert_eq!(base_url(&cfg("fd00::12", 9090)), "http://[fd00::12]:9090");
+        assert_eq!(base_url(&cfg("http://::1/prefix", 8428)), "http://[::1]:8428/prefix");
         let mut c = cfg("prom", 9090);
         c.set_property("tls", "true");
         assert_eq!(base_url(&c), "https://prom:9090");

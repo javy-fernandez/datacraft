@@ -666,6 +666,7 @@
     "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. InfluxQL braucht für den Bucket eine Zuordnung von Datenbank/Retention Policy (seit InfluxDB 2.4 automatisch angelegt; davor mit `influx v1 dbrp create`); Flux braucht keine.",
     "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "Die Anmeldung bei Kusto erfordert HTTPS: „TLS verwenden“ aktivieren",
     "Signing in to Prometheus needs HTTPS: turn on \"Use TLS\"": "Die Anmeldung bei Prometheus erfordert HTTPS: „TLS verwenden“ aktivieren",
+    "Put the user and password in their fields, not in the address": "Benutzer und Passwort in ihre Felder eintragen, nicht in die Adresse",
     "HTTP {status} from Prometheus: {message}": "HTTP {status} von Prometheus: {message}",
     "Unknown result type from Prometheus: {kind}": "Unbekannter Ergebnistyp von Prometheus: {kind}",
     "Invalid directive: {directive}": "Ungültige Direktive: {directive}",
