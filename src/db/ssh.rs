@@ -127,6 +127,12 @@ fn destination(cfg: &ConnectionConfig) -> anyhow::Result<(String, u16)> {
         cfg.port
     };
     if cfg.driver == Driver::Prometheus {
+        // The tunnel's local address leaves them out, so they would be dropped without a word.
+        if bare_host(&cfg.host).contains('@') {
+            bail!(tr(
+                "Put the user and password in their fields, not in the address"
+            ));
+        }
         return Ok(host_port(&cfg.host, port));
     }
     Ok((bare_host(&cfg.host).to_string(), port))
@@ -137,8 +143,10 @@ fn destination(cfg: &ConnectionConfig) -> anyhow::Result<(String, u16)> {
 /// field's, as in `prometheus::base_url`.
 pub fn host_port(host: &str, port: u16) -> (String, u16) {
     let authority = bare_host(host);
-    // A bare IPv6 address has colons and no port.
-    let bare_ipv6 = !authority.starts_with('[') && authority.matches(':').count() > 1;
+    // A bare IPv6 address has colons and no port (`user:password@host:9090` has two too).
+    let bare_ipv6 = !authority.starts_with('[')
+        && !authority.contains('@')
+        && authority.matches(':').count() > 1;
     super::url::parse_authority(authority, port)
         .filter(|_| !bare_ipv6)
         .unwrap_or_else(|| (authority.to_string(), port))
@@ -680,6 +688,32 @@ mod tests {
         let mut mongo = ConnectionConfig::new(2, Driver::MongoDb);
         mongo.host = "cluster0.abcde.mongodb.net".into();
         assert!(destination(&mongo).is_err());
+    }
+
+    /// A user and password typed in a Prometheus address are refused before the tunnel opens:
+    /// the tunnel's local address leaves them out, so they would be dropped without a word.
+    #[test]
+    fn credentials_in_a_prometheus_address() {
+        let mut cfg = ConnectionConfig::new(1, Driver::Prometheus);
+        for host in [
+            "admin:secret@vmselect:8481",
+            "http://token@vmselect/select/0/prometheus",
+        ] {
+            cfg.host = host.into();
+            assert_eq!(
+                destination(&cfg).unwrap_err().to_string(),
+                "Put the user and password in their fields, not in the address",
+                "{host}"
+            );
+        }
+        // A user and password make a second colon, but not an IPv6 address.
+        assert_eq!(
+            host_port("admin:secret@vmselect:8481", 9090),
+            ("admin:secret@vmselect".to_string(), 8481)
+        );
+        // An `@` in the path isn't in the address.
+        cfg.host = "http://vmselect:8481/select/0/prometheus/@x".into();
+        assert_eq!(destination(&cfg).unwrap(), ("vmselect".to_string(), 8481));
     }
 
     /// A Prometheus API's host field takes a URL with a port: the tunnel goes to that port, and
