@@ -1756,6 +1756,23 @@ mod tests {
             .unwrap();
     }
 
+    /// A Prometheus API under VictoriaMetrics' path prefix, with its version after Test Connection.
+    #[test]
+    #[ignore]
+    fn render_prometheus_dialog() {
+        let mut prom = ConnectionConfig::new(5, Driver::Prometheus);
+        prom.name = "metrics@vmselect".into();
+        prom.host = "http://vmselect:8481/select/0/prometheus".into();
+        render(
+            "prometheus_general",
+            true,
+            ConnectionDialog::edit(5, &[prom]),
+            |d| {
+                d.test = (5, TestState::Done(Ok(Some("Prometheus API 2.24.0".into()))));
+            },
+        );
+    }
+
     /// DuckDB's General tab before its driver is downloaded (the tests' data folder is empty).
     #[test]
     #[ignore]
