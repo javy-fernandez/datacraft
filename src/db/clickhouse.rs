@@ -28,7 +28,12 @@ pub struct ChSession {
 /// Readable message for server errors (drops nativeclick's stack trace).
 fn ch_error(e: &NativeclickError) -> anyhow::Error {
     match e {
-        NativeclickError::ServerException { code, name, message, .. } => anyhow!(trf(
+        NativeclickError::ServerException {
+            code,
+            name,
+            message,
+            ..
+        } => anyhow!(trf(
             "Code {code} ({name}): {message}",
             &[("code", code), ("name", name), ("message", message)]
         )),
@@ -38,7 +43,12 @@ fn ch_error(e: &NativeclickError) -> anyhow::Error {
 
 /// A `true`/`1`/`yes`/`on` driver property (`tls`, `tls_insecure`, as for Redis).
 fn property_on(cfg: &ConnectionConfig, name: &str) -> bool {
-    cfg.property(name).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+    cfg.property(name).is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )
+    })
 }
 
 pub fn uses_tls(cfg: &ConnectionConfig) -> bool {
@@ -51,7 +61,10 @@ fn tls_connector(insecure: bool) -> anyhow::Result<TlsConnector> {
     let config = if insecure {
         let builder = ClientConfig::builder();
         let verifier = super::tls::AcceptAnyCertificate(builder.crypto_provider().clone());
-        builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth()
     } else {
         ClientConfig::with_platform_verifier()?
     };
@@ -59,18 +72,29 @@ fn tls_connector(insecure: bool) -> anyhow::Result<TlsConnector> {
 }
 
 async fn connect_client(cfg: &ConnectionConfig) -> anyhow::Result<Client> {
-    let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
+    let host = if cfg.host.trim().is_empty() {
+        "localhost"
+    } else {
+        cfg.host.trim()
+    };
     let tls = uses_tls(cfg);
     let port = match cfg.port {
         0 if tls => TLS_PORT,
         0 => 9000,
         p => p,
     };
-    let database =
-        if cfg.database.trim().is_empty() { "default".to_string() } else { cfg.database.trim().to_string() };
+    let database = if cfg.database.trim().is_empty() {
+        "default".to_string()
+    } else {
+        cfg.database.trim().to_string()
+    };
 
     let options = ClientOptions {
-        username: if cfg.user.trim().is_empty() { "default".into() } else { cfg.user.trim().to_string() },
+        username: if cfg.user.trim().is_empty() {
+            "default".into()
+        } else {
+            cfg.user.trim().to_string()
+        },
         password: cfg.password.clone(),
         default_database: database,
         tcp_nodelay: true,
@@ -80,18 +104,23 @@ async fn connect_client(cfg: &ConnectionConfig) -> anyhow::Result<Client> {
     let connected = if tls {
         let connector = tls_connector(property_on(cfg, "tls_insecure"))?;
         // Through an SSH tunnel, the certificate is checked against the database's own host.
-        let name = ServerName::try_from(cfg.tunnel_host.clone().unwrap_or_else(|| host.to_string()))
-            .map_err(|_| anyhow!(trf("“{host}” is not a valid server name for TLS", &[("host", &host)])))?;
+        let name =
+            ServerName::try_from(cfg.tunnel_host.clone().unwrap_or_else(|| host.to_string()))
+                .map_err(|_| {
+                    anyhow!(trf(
+                        "“{host}” is not a valid server name for TLS",
+                        &[("host", &host)]
+                    ))
+                })?;
         Client::connect_tls((host, port), options, name, &connector).await
     } else {
         Client::connect((host, port), options).await
     };
     let client = connected.map_err(|e| match e {
-        NativeclickError::Timeout | NativeclickError::Io(_) => anyhow!(trf("Could not connect to {host}:{port}: {error}", &[
-            ("host", &host),
-            ("port", &port),
-            ("error", &e.to_string()),
-        ])),
+        NativeclickError::Timeout | NativeclickError::Io(_) => anyhow!(trf(
+            "Could not connect to {host}:{port}: {error}",
+            &[("host", &host), ("port", &port), ("error", &e.to_string()),]
+        )),
         other => ch_error(&other),
     })?;
     Ok(client)
@@ -99,20 +128,29 @@ async fn connect_client(cfg: &ConnectionConfig) -> anyhow::Result<Client> {
 
 impl ChSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
-        Ok(Self { client: connect_client(cfg).await? })
+        Ok(Self {
+            client: connect_client(cfg).await?,
+        })
     }
 
     /// `USE` changes the session's database on the server, keeping its settings and
     /// temporary tables. Sent every time: a console's own `USE` may have moved it.
     pub async fn use_database(&mut self, db: &str) -> anyhow::Result<()> {
         let sql = format!("USE {}", super::Driver::ClickHouse.quote_ident(db));
-        self.client.execute(sql.as_str()).await.map_err(|e| ch_error(&e))
+        self.client
+            .execute(sql.as_str())
+            .await
+            .map_err(|e| ch_error(&e))
     }
 
     /// Text rows of an internal query (introspection and the database list).
     async fn rows(&mut self, sql: &str) -> anyhow::Result<Vec<Vec<Cell>>> {
         let results = self.execute(sql, usize::MAX).await?;
-        Ok(results.into_iter().find(|rs| !rs.is_command()).map(|rs| rs.rows).unwrap_or_default())
+        Ok(results
+            .into_iter()
+            .find(|rs| !rs.is_command())
+            .map(|rs| rs.rows)
+            .unwrap_or_default())
     }
 
     /// Asked to the server: a console's `USE` changes it.
@@ -144,7 +182,10 @@ impl ChSession {
             WHERE t.database = currentDatabase()
             ORDER BY t.name, c.position
         "#;
-        let mut schema = SchemaInfo { name: self.current_database().await?, tables: Vec::new() };
+        let mut schema = SchemaInfo {
+            name: self.current_database().await?,
+            tables: Vec::new(),
+        };
         for row in self.rows(SQL).await? {
             let get = |i: usize| row.get(i).and_then(|c| c.clone()).unwrap_or_default();
             let (table, engine) = (get(0), get(1));
@@ -153,11 +194,17 @@ impl ChSession {
                     name: table,
                     // 'View' and 'LiveView' are virtual; the rest (MergeTree, MaterializedView…)
                     // store data and are queried like a table.
-                    kind: if engine == "View" || engine == "LiveView" { ObjectKind::View } else { ObjectKind::Table },
+                    kind: if engine == "View" || engine == "LiveView" {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
                     columns: Vec::new(),
                 });
             }
-            let Some(t) = schema.tables.last_mut() else { continue };
+            let Some(t) = schema.tables.last_mut() else {
+                continue;
+            };
             // Table without visible columns: the LEFT JOIN leaves an empty default.
             let column = get(2);
             if column.is_empty() {
@@ -177,7 +224,11 @@ impl ChSession {
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let statement = sql.trim().to_string();
         let start = Instant::now();
-        let mut stream = self.client.query_raw(sql.to_string()).await.map_err(|e| ch_error(&e))?;
+        let mut stream = self
+            .client
+            .query_raw(sql.to_string())
+            .await
+            .map_err(|e| ch_error(&e))?;
 
         let mut results: Vec<ResultSet> = Vec::new();
         let mut truncated = false;
@@ -191,7 +242,9 @@ impl ChSession {
                     ..Default::default()
                 });
             }
-            let Some(rs) = results.last_mut() else { continue };
+            let Some(rs) = results.last_mut() else {
+                continue;
+            };
             for row in block.take_iter_rows() {
                 if rs.rows.len() >= max_rows {
                     truncated = true;
@@ -201,7 +254,11 @@ impl ChSession {
                     }
                     continue;
                 }
-                rs.rows.push(row.iter().map(|(_, type_, value)| cell(type_, value)).collect());
+                rs.rows.push(
+                    row.iter()
+                        .map(|(_, type_, value)| cell(type_, value))
+                        .collect(),
+                );
             }
         }
         if let Some(rs) = results.last_mut() {
@@ -211,7 +268,11 @@ impl ChSession {
             }
         } else {
             // DDL/INSERT: the server answers with an end-of-stream and no blocks.
-            results.push(ResultSet { statement, elapsed: start.elapsed(), ..Default::default() });
+            results.push(ResultSet {
+                statement,
+                elapsed: start.elapsed(),
+                ..Default::default()
+            });
         }
         Ok(results)
     }
@@ -222,13 +283,20 @@ impl ChSession {
     /// Everything is checked before running anything: there are no transactions to undo
     /// an INSERT already applied.
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        if !statements.iter().all(|s| s.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("INSERT"))) {
+        if !statements.iter().all(|s| {
+            s.trim_start()
+                .get(..6)
+                .is_some_and(|p| p.eq_ignore_ascii_case("INSERT"))
+        }) {
             return Err(anyhow!(tr(
                 "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console"
             )));
         }
         for stmt in statements {
-            self.client.execute(stmt.as_str()).await.map_err(|e| ch_error(&e))?;
+            self.client
+                .execute(stmt.as_str())
+                .await
+                .map_err(|e| ch_error(&e))?;
         }
         Ok(statements.len() as u64)
     }
@@ -237,7 +305,10 @@ impl ChSession {
     /// simply run one after another (each INSERT is atomic; no rollback exists).
     pub async fn run_statements(&mut self, statements: &[String]) -> anyhow::Result<u64> {
         for stmt in statements {
-            self.client.execute(stmt.as_str()).await.map_err(|e| ch_error(&e))?;
+            self.client
+                .execute(stmt.as_str())
+                .await
+                .map_err(|e| ch_error(&e))?;
         }
         Ok(statements.len() as u64)
     }
@@ -251,8 +322,10 @@ impl ChSession {
 fn unwrap_type<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
     let ty = ty.trim();
     let rest = ty.get(wrapper.len()..)?;
-    (ty.get(..wrapper.len())?.eq_ignore_ascii_case(wrapper) && rest.starts_with('(') && rest.ends_with(')'))
-        .then(|| rest[1..rest.len() - 1].trim())
+    (ty.get(..wrapper.len())?.eq_ignore_ascii_case(wrapper)
+        && rest.starts_with('(')
+        && rest.ends_with(')'))
+    .then(|| rest[1..rest.len() - 1].trim())
 }
 
 /// The type inside `Nullable(…)` / `LowCardinality(…)` (`LowCardinality(Nullable(String))` →
@@ -276,13 +349,32 @@ pub fn column_type(data_type: &str, not_null: bool) -> String {
     let low_cardinality = unwrap_type(ty, "LowCardinality");
     let inner = low_cardinality.unwrap_or(ty);
     let base = unwrap_type(inner, "Nullable").unwrap_or(inner);
-    const COMPOSITE: [&str; 9] = ["Array", "Map", "Tuple", "Nested", "Variant", "Dynamic", "JSON", "Object", "AggregateFunction"];
+    const COMPOSITE: [&str; 9] = [
+        "Array",
+        "Map",
+        "Tuple",
+        "Nested",
+        "Variant",
+        "Dynamic",
+        "JSON",
+        "Object",
+        "AggregateFunction",
+    ];
     let name = base.split('(').next().unwrap_or(base).trim();
-    if COMPOSITE.iter().any(|c| name.eq_ignore_ascii_case(c)) || name.ends_with("AggregateFunction") {
+    if COMPOSITE.iter().any(|c| name.eq_ignore_ascii_case(c)) || name.ends_with("AggregateFunction")
+    {
         return ty.to_string();
     }
-    let core = if not_null { base.to_string() } else { format!("Nullable({base})") };
-    if low_cardinality.is_some() { format!("LowCardinality({core})") } else { core }
+    let core = if not_null {
+        base.to_string()
+    } else {
+        format!("Nullable({base})")
+    };
+    if low_cardinality.is_some() {
+        format!("LowCardinality({core})")
+    } else {
+        core
+    }
 }
 
 /// Converts a value to the text shown in the grid. The enum name is preferred for
@@ -322,7 +414,11 @@ fn cell(type_: &Type, value: &Value) -> Cell {
 
 /// Name of an Enum value; falls back to the number when the pair list lacks it.
 fn pair_name<K: PartialEq + std::fmt::Display>(pairs: &[(String, K)], value: K) -> String {
-    pairs.iter().find(|(_, e)| *e == value).map(|(n, _)| n.clone()).unwrap_or_else(|| value.to_string())
+    pairs
+        .iter()
+        .find(|(_, e)| *e == value)
+        .map(|(n, _)| n.clone())
+        .unwrap_or_else(|| value.to_string())
 }
 
 /// `Time`/`Time64`: seconds (may exceed a day or be negative) with a 10^scale divisor.
@@ -349,11 +445,23 @@ mod tests {
         assert_eq!(column_type("Nullable(String)", false), "Nullable(String)");
         assert_eq!(column_type(" Nullable(Int32) ", true), "Int32");
         // LowCardinality stays outside; composite types can't be Nullable.
-        assert_eq!(column_type("LowCardinality(String)", false), "LowCardinality(Nullable(String))");
-        assert_eq!(column_type("LowCardinality(Nullable(String))", true), "LowCardinality(String)");
+        assert_eq!(
+            column_type("LowCardinality(String)", false),
+            "LowCardinality(Nullable(String))"
+        );
+        assert_eq!(
+            column_type("LowCardinality(Nullable(String))", true),
+            "LowCardinality(String)"
+        );
         assert_eq!(column_type("Array(String)", false), "Array(String)");
-        assert_eq!(column_type("Map(String, UInt64)", false), "Map(String, UInt64)");
-        assert_eq!(column_type("Decimal(18, 2)", false), "Nullable(Decimal(18, 2))");
+        assert_eq!(
+            column_type("Map(String, UInt64)", false),
+            "Map(String, UInt64)"
+        );
+        assert_eq!(
+            column_type("Decimal(18, 2)", false),
+            "Nullable(Decimal(18, 2))"
+        );
     }
 
     #[test]
@@ -376,9 +484,15 @@ mod tests {
     #[test]
     fn cells() {
         assert_eq!(cell(&Type::Nothing, &Value::Null), None);
-        assert_eq!(cell(&Type::String, &Value::String(b"O'Brien".to_vec())), Some("O'Brien".to_string()));
+        assert_eq!(
+            cell(&Type::String, &Value::String(b"O'Brien".to_vec())),
+            Some("O'Brien".to_string())
+        );
         // Int128 Display would add "::Int128" (SQL serialization); the grid wants the number.
-        assert_eq!(cell(&Type::Int128, &Value::Int128(42)), Some("42".to_string()));
+        assert_eq!(
+            cell(&Type::Int128, &Value::Int128(42)),
+            Some("42".to_string())
+        );
         let enums = Type::Enum8(vec![("x".into(), 1), ("y".into(), 2)]);
         assert_eq!(cell(&enums, &Value::Enum8(2)), Some("y".to_string()));
     }
@@ -400,7 +514,8 @@ mod live_tests {
             eprintln!("DATACRAFT_CH_HOST not set: skipping the ClickHouse test");
             return None;
         };
-        let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
+        let env =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
         let mut cfg = ConnectionConfig::new(1, Driver::ClickHouse);
         cfg.host = host;
         cfg.port = env("DATACRAFT_CH_PORT", "9000").parse().expect("port");
@@ -418,7 +533,9 @@ mod live_tests {
     #[ignore]
     async fn mixed_types_and_introspection() {
         let Some(mut s) = session().await else { return };
-        s.execute("DROP DATABASE IF EXISTS dc_test", 10).await.unwrap();
+        s.execute("DROP DATABASE IF EXISTS dc_test", 10)
+            .await
+            .unwrap();
         s.execute("CREATE DATABASE dc_test", 10).await.unwrap();
         s.use_database("dc_test").await.unwrap();
         assert_eq!(s.current_database().await.unwrap(), "dc_test");
@@ -442,7 +559,11 @@ mod live_tests {
         assert_eq!(row[2], Some("O'Brien"));
         assert_eq!(row[3], None);
         assert_eq!(row[4], Some("2026-10-18"));
-        assert!(row[5].is_some_and(|v| v.starts_with("2026-10-18 12:30:00")), "{:?}", row[5]);
+        assert!(
+            row[5].is_some_and(|v| v.starts_with("2026-10-18 12:30:00")),
+            "{:?}",
+            row[5]
+        );
         assert_eq!(row[6], Some("[1,2]"));
         assert_eq!(row[7], Some("x"));
         assert_eq!(row[8], Some("true"));
@@ -476,24 +597,45 @@ mod live_tests {
         ])
         .await
         .unwrap();
-        let err = s.apply_changes(&["DELETE FROM `dc_test`.`items` WHERE id = 1".to_string()]).await.unwrap_err();
+        let err = s
+            .apply_changes(&["DELETE FROM `dc_test`.`items` WHERE id = 1".to_string()])
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("mutation"), "{err}");
 
         let schemas = s.introspect().await.unwrap();
         assert_eq!(schemas[0].name, "dc_test");
-        let items = schemas[0].tables.iter().find(|t| t.name == "items").expect("items");
+        let items = schemas[0]
+            .tables
+            .iter()
+            .find(|t| t.name == "items")
+            .expect("items");
         assert_eq!(items.kind, ObjectKind::Table);
         assert_eq!(items.columns[0].name, "id");
         assert!(items.columns[0].primary_key);
         assert!(!items.columns[0].nullable);
         assert!(items.columns[1].nullable);
 
-        s.execute("CREATE VIEW `dc_test`.`v` AS SELECT id FROM `dc_test`.`items`", 10).await.unwrap();
+        s.execute(
+            "CREATE VIEW `dc_test`.`v` AS SELECT id FROM `dc_test`.`items`",
+            10,
+        )
+        .await
+        .unwrap();
         let schemas = s.introspect().await.unwrap();
-        let view = schemas[0].tables.iter().find(|t| t.name == "v").expect("view");
+        let view = schemas[0]
+            .tables
+            .iter()
+            .find(|t| t.name == "v")
+            .expect("view");
         assert_eq!(view.kind, ObjectKind::View);
 
-        assert!(s.list_databases().await.unwrap().contains(&"dc_test".to_string()));
+        assert!(
+            s.list_databases()
+                .await
+                .unwrap()
+                .contains(&"dc_test".to_string())
+        );
         assert!(!schemas.iter().any(|sch| sch.name == "system"));
 
         // A console's own USE moves the session; use_database moves it back.
@@ -503,7 +645,10 @@ mod live_tests {
         assert_eq!(s.introspect().await.unwrap()[0].name, "dc_test");
 
         // Truncation stops reading (the query is cancelled) and the session stays usable.
-        let rs = s.execute("SELECT number FROM system.numbers", 5).await.unwrap();
+        let rs = s
+            .execute("SELECT number FROM system.numbers", 5)
+            .await
+            .unwrap();
         assert_eq!(rs[0].rows.len(), 5);
         assert!(rs[0].truncated);
         let rs = s.execute("SELECT 1", 5).await.unwrap();
@@ -524,10 +669,16 @@ mod live_tests {
         ])
         .await
         .unwrap_err();
-        let rs = s.execute("SELECT count() FROM `dc_test`.`items` WHERE id = 3", 5).await.unwrap();
+        let rs = s
+            .execute("SELECT count() FROM `dc_test`.`items` WHERE id = 3", 5)
+            .await
+            .unwrap();
         assert_eq!(rs[0].rows[0][0].as_deref(), Some("0"));
 
-        let err = s.execute("SELECT * FROM missing_table_xyz", 10).await.unwrap_err();
+        let err = s
+            .execute("SELECT * FROM missing_table_xyz", 10)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("missing_table_xyz"), "{err}");
         s.use_database("default").await.unwrap();
         s.execute("DROP DATABASE dc_test", 10).await.unwrap();
@@ -542,19 +693,40 @@ mod live_tests {
         let Some(cfg) = test_cfg() else { return };
         let mut session = Session::connect(&cfg).await.unwrap();
 
-        session.execute("DROP DATABASE IF EXISTS dc_disp", 10).await.unwrap();
-        session.execute("CREATE DATABASE dc_disp", 10).await.unwrap();
+        session
+            .execute("DROP DATABASE IF EXISTS dc_disp", 10)
+            .await
+            .unwrap();
+        session
+            .execute("CREATE DATABASE dc_disp", 10)
+            .await
+            .unwrap();
         let schemas = session.introspect_database("dc_disp").await.unwrap();
         assert_eq!(schemas[0].name, "dc_disp");
 
-        session.execute("CREATE TABLE `dc_disp`.`t` (`a` String) ENGINE = MergeTree ORDER BY tuple()", 10).await.unwrap();
-        session.apply_changes(&["INSERT INTO `dc_disp`.`t` (`a`) VALUES ('x')".to_string()]).await.unwrap();
+        session
+            .execute(
+                "CREATE TABLE `dc_disp`.`t` (`a` String) ENGINE = MergeTree ORDER BY tuple()",
+                10,
+            )
+            .await
+            .unwrap();
+        session
+            .apply_changes(&["INSERT INTO `dc_disp`.`t` (`a`) VALUES ('x')".to_string()])
+            .await
+            .unwrap();
         let q = table_query(Driver::ClickHouse, "dc_disp", "t", "", "", 100);
         assert_eq!(q, "SELECT * FROM `dc_disp`.`t` LIMIT 100");
         let rs = session.execute(&q, 100).await.unwrap();
         assert_eq!(rs[0].rows[0][0].as_deref(), Some("x"));
 
-        assert!(session.list_databases().await.unwrap().contains(&"dc_disp".to_string()));
+        assert!(
+            session
+                .list_databases()
+                .await
+                .unwrap()
+                .contains(&"dc_disp".to_string())
+        );
         session.use_database("default").await.unwrap();
         session.execute("DROP DATABASE dc_disp", 10).await.unwrap();
     }
@@ -565,14 +737,19 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn tls() {
-        let (Some(mut cfg), Ok(port)) = (test_cfg(), std::env::var("DATACRAFT_CH_TLS_PORT")) else { return };
+        let (Some(mut cfg), Ok(port)) = (test_cfg(), std::env::var("DATACRAFT_CH_TLS_PORT")) else {
+            return;
+        };
         cfg.port = port.parse().expect("port");
         cfg.set_property("tls", "true");
         let trusted = std::env::var("DATACRAFT_CH_TLS_TRUSTED").is_ok_and(|v| v == "1");
         match ChSession::connect(&cfg).await {
             Ok(mut s) => {
                 assert!(trusted, "an untrusted certificate was accepted");
-                assert_eq!(s.rows("SELECT 1").await.unwrap()[0][0].as_deref(), Some("1"));
+                assert_eq!(
+                    s.rows("SELECT 1").await.unwrap()[0][0].as_deref(),
+                    Some("1")
+                );
             }
             Err(e) => {
                 assert!(!trusted, "{e}");
@@ -580,8 +757,13 @@ mod live_tests {
             }
         }
         cfg.set_property("tls_insecure", "true");
-        let mut s = ChSession::connect(&cfg).await.expect("TLS without the certificate check");
-        assert_eq!(s.rows("SELECT 1").await.unwrap()[0][0].as_deref(), Some("1"));
+        let mut s = ChSession::connect(&cfg)
+            .await
+            .expect("TLS without the certificate check");
+        assert_eq!(
+            s.rows("SELECT 1").await.unwrap()[0][0].as_deref(),
+            Some("1")
+        );
         // The plain protocol doesn't talk to the secure port.
         cfg.set_property("tls", "");
         assert!(ChSession::connect(&cfg).await.is_err());
@@ -604,13 +786,28 @@ mod live_tests {
             s.execute(sql, 10).await.unwrap();
         }
         let find = |value: &str| {
-            let request = SearchRequest { db: "dc_search".into(), schema: None, value: value.into(), exact: false, case_sensitive: false };
+            let request = SearchRequest {
+                db: "dc_search".into(),
+                schema: None,
+                value: value.into(),
+                exact: false,
+                case_sensitive: false,
+            };
             search(cfg.clone(), request, Arc::new(tokio::sync::Notify::new()))
         };
         for (value, ids) in [("p_q", ["2"]), ("50%", ["3"]), (r"a\b", ["4"])] {
             let report = find(value).await.unwrap();
             assert!(report.errors.is_empty(), "{value}: {:?}", report.errors);
-            let found: Vec<String> = report.matches.iter().flat_map(|m| m.result.rows.iter().map(|r| r[0].clone().unwrap_or_default())).collect();
+            let found: Vec<String> = report
+                .matches
+                .iter()
+                .flat_map(|m| {
+                    m.result
+                        .rows
+                        .iter()
+                        .map(|r| r[0].clone().unwrap_or_default())
+                })
+                .collect();
             assert_eq!(found, ids, "{value}");
         }
         s.execute("DROP DATABASE dc_search", 10).await.unwrap();
@@ -637,7 +834,12 @@ mod live_tests {
             .unwrap();
         let mut sqlite = ConnectionConfig::new(2, Driver::Sqlite);
         sqlite.file_path = path.display().to_string();
-        let col = |name: &str, ty: &str, pk: bool| ColumnInfo { name: name.into(), data_type: ty.into(), nullable: !pk, primary_key: pk };
+        let col = |name: &str, ty: &str, pk: bool| ColumnInfo {
+            name: name.into(),
+            data_type: ty.into(),
+            nullable: !pk,
+            primary_key: pk,
+        };
         let columns = vec![
             col("id", "integer", true),
             col("price", "double precision", false),
@@ -647,7 +849,11 @@ mod live_tests {
             col("seen", "timestamp", false),
             col("note", "text", false),
         ];
-        let request = |source: (&str, &str), columns: Vec<ColumnInfo>, target: (&str, &str), create: bool, clear: bool| CopyRequest {
+        let request = |source: (&str, &str),
+                       columns: Vec<ColumnInfo>,
+                       target: (&str, &str),
+                       create: bool,
+                       clear: bool| CopyRequest {
             source_db: source.0.into(),
             source_schema: source.0.into(),
             source_table: source.1.into(),
@@ -668,11 +874,26 @@ mod live_tests {
         };
         let cancel = || Arc::new(tokio::sync::Notify::new());
         let mut s = ChSession::connect(&cfg).await.unwrap();
-        s.execute("DROP DATABASE IF EXISTS dc_copy", 10).await.unwrap();
+        s.execute("DROP DATABASE IF EXISTS dc_copy", 10)
+            .await
+            .unwrap();
         s.execute("CREATE DATABASE dc_copy", 10).await.unwrap();
 
         // Into ClickHouse, creating the table.
-        copy(sqlite.clone(), cfg.clone(), request(("main", "src"), columns.clone(), ("dc_copy", "t"), true, false), cancel()).await.unwrap();
+        copy(
+            sqlite.clone(),
+            cfg.clone(),
+            request(
+                ("main", "src"),
+                columns.clone(),
+                ("dc_copy", "t"),
+                true,
+                false,
+            ),
+            cancel(),
+        )
+        .await
+        .unwrap();
         let types: Vec<String> = s
             .rows("SELECT name, type FROM system.columns WHERE database = 'dc_copy' AND table = 't' ORDER BY position")
             .await
@@ -693,29 +914,90 @@ mod live_tests {
             ]
         );
         let rows = s.rows("SELECT * FROM dc_copy.t ORDER BY id").await.unwrap();
-        let first: Vec<Cell> = ["1", "0.30000000000000004", "12.34", "true", "1960-01-01", "2026-10-23 12:34:56.789", "a_b"].map(|v| Some(v.to_string())).into();
+        let first: Vec<Cell> = [
+            "1",
+            "0.30000000000000004",
+            "12.34",
+            "true",
+            "1960-01-01",
+            "2026-10-23 12:34:56.789",
+            "a_b",
+        ]
+        .map(|v| Some(v.to_string()))
+        .into();
         assert_eq!(rows[0], first);
         assert!(rows[1][1..].iter().all(Option::is_none), "{:?}", rows[1]);
 
         // Again into the existing table, deleting its rows first (TRUNCATE).
-        copy(sqlite.clone(), cfg.clone(), request(("main", "src"), columns, ("dc_copy", "t"), false, true), cancel()).await.unwrap();
-        assert_eq!(s.rows("SELECT count() FROM dc_copy.t").await.unwrap()[0][0].as_deref(), Some("2"));
+        copy(
+            sqlite.clone(),
+            cfg.clone(),
+            request(("main", "src"), columns, ("dc_copy", "t"), false, true),
+            cancel(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            s.rows("SELECT count() FROM dc_copy.t").await.unwrap()[0][0].as_deref(),
+            Some("2")
+        );
 
         // Out of ClickHouse into a new SQLite table, with the columns as introspected.
         s.use_database("dc_copy").await.unwrap();
-        let ch_columns = s.introspect().await.unwrap()[0].tables.iter().find(|t| t.name == "t").unwrap().columns.clone();
-        copy(cfg.clone(), sqlite.clone(), request(("dc_copy", "t"), ch_columns, ("main", "back"), true, false), cancel()).await.unwrap();
+        let ch_columns = s.introspect().await.unwrap()[0]
+            .tables
+            .iter()
+            .find(|t| t.name == "t")
+            .unwrap()
+            .columns
+            .clone();
+        copy(
+            cfg.clone(),
+            sqlite.clone(),
+            request(("dc_copy", "t"), ch_columns, ("main", "back"), true, false),
+            cancel(),
+        )
+        .await
+        .unwrap();
         let db = rusqlite::Connection::open(&path).unwrap();
-        let mut info = db.prepare("select name, type, \"notnull\" from pragma_table_info('back')").unwrap();
+        let mut info = db
+            .prepare("select name, type, \"notnull\" from pragma_table_info('back')")
+            .unwrap();
         let back: Vec<String> = info
-            .query_map([], |r| Ok(format!("{} {} {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            .query_map([], |r| {
+                Ok(format!(
+                    "{} {} {}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?
+                ))
+            })
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(back, ["id INTEGER 1", "price REAL 0", "amount NUMERIC 0", "ok BOOLEAN 0", "born DATE 0", "seen DATETIME 0", "note TEXT 0"]);
-        let price: f64 = db.query_row("select price from back where id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            back,
+            [
+                "id INTEGER 1",
+                "price REAL 0",
+                "amount NUMERIC 0",
+                "ok BOOLEAN 0",
+                "born DATE 0",
+                "seen DATETIME 0",
+                "note TEXT 0"
+            ]
+        );
+        let price: f64 = db
+            .query_row("select price from back where id = 1", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(price, 0.30000000000000004);
-        let nulls: i64 = db.query_row("select count(*) from back where id = 2 and price is null and note is null", [], |r| r.get(0)).unwrap();
+        let nulls: i64 = db
+            .query_row(
+                "select count(*) from back where id = 2 and price is null and note is null",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(nulls, 1);
 
         s.use_database("default").await.unwrap();

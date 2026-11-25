@@ -28,35 +28,52 @@ impl Dialog {
             ctx,
             egui::Id::new("table_model"),
             tr("Table Model"),
-            &format!("{} / {} / {}", self.table.db, self.table.schema, self.table.table),
+            &format!(
+                "{} / {} / {}",
+                self.table.db, self.table.schema, self.table.table
+            ),
             vec2(1000.0, 700.0),
             |root, regions| {
                 let mut body = regions.body_ui(root);
-                egui::ScrollArea::both().auto_shrink([false, false]).show(&mut body, |ui| {
-                    if let Some(view) = &mut self.view {
-                        ui.horizontal(|ui| {
-                            if ui.button(tr("Save model…")).clicked() {
-                                action = Some(Action::Save(false));
-                            }
-                            if ui.button(tr("Export SVG…")).clicked() {
-                                action = Some(Action::Save(true));
-                            }
-                        });
-                        view.show(ui);
-                    }
-                    if let Some(error) = &self.error {
-                        ui.add(egui::Label::new(RichText::new(error).color(palette(ctx.global_style().visuals.dark_mode).error)).wrap());
-                    }
-                    if pending {
-                        ui.spinner();
-                        ui.label(tr("Loading…"));
-                    }
-                });
-                regions.footer_ui(root).with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(tr(if pending { "Cancel" } else { "Close" })).clicked() {
-                        action = Some(Action::Close);
-                    }
-                });
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(&mut body, |ui| {
+                        if let Some(view) = &mut self.view {
+                            ui.horizontal(|ui| {
+                                if ui.button(tr("Save model…")).clicked() {
+                                    action = Some(Action::Save(false));
+                                }
+                                if ui.button(tr("Export SVG…")).clicked() {
+                                    action = Some(Action::Save(true));
+                                }
+                            });
+                            view.show(ui);
+                        }
+                        if let Some(error) = &self.error {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(error)
+                                        .color(palette(ctx.global_style().visuals.dark_mode).error),
+                                )
+                                .wrap(),
+                            );
+                        }
+                        if pending {
+                            ui.spinner();
+                            ui.label(tr("Loading…"));
+                        }
+                    });
+                regions.footer_ui(root).with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .button(tr(if pending { "Cancel" } else { "Close" }))
+                            .clicked()
+                        {
+                            action = Some(Action::Close);
+                        }
+                    },
+                );
             },
         );
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -71,7 +88,10 @@ impl DataCraftApp {
         let Some(table) = tables.first().cloned() else {
             return;
         };
-        let Some(connection) = self.conn(table.conn).filter(|c| c.status == ConnStatus::Connected) else {
+        let Some(connection) = self
+            .conn(table.conn)
+            .filter(|c| c.status == ConnStatus::Connected)
+        else {
             self.error(tr("The connection is not open"));
             return;
         };
@@ -79,7 +99,10 @@ impl DataCraftApp {
             self.error(tr("Not available for this engine"));
             return;
         }
-        if tables.iter().any(|t| t.conn != table.conn || t.db != table.db) {
+        if tables
+            .iter()
+            .any(|t| t.conn != table.conn || t.db != table.db)
+        {
             self.error(tr("Select tables in one database"));
             return;
         }
@@ -95,7 +118,13 @@ impl DataCraftApp {
             tables: tables.into_iter().map(|t| (t.schema, t.table)).collect(),
             cancel: Arc::clone(&cancel),
         });
-        self.table_model = Some(Dialog { id, table, cancel, view: None, error: None });
+        self.table_model = Some(Dialog {
+            id,
+            table,
+            cancel,
+            view: None,
+            error: None,
+        });
     }
 
     pub(super) fn table_model_received(&mut self, request_id: u64, result: Result<Model, String>) {
@@ -120,11 +149,22 @@ impl DataCraftApp {
                     return;
                 };
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter(if svg { "SVG" } else { "JSON" }, &[if svg { "svg" } else { "json" }])
-                    .set_file_name(if svg { "table-model.svg" } else { "table-model.json" })
+                    .add_filter(
+                        if svg { "SVG" } else { "JSON" },
+                        &[if svg { "svg" } else { "json" }],
+                    )
+                    .set_file_name(if svg {
+                        "table-model.svg"
+                    } else {
+                        "table-model.json"
+                    })
                     .save_file()
                 {
-                    let contents = if svg { Ok(view.svg()) } else { serde_json::to_string_pretty(view.model()) };
+                    let contents = if svg {
+                        Ok(view.svg())
+                    } else {
+                        serde_json::to_string_pretty(view.model())
+                    };
                     match contents {
                         Ok(contents) => self.worker.send(Request::SaveModel { path, contents }),
                         Err(error) => self.error(error.to_string()),
@@ -149,14 +189,21 @@ mod tests {
         app.consoles[active].text = "SELECT 1".into();
         app.object_browser.active = false;
         app.open_table_model(vec![table]);
-        let mut h = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut DataCraftApp| app.shortcuts(ui.ctx()), app);
+        let mut h = egui_kittest::Harness::builder()
+            .build_ui_state(|ui, app: &mut DataCraftApp| app.shortcuts(ui.ctx()), app);
         h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
         h.run_steps(2);
-        assert!(!h.state().consoles[active].running, "the model dialog must block the hidden console");
+        assert!(
+            !h.state().consoles[active].running,
+            "the model dialog must block the hidden console"
+        );
         h.state_mut().table_model = None;
         h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
         h.run_steps(2);
-        assert!(h.state().consoles[active].running, "the same shortcut works after closing the dialog");
+        assert!(
+            h.state().consoles[active].running,
+            "the same shortcut works after closing the dialog"
+        );
     }
 
     #[test]
@@ -168,10 +215,22 @@ mod tests {
         let old_cancel = Arc::clone(&app.table_model.as_ref().unwrap().cancel);
         app.open_table_model(vec![table]);
         assert!(old_cancel.load(Ordering::Relaxed));
-        app.table_model_received(old, Ok(Model { tables: vec![], relations: vec![] }));
+        app.table_model_received(
+            old,
+            Ok(Model {
+                tables: vec![],
+                relations: vec![],
+            }),
+        );
         assert!(app.table_model.as_ref().unwrap().view.is_none());
         let current = app.table_model.as_ref().unwrap().id;
-        app.table_model_received(current, Ok(Model { tables: vec![], relations: vec![] }));
+        app.table_model_received(
+            current,
+            Ok(Model {
+                tables: vec![],
+                relations: vec![],
+            }),
+        );
         assert!(app.table_model.as_ref().unwrap().view.is_some());
     }
 }

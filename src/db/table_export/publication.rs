@@ -11,11 +11,20 @@ pub(super) fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
         fn move_file_ex(from: *const u16, to: *const u16, flags: u32) -> i32;
     }
     fn wide(path: &Path) -> io::Result<Vec<u16>> {
-        let name = path.file_name().ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         // canonicalize the existing parent for absolute, extended-length and UNC paths;
         // the destination itself need not exist and is never followed.
-        let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let mut path: Vec<u16> = std::fs::canonicalize(parent)?.join(name).as_os_str().encode_wide().collect();
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut path: Vec<u16> = std::fs::canonicalize(parent)?
+            .join(name)
+            .as_os_str()
+            .encode_wide()
+            .collect();
         if path.contains(&0) {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -25,13 +34,18 @@ pub(super) fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
     let (from, to) = (wide(from)?, wide(to)?);
     // SAFETY: both buffers are live, NUL-terminated UTF-16 without interior NULs.
     // No REPLACE_EXISTING or COPY_ALLOWED: this is a same-volume no-clobber rename.
-    if unsafe { move_file_ex(from.as_ptr(), to.as_ptr(), 0) } != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { move_file_ex(from.as_ptr(), to.as_ptr(), 0) } != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn unix_path(path: &Path) -> io::Result<std::ffi::CString> {
     use std::os::unix::ffi::OsStrExt;
-    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| io::ErrorKind::InvalidInput.into())
+    std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::ErrorKind::InvalidInput.into())
 }
 
 #[cfg(target_os = "linux")]
@@ -52,7 +66,11 @@ pub(super) fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
     // SAFETY: renameat2 has exactly this libc ABI and libc remains loaded for the call.
     let rename = unsafe { std::mem::transmute::<*mut c_void, Rename>(symbol) };
     // SAFETY: both CStrings remain live; AT_FDCWD=-100 and RENAME_NOREPLACE=1 are Linux constants.
-    if unsafe { rename(-100, from.as_ptr(), -100, to.as_ptr(), 1) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { rename(-100, from.as_ptr(), -100, to.as_ptr(), 1) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -63,7 +81,11 @@ pub(super) fn no_replace(from: &Path, to: &Path) -> io::Result<()> {
     }
     let (from, to) = (unix_path(from)?, unix_path(to)?);
     // SAFETY: both CStrings remain live and RENAME_EXCL=4 is the Darwin no-replace flag.
-    if unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 4) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if unsafe { renamex_np(from.as_ptr(), to.as_ptr(), 4) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -85,7 +107,12 @@ mod tests {
         let existing = dir.join("target");
         fs::write(&from, b"new").unwrap();
         fs::write(&existing, b"keep").unwrap();
-        assert_eq!(no_replace(&from, &dir.join("target\0suffix")).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            no_replace(&from, &dir.join("target\0suffix"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
         assert_eq!(fs::read(existing).unwrap(), b"keep");
         assert_eq!(fs::read(from).unwrap(), b"new");
         fs::remove_dir_all(dir).unwrap();
@@ -93,7 +120,8 @@ mod tests {
 
     #[test]
     fn review_publication_supports_long_unicode_paths() {
-        let dir = std::env::temp_dir().join(format!("dc-publication-long-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dc-publication-long-{}", uuid::Uuid::new_v4()));
         let nested = dir.join("資料").join("a".repeat(120)).join("b".repeat(120));
         fs::create_dir_all(&nested).unwrap();
         let from = nested.join("stage.tmp");
@@ -114,13 +142,17 @@ mod tests {
         fs::write(&from, b"complete export").unwrap();
         no_replace(&from, &to).unwrap();
         assert_eq!(fs::read(&to).unwrap(), b"complete export");
-        assert!(!from.exists(), "publication must use a no-replace rename, not a hard link");
+        assert!(
+            !from.exists(),
+            "publication must use a no-replace rename, not a hard link"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn review_publication_race_has_exactly_one_winner_and_never_clobbers() {
-        let dir = std::env::temp_dir().join(format!("dc-publication-race-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dc-publication-race-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let target = dir.join("export.json");
         let barrier = Arc::new(Barrier::new(12));
@@ -138,7 +170,11 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        let winners = threads.into_iter().map(|t| t.join().unwrap()).filter(|(_, ok)| *ok).collect::<Vec<_>>();
+        let winners = threads
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(|(_, ok)| *ok)
+            .collect::<Vec<_>>();
         assert_eq!(winners.len(), 1);
         assert_eq!(fs::read(&target).unwrap(), vec![winners[0].0; 65536]);
         let again = dir.join("again");

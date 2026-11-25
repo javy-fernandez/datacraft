@@ -45,7 +45,11 @@ fn my_error(e: mysql_async::Error) -> anyhow::Error {
     match e {
         mysql_async::Error::Server(s) => anyhow!(trf(
             "Error {code} (SQLSTATE {state}): {message}",
-            &[("code", &s.code), ("state", &s.state), ("message", &s.message)]
+            &[
+                ("code", &s.code),
+                ("state", &s.state),
+                ("message", &s.message)
+            ]
         )),
         other => anyhow!(other.to_string()),
     }
@@ -68,14 +72,18 @@ fn tls_options(cfg: &ConnectionConfig) -> anyhow::Result<Option<SslOpts>> {
     match t.mode {
         TlsMode::Disable => return Ok(None),
         TlsMode::Prefer | TlsMode::Require => {
-            ssl = ssl.with_danger_accept_invalid_certs(true).with_danger_skip_domain_validation(true);
+            ssl = ssl
+                .with_danger_accept_invalid_certs(true)
+                .with_danger_skip_domain_validation(true);
         }
         TlsMode::VerifyCa | TlsMode::VerifyFull => {
             if !t.ca_file.trim().is_empty() {
                 // Read now: the file is checked on every connect, and a missing one says so.
                 tls::certificates(&t.ca_file)?;
                 let pem = std::fs::read(tls::path(&t.ca_file))?;
-                ssl = ssl.with_root_certs(vec![pem.into()]).with_disable_built_in_roots(true);
+                ssl = ssl
+                    .with_root_certs(vec![pem.into()])
+                    .with_disable_built_in_roots(true);
             }
             if t.mode == TlsMode::VerifyCa {
                 ssl = ssl.with_danger_skip_domain_validation(true);
@@ -101,7 +109,11 @@ fn tls_options(cfg: &ConnectionConfig) -> anyhow::Result<Option<SslOpts>> {
 
 impl MySession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
-        let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
+        let host = if cfg.host.trim().is_empty() {
+            "localhost"
+        } else {
+            cfg.host.trim()
+        };
         let port = if cfg.port == 0 { 3306 } else { cfg.port };
         let database = cfg.database.trim();
 
@@ -123,11 +135,16 @@ impl MySession {
                 let with_tls = base.clone().ssl_opts(ssl);
                 match open(with_tls.clone()).await {
                     // Prefer: a server without TLS gets a plain connection.
-                    Err(Some(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer))) if cfg.tls.mode == TlsMode::Prefer => {
-                        (open(base.clone()).await, base)
-                    }
-                    Err(Some(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer))) => {
-                        anyhow::bail!(trf("{host}:{port} doesn't offer TLS: choose Prefer or Disable in the SSL settings", &[("host", &host), ("port", &port)]))
+                    Err(Some(mysql_async::Error::Driver(
+                        DriverError::NoClientSslFlagFromServer,
+                    ))) if cfg.tls.mode == TlsMode::Prefer => (open(base.clone()).await, base),
+                    Err(Some(mysql_async::Error::Driver(
+                        DriverError::NoClientSslFlagFromServer,
+                    ))) => {
+                        anyhow::bail!(trf(
+                            "{host}:{port} doesn't offer TLS: choose Prefer or Disable in the SSL settings",
+                            &[("host", &host), ("port", &port)]
+                        ))
                     }
                     other => (other, with_tls),
                 }
@@ -140,7 +157,10 @@ impl MySession {
             anyhow::bail!(reason);
         }
         let conn = conn.map_err(|e| match e {
-            None => anyhow!(trf("Timed out connecting to {host}:{port}", &[("host", &host), ("port", &port)])),
+            None => anyhow!(trf(
+                "Timed out connecting to {host}:{port}",
+                &[("host", &host), ("port", &port)]
+            )),
             Some(mysql_async::Error::Io(io)) => anyhow!(trf(
                 "Could not connect to {host}:{port}",
                 &[("host", &host), ("port", &port)]
@@ -148,15 +168,35 @@ impl MySession {
             .context(io.to_string()),
             Some(other) => my_error(other),
         })?;
-        Ok(Self { conn, opts, broken: false })
+        Ok(Self {
+            conn,
+            opts,
+            broken: false,
+        })
     }
 
     /// "TLSv1.3 TLS_AES_256_GCM_SHA384", or None for a plain connection.
     pub async fn tls_description(&mut self) -> Option<String> {
-        let rows: Vec<(String, String)> =
-            self.conn.query("SHOW SESSION STATUS WHERE Variable_name IN ('Ssl_version', 'Ssl_cipher')").await.ok()?;
-        let get = |name: &str| rows.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
-        Some(format!("{} {}", get("Ssl_version")?, get("Ssl_cipher").unwrap_or_default()).trim().to_string())
+        let rows: Vec<(String, String)> = self
+            .conn
+            .query("SHOW SESSION STATUS WHERE Variable_name IN ('Ssl_version', 'Ssl_cipher')")
+            .await
+            .ok()?;
+        let get = |name: &str| {
+            rows.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.clone())
+                .filter(|v| !v.is_empty())
+        };
+        Some(
+            format!(
+                "{} {}",
+                get("Ssl_version")?,
+                get("Ssl_cipher").unwrap_or_default()
+            )
+            .trim()
+            .to_string(),
+        )
     }
 
     /// Options and server thread id to `KILL QUERY` this session's running statement.
@@ -173,11 +213,13 @@ impl MySession {
         sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
         progress: &std::sync::Arc<super::table_export::ExportProgress>,
     ) -> anyhow::Result<()> {
-        use anyhow::Context as _;
         use super::table_export::{Message, cancelled, mysql_value};
+        use anyhow::Context as _;
         use mysql_async::prelude::Queryable;
         let mut rows = self.conn.query_iter(sql).await?;
-        let metadata = rows.columns().context(tr("Missing export column metadata"))?;
+        let metadata = rows
+            .columns()
+            .context(tr("Missing export column metadata"))?;
         while let Some(row) = rows.next().await? {
             cancelled(progress)?;
             let values = columns
@@ -185,10 +227,20 @@ impl MySession {
                 .enumerate()
                 .map(|(i, c)| {
                     let value = row.as_ref(i).context(tr("Missing export cell"))?;
-                    mysql_value(value, metadata.get(i).context(tr("Missing export column metadata"))?, c, driver)
+                    mysql_value(
+                        value,
+                        metadata
+                            .get(i)
+                            .context(tr("Missing export column metadata"))?,
+                        c,
+                        driver,
+                    )
                 })
                 .collect::<anyhow::Result<_>>()?;
-            sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+            sender
+                .send(Message::Row(values))
+                .await
+                .context(tr("Export writer stopped"))?;
         }
         Ok(())
     }
@@ -209,20 +261,38 @@ impl MySession {
         }
     }
 
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
-        let params = mysql_async::Params::Positional(parameters.iter().map(|v| Value::Bytes(v.as_bytes().to_vec())).collect());
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
+        let params = mysql_async::Params::Positional(
+            parameters
+                .iter()
+                .map(|v| Value::Bytes(v.as_bytes().to_vec()))
+                .collect(),
+        );
         let outcome = async {
             let mut result = self.conn.exec_iter(sql, params).await?;
             collect_results(sql, max_rows, &mut result).await
-        }.await;
+        }
+        .await;
         outcome.map_err(|e| {
-            if breaks_connection(&e) { self.broken = true; }
+            if breaks_connection(&e) {
+                self.broken = true;
+            }
             my_error(e)
         })
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
-        if let Some(db) = self.scalar_strings("SELECT DATABASE()").await?.into_iter().next() {
+        if let Some(db) = self
+            .scalar_strings("SELECT DATABASE()")
+            .await?
+            .into_iter()
+            .next()
+        {
             return Ok(db);
         }
         // Connection without a default database: pick the first user database.
@@ -257,7 +327,11 @@ impl MySession {
     /// First column of each row as text (NULLs skipped).
     async fn scalar_strings(&mut self, sql: &str) -> anyhow::Result<Vec<String>> {
         let rs = self.execute(sql, usize::MAX).await?;
-        Ok(rs.into_iter().flat_map(|r| r.rows).filter_map(|row| row.into_iter().next().flatten()).collect())
+        Ok(rs
+            .into_iter()
+            .flat_map(|r| r.rows)
+            .filter_map(|row| row.into_iter().next().flatten())
+            .collect())
     }
 
     /// Runs a statement and returns the affected rows, marking the session broken on I/O errors.
@@ -333,19 +407,30 @@ impl MySession {
         let mut schema: Option<SchemaInfo> = None;
         for row in rows {
             let text = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
-            let s = schema.get_or_insert_with(|| SchemaInfo { name: text(0), tables: Vec::new() });
+            let s = schema.get_or_insert_with(|| SchemaInfo {
+                name: text(0),
+                tables: Vec::new(),
+            });
             let table = text(1);
             if s.tables.last().is_none_or(|t| t.name != table) {
                 s.tables.push(TableInfo {
                     name: table,
                     // BASE TABLE, SYSTEM VERSIONED (MariaDB), VIEW, SYSTEM VIEW...
-                    kind: if text(2).ends_with("VIEW") { ObjectKind::View } else { ObjectKind::Table },
+                    kind: if text(2).ends_with("VIEW") {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
                     columns: Vec::new(),
                 });
             }
-            let Some(t) = s.tables.last_mut() else { continue };
+            let Some(t) = s.tables.last_mut() else {
+                continue;
+            };
             // Table without visible columns: the LEFT JOIN leaves the column NULL.
-            let Some(Some(column)) = row.get(3).cloned() else { continue };
+            let Some(Some(column)) = row.get(3).cloned() else {
+                continue;
+            };
             t.columns.push(ColumnInfo {
                 name: column,
                 data_type: text(4),
@@ -356,7 +441,10 @@ impl MySession {
         let schema = match schema {
             Some(s) => s,
             // Empty database: still one schema named after it.
-            None => SchemaInfo { name: self.current_database().await?, tables: Vec::new() },
+            None => SchemaInfo {
+                name: self.current_database().await?,
+                tables: Vec::new(),
+            },
         };
         Ok(vec![schema])
     }
@@ -376,13 +464,21 @@ async fn open(opts: OptsBuilder) -> Result<Conn, Option<mysql_async::Error>> {
     }
 }
 
-async fn run(conn: &mut Conn, sql: &str, max_rows: usize) -> Result<Vec<ResultSet>, mysql_async::Error> {
+async fn run(
+    conn: &mut Conn,
+    sql: &str,
+    max_rows: usize,
+) -> Result<Vec<ResultSet>, mysql_async::Error> {
     let mut result = conn.query_iter(sql).await?;
 
     collect_results(sql, max_rows, &mut result).await
 }
 
-async fn collect_results<P: mysql_async::prelude::Protocol>(sql: &str, max_rows: usize, result: &mut mysql_async::QueryResult<'_, '_, P>) -> Result<Vec<ResultSet>, mysql_async::Error> {
+async fn collect_results<P: mysql_async::prelude::Protocol>(
+    sql: &str,
+    max_rows: usize,
+    result: &mut mysql_async::QueryResult<'_, '_, P>,
+) -> Result<Vec<ResultSet>, mysql_async::Error> {
     let statement = sql.trim().to_string();
     let mut start = Instant::now();
     let mut results: Vec<ResultSet> = Vec::new();
@@ -441,7 +537,9 @@ fn cell(value: &Value, column_type: ColumnType, charset: u16) -> Cell {
         Value::UInt(v) => Some(v.to_string()),
         Value::Float(v) => Some(v.to_string()),
         Value::Double(v) => Some(v.to_string()),
-        Value::Date(y, mo, d, h, mi, s, us) => Some(date_text(*y, *mo, *d, *h, *mi, *s, *us, column_type)),
+        Value::Date(y, mo, d, h, mi, s, us) => {
+            Some(date_text(*y, *mo, *d, *h, *mi, *s, *us, column_type))
+        }
         Value::Time(neg, days, h, mi, s, us) => Some(time_text(*neg, *days, *h, *mi, *s, *us)),
     }
 }
@@ -449,9 +547,10 @@ fn cell(value: &Value, column_type: ColumnType, charset: u16) -> Cell {
 fn bytes_text(bytes: &[u8], column_type: ColumnType, charset: u16) -> String {
     match column_type {
         // BIT(n) arrives as big-endian bytes.
-        ColumnType::MYSQL_TYPE_BIT if bytes.len() <= 8 => {
-            bytes.iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b)).to_string()
-        }
+        ColumnType::MYSQL_TYPE_BIT if bytes.len() <= 8 => bytes
+            .iter()
+            .fold(0u64, |acc, b| (acc << 8) | u64::from(*b))
+            .to_string(),
         ColumnType::MYSQL_TYPE_GEOMETRY => hex_preview(bytes),
         ColumnType::MYSQL_TYPE_STRING
         | ColumnType::MYSQL_TYPE_VAR_STRING
@@ -469,7 +568,16 @@ fn bytes_text(bytes: &[u8], column_type: ColumnType, charset: u16) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn date_text(y: u16, mo: u8, d: u8, h: u8, mi: u8, s: u8, us: u32, column_type: ColumnType) -> String {
+fn date_text(
+    y: u16,
+    mo: u8,
+    d: u8,
+    h: u8,
+    mi: u8,
+    s: u8,
+    us: u32,
+    column_type: ColumnType,
+) -> String {
     let date = format!("{y:04}-{mo:02}-{d:02}");
     if column_type == ColumnType::MYSQL_TYPE_DATE {
         return date;
@@ -503,16 +611,28 @@ mod tests {
         for mode in [TlsMode::Prefer, TlsMode::Require] {
             cfg.tls.mode = mode;
             let o = tls_options(&cfg).unwrap().unwrap();
-            assert!(o.accept_invalid_certs() && o.skip_domain_validation(), "{mode:?}");
+            assert!(
+                o.accept_invalid_certs() && o.skip_domain_validation(),
+                "{mode:?}"
+            );
         }
-        cfg.tls = tls::TlsSettings { mode: TlsMode::VerifyFull, ca_file: pki.ca_file.clone(), ..Default::default() };
+        cfg.tls = tls::TlsSettings {
+            mode: TlsMode::VerifyFull,
+            ca_file: pki.ca_file.clone(),
+            ..Default::default()
+        };
         let o = tls_options(&cfg).unwrap().unwrap();
-        assert!(!o.accept_invalid_certs() && !o.skip_domain_validation() && o.disable_built_in_roots());
+        assert!(
+            !o.accept_invalid_certs() && !o.skip_domain_validation() && o.disable_built_in_roots()
+        );
         assert_eq!(o.root_certs().len(), 1);
         assert_eq!(o.tls_hostname_override(), None);
         // Through an SSH tunnel the name to check is the database's.
         cfg.tunnel_host = Some("db.internal".into());
-        assert_eq!(tls_options(&cfg).unwrap().unwrap().tls_hostname_override(), Some("db.internal"));
+        assert_eq!(
+            tls_options(&cfg).unwrap().unwrap().tls_hostname_override(),
+            Some("db.internal")
+        );
         cfg.tls.mode = TlsMode::VerifyCa;
         assert!(tls_options(&cfg).unwrap().unwrap().skip_domain_validation());
         // A client identity, decrypted when the key has a passphrase.
@@ -520,35 +640,103 @@ mod tests {
         cfg.tls.key_file = pki.client_key_encrypted.clone();
         assert!(tls_options(&cfg).is_err());
         cfg.tls.key_passphrase = "pass phrase".into();
-        assert!(tls_options(&cfg).unwrap().unwrap().client_identity().is_some());
+        assert!(
+            tls_options(&cfg)
+                .unwrap()
+                .unwrap()
+                .client_identity()
+                .is_some()
+        );
     }
 
     #[test]
     fn text_values() {
         let t = |b: &[u8], ty, cs| cell(&Value::Bytes(b.to_vec()), ty, cs);
-        assert_eq!(t(b"12.50", ColumnType::MYSQL_TYPE_NEWDECIMAL, BINARY_CHARSET), Some("12.50".into()));
-        assert_eq!(t("ñandú €".as_bytes(), ColumnType::MYSQL_TYPE_VAR_STRING, 255), Some("ñandú €".into()));
-        assert_eq!(t(b"2026-10-16 12:30:00", ColumnType::MYSQL_TYPE_DATETIME, BINARY_CHARSET), Some("2026-10-16 12:30:00".into()));
-        assert_eq!(t(&[0xDE, 0xAD], ColumnType::MYSQL_TYPE_BLOB, BINARY_CHARSET), Some("0xDEAD".into()));
-        assert_eq!(t(&[0xDE, 0xAD], ColumnType::MYSQL_TYPE_STRING, BINARY_CHARSET), Some("0xDEAD".into()));
-        assert_eq!(t(b"long text", ColumnType::MYSQL_TYPE_BLOB, 255), Some("long text".into()));
-        assert_eq!(t(&[0x01, 0x02], ColumnType::MYSQL_TYPE_BIT, BINARY_CHARSET), Some("258".into()));
-        assert_eq!(t(&[0x00, 0x01], ColumnType::MYSQL_TYPE_GEOMETRY, BINARY_CHARSET), Some("0x0001".into()));
-        assert_eq!(cell(&Value::NULL, ColumnType::MYSQL_TYPE_LONG, BINARY_CHARSET), None);
+        assert_eq!(
+            t(b"12.50", ColumnType::MYSQL_TYPE_NEWDECIMAL, BINARY_CHARSET),
+            Some("12.50".into())
+        );
+        assert_eq!(
+            t("ñandú €".as_bytes(), ColumnType::MYSQL_TYPE_VAR_STRING, 255),
+            Some("ñandú €".into())
+        );
+        assert_eq!(
+            t(
+                b"2026-10-16 12:30:00",
+                ColumnType::MYSQL_TYPE_DATETIME,
+                BINARY_CHARSET
+            ),
+            Some("2026-10-16 12:30:00".into())
+        );
+        assert_eq!(
+            t(&[0xDE, 0xAD], ColumnType::MYSQL_TYPE_BLOB, BINARY_CHARSET),
+            Some("0xDEAD".into())
+        );
+        assert_eq!(
+            t(&[0xDE, 0xAD], ColumnType::MYSQL_TYPE_STRING, BINARY_CHARSET),
+            Some("0xDEAD".into())
+        );
+        assert_eq!(
+            t(b"long text", ColumnType::MYSQL_TYPE_BLOB, 255),
+            Some("long text".into())
+        );
+        assert_eq!(
+            t(&[0x01, 0x02], ColumnType::MYSQL_TYPE_BIT, BINARY_CHARSET),
+            Some("258".into())
+        );
+        assert_eq!(
+            t(
+                &[0x00, 0x01],
+                ColumnType::MYSQL_TYPE_GEOMETRY,
+                BINARY_CHARSET
+            ),
+            Some("0x0001".into())
+        );
+        assert_eq!(
+            cell(&Value::NULL, ColumnType::MYSQL_TYPE_LONG, BINARY_CHARSET),
+            None
+        );
     }
 
     #[test]
     fn binary_protocol_values() {
         let c = |v: Value, ty| cell(&v, ty, BINARY_CHARSET).unwrap();
         assert_eq!(c(Value::Int(-5), ColumnType::MYSQL_TYPE_LONG), "-5");
-        assert_eq!(c(Value::UInt(18446744073709551615), ColumnType::MYSQL_TYPE_LONGLONG), "18446744073709551615");
-        assert_eq!(c(Value::Date(2026, 10, 16, 0, 0, 0, 0), ColumnType::MYSQL_TYPE_DATE), "2026-10-16");
-        assert_eq!(c(Value::Date(2026, 10, 16, 9, 5, 3, 0), ColumnType::MYSQL_TYPE_DATETIME), "2026-10-16 09:05:03");
         assert_eq!(
-            c(Value::Date(2026, 10, 16, 9, 5, 3, 1500), ColumnType::MYSQL_TYPE_TIMESTAMP),
+            c(
+                Value::UInt(18446744073709551615),
+                ColumnType::MYSQL_TYPE_LONGLONG
+            ),
+            "18446744073709551615"
+        );
+        assert_eq!(
+            c(
+                Value::Date(2026, 10, 16, 0, 0, 0, 0),
+                ColumnType::MYSQL_TYPE_DATE
+            ),
+            "2026-10-16"
+        );
+        assert_eq!(
+            c(
+                Value::Date(2026, 10, 16, 9, 5, 3, 0),
+                ColumnType::MYSQL_TYPE_DATETIME
+            ),
+            "2026-10-16 09:05:03"
+        );
+        assert_eq!(
+            c(
+                Value::Date(2026, 10, 16, 9, 5, 3, 1500),
+                ColumnType::MYSQL_TYPE_TIMESTAMP
+            ),
             "2026-10-16 09:05:03.001500"
         );
-        assert_eq!(c(Value::Time(true, 1, 2, 3, 4, 0), ColumnType::MYSQL_TYPE_TIME), "-26:03:04");
+        assert_eq!(
+            c(
+                Value::Time(true, 1, 2, 3, 4, 0),
+                ColumnType::MYSQL_TYPE_TIME
+            ),
+            "-26:03:04"
+        );
     }
 
     #[test]
@@ -594,8 +782,15 @@ mod live_tests {
 
     /// Fresh scratch database selected in the session.
     async fn scratch(s: &mut MySession, name: &str) {
-        s.execute(&format!("DROP DATABASE IF EXISTS `{name}`"), 10).await.unwrap();
-        s.execute(&format!("CREATE DATABASE `{name}` CHARACTER SET utf8mb4"), 10).await.unwrap();
+        s.execute(&format!("DROP DATABASE IF EXISTS `{name}`"), 10)
+            .await
+            .unwrap();
+        s.execute(
+            &format!("CREATE DATABASE `{name}` CHARACTER SET utf8mb4"),
+            10,
+        )
+        .await
+        .unwrap();
         s.use_database(name).await.unwrap();
     }
 
@@ -609,10 +804,16 @@ mod live_tests {
         let Some(mut s) = session().await else { return };
         let dbs = s.list_databases().await.unwrap();
         assert!(dbs.iter().any(|d| d == "mysql"), "{dbs:?}");
-        assert!(!dbs.iter().any(|d| d == "information_schema" || d == "performance_schema"));
+        assert!(
+            !dbs.iter()
+                .any(|d| d == "information_schema" || d == "performance_schema")
+        );
         // System databases at the end.
         let first_system = dbs.iter().position(|d| is_system_database(d)).unwrap();
-        assert!(dbs[first_system..].iter().all(|d| is_system_database(d)), "{dbs:?}");
+        assert!(
+            dbs[first_system..].iter().all(|d| is_system_database(d)),
+            "{dbs:?}"
+        );
 
         let current = s.current_database().await.unwrap();
         assert!(!current.is_empty());
@@ -625,10 +826,24 @@ mod live_tests {
     #[ignore]
     async fn tls_when_the_server_supports_it() {
         let Some(mut s) = session().await else { return };
-        let have_ssl = s.execute("SHOW VARIABLES LIKE 'have_ssl'", 10).await.unwrap();
-        let cipher = s.execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'", 10).await.unwrap();
-        let have_ssl = have_ssl[0].rows.first().and_then(|r| r[1].clone()).unwrap_or_default();
-        let cipher = cipher[0].rows.first().and_then(|r| r[1].clone()).unwrap_or_default();
+        let have_ssl = s
+            .execute("SHOW VARIABLES LIKE 'have_ssl'", 10)
+            .await
+            .unwrap();
+        let cipher = s
+            .execute("SHOW SESSION STATUS LIKE 'Ssl_cipher'", 10)
+            .await
+            .unwrap();
+        let have_ssl = have_ssl[0]
+            .rows
+            .first()
+            .and_then(|r| r[1].clone())
+            .unwrap_or_default();
+        let cipher = cipher[0]
+            .rows
+            .first()
+            .and_then(|r| r[1].clone())
+            .unwrap_or_default();
         eprintln!("have_ssl={have_ssl} cipher={cipher}");
         assert_eq!(have_ssl == "YES", !cipher.is_empty());
     }
@@ -668,9 +883,17 @@ mod live_tests {
             .unwrap();
         assert_eq!(rs[0].affected, Some(3));
 
-        let rs = s.execute("SELECT * FROM items ORDER BY id", 2).await.unwrap();
+        let rs = s
+            .execute("SELECT * FROM items ORDER BY id", 2)
+            .await
+            .unwrap();
         assert_eq!(rs.len(), 1);
-        assert_eq!(rs[0].columns, ["id", "name", "price", "born", "at", "data", "flag", "ok", "t"]);
+        assert_eq!(
+            rs[0].columns,
+            [
+                "id", "name", "price", "born", "at", "data", "flag", "ok", "t"
+            ]
+        );
         assert_eq!(rs[0].rows.len(), 2);
         assert!(rs[0].truncated);
         assert_eq!(
@@ -690,28 +913,43 @@ mod live_tests {
         assert!(row(&rs[0], 1)[1..].iter().all(Option::is_none));
 
         // The session stays usable after the truncated read.
-        let rs = s.execute("SELECT COUNT(*) AS n FROM items WHERE 1 = 0", 10).await.unwrap();
+        let rs = s
+            .execute("SELECT COUNT(*) AS n FROM items WHERE 1 = 0", 10)
+            .await
+            .unwrap();
         assert_eq!(row(&rs[0], 0), [Some("0")]);
-        let rs = s.execute("SELECT * FROM items WHERE 1 = 0", 10).await.unwrap();
+        let rs = s
+            .execute("SELECT * FROM items WHERE 1 = 0", 10)
+            .await
+            .unwrap();
         assert_eq!(rs[0].columns.len(), 9);
         assert!(rs[0].rows.is_empty() && !rs[0].truncated);
 
         // SQL errors don't close the session.
         let err = s.execute("SELEC nonsense", 10).await.unwrap_err();
         assert!(err.to_string().contains("1064"), "{err}");
-        let err = s.execute("INSERT INTO items (id) VALUES (1)", 10).await.unwrap_err();
+        let err = s
+            .execute("INSERT INTO items (id) VALUES (1)", 10)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("1062"), "{err}");
         assert!(!s.is_closed());
-        assert_eq!(s.execute("SELECT 1", 10).await.unwrap()[0].rows[0][0].as_deref(), Some("1"));
+        assert_eq!(
+            s.execute("SELECT 1", 10).await.unwrap()[0].rows[0][0].as_deref(),
+            Some("1")
+        );
 
         let rs = s.execute("UPDATE items SET price = 0", 10).await.unwrap();
         // client_found_rows: matched rows, including row 3 that already had 0.
         assert_eq!(rs[0].affected, Some(3));
 
         // Procedure with two result sets.
-        s.execute("CREATE PROCEDURE two() BEGIN SELECT 1 AS a; SELECT 'x' AS b, 2 AS c; END", 10)
-            .await
-            .unwrap();
+        s.execute(
+            "CREATE PROCEDURE two() BEGIN SELECT 1 AS a; SELECT 'x' AS b, 2 AS c; END",
+            10,
+        )
+        .await
+        .unwrap();
         let rs = s.execute("CALL two()", 10).await.unwrap();
         assert_eq!(rs.len(), 2, "{rs:?}");
         assert_eq!(rs[0].columns, ["a"]);
@@ -725,22 +963,38 @@ mod live_tests {
     async fn apply_changes_commit_and_rollback() {
         let Some(mut s) = session().await else { return };
         scratch(&mut s, "dc_my_apply").await;
-        s.execute("CREATE TABLE t (id INT PRIMARY KEY, v VARCHAR(10)) ENGINE=InnoDB", 10).await.unwrap();
-        s.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')", 10).await.unwrap();
+        s.execute(
+            "CREATE TABLE t (id INT PRIMARY KEY, v VARCHAR(10)) ENGINE=InnoDB",
+            10,
+        )
+        .await
+        .unwrap();
+        s.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')", 10)
+            .await
+            .unwrap();
 
         let n = s
-            .apply_changes(&["UPDATE t SET v = 'z' WHERE id = 1".into(), "UPDATE t SET v = 'b' WHERE id = 2".into()])
+            .apply_changes(&[
+                "UPDATE t SET v = 'z' WHERE id = 1".into(),
+                "UPDATE t SET v = 'b' WHERE id = 2".into(),
+            ])
             .await
             .unwrap();
         assert_eq!(n, 2);
 
         let err = s
-            .apply_changes(&["UPDATE t SET v = 'q' WHERE id = 1".into(), "DELETE FROM t WHERE id = 99".into()])
+            .apply_changes(&[
+                "UPDATE t SET v = 'q' WHERE id = 1".into(),
+                "DELETE FROM t WHERE id = 99".into(),
+            ])
             .await
             .unwrap_err();
         assert!(err.to_string().contains("99"), "{err}");
         let err = s
-            .apply_changes(&["UPDATE t SET v = 'q' WHERE id = 1".into(), "INSERT INTO t VALUES (2, 'dup')".into()])
+            .apply_changes(&[
+                "UPDATE t SET v = 'q' WHERE id = 1".into(),
+                "INSERT INTO t VALUES (2, 'dup')".into(),
+            ])
             .await
             .unwrap_err();
         assert!(err.to_string().contains("1062"), "{err}");
@@ -765,7 +1019,9 @@ mod live_tests {
         )
         .await
         .unwrap();
-        s.execute("CREATE VIEW v_items AS SELECT id FROM items", 10).await.unwrap();
+        s.execute("CREATE VIEW v_items AS SELECT id FROM items", 10)
+            .await
+            .unwrap();
 
         let schemas = s.introspect().await.unwrap();
         assert_eq!(schemas.len(), 1);
@@ -778,10 +1034,18 @@ mod live_tests {
         let names: Vec<_> = items.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["id", "code", "price"]);
         // MySQL 8 omits the display width of int; MariaDB shows int(11).
-        assert!(matches!(items.columns[0].data_type.as_str(), "int" | "int(11)"), "{:?}", items.columns[0]);
+        assert!(
+            matches!(items.columns[0].data_type.as_str(), "int" | "int(11)"),
+            "{:?}",
+            items.columns[0]
+        );
         assert_eq!(items.columns[1].data_type, "varchar(20)");
         assert_eq!(items.columns[2].data_type, "decimal(10,2)");
-        assert!(items.columns[0].primary_key && items.columns[1].primary_key && !items.columns[2].primary_key);
+        assert!(
+            items.columns[0].primary_key
+                && items.columns[1].primary_key
+                && !items.columns[2].primary_key
+        );
         assert!(!items.columns[0].nullable && items.columns[2].nullable);
         assert_eq!(tables[1].name, "v_items");
         assert_eq!(tables[1].kind, ObjectKind::View);
@@ -805,8 +1069,12 @@ mod live_tests {
     #[ignore]
     async fn killed_connection_marks_closed() {
         let Some(mut s) = session().await else { return };
-        let id = s.execute("SELECT CONNECTION_ID()", 10).await.unwrap()[0].rows[0][0].clone().unwrap();
-        let Some(mut other) = session().await else { return };
+        let id = s.execute("SELECT CONNECTION_ID()", 10).await.unwrap()[0].rows[0][0]
+            .clone()
+            .unwrap();
+        let Some(mut other) = session().await else {
+            return;
+        };
         other.execute(&format!("KILL {id}"), 10).await.unwrap();
         assert!(s.execute("SELECT 1", 10).await.is_err());
         assert!(s.is_closed());

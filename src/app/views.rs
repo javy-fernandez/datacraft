@@ -43,9 +43,19 @@ impl DataCraftApp {
         if self.refuse_read_only(conn) {
             return;
         }
-        let Some(c) = self.conn(conn).filter(|c| c.status == ConnStatus::Connected) else { return };
+        let Some(c) = self
+            .conn(conn)
+            .filter(|c| c.status == ConnStatus::Connected)
+        else {
+            return;
+        };
         let driver = c.cfg.driver;
-        let schemas: Vec<String> = c.schemas(Some(&db)).unwrap_or_default().iter().map(|s| s.name.clone()).collect();
+        let schemas: Vec<String> = c
+            .schemas(Some(&db))
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
         let default = match driver {
             Driver::MySql | Driver::MariaDb => db.clone(),
             Driver::Oracle => c.cfg.user.to_uppercase(),
@@ -63,15 +73,27 @@ impl DataCraftApp {
         if self.refuse_read_only(t.conn) {
             return;
         }
-        let Some(driver) = self.conn(t.conn).filter(|c| c.status == ConnStatus::Connected).map(|c| c.cfg.driver) else { return };
+        let Some(driver) = self
+            .conn(t.conn)
+            .filter(|c| c.status == ConnStatus::Connected)
+            .map(|c| c.cfg.driver)
+        else {
+            return;
+        };
         let request_id = self.send_view_definition(&t);
-        self.views.dialog = Some(ViewDialog::edit_view(t.conn, driver, t.db, t.schema, t.table, request_id));
+        self.views.dialog = Some(ViewDialog::edit_view(
+            t.conn, driver, t.db, t.schema, t.table, request_id,
+        ));
     }
 
     /// "Generate DDL" of a view: asks for its real definition. false if `t` isn't a known view.
     pub(super) fn request_view_ddl(&mut self, t: &TableRef) -> bool {
-        let is_view = self.table_info(t.conn, Some(&t.db), &t.schema, &t.table).is_some_and(|x| x.kind == ObjectKind::View);
-        let connected = self.conn(t.conn).is_some_and(|c| c.status == ConnStatus::Connected && !c.cfg.driver.is_nosql());
+        let is_view = self
+            .table_info(t.conn, Some(&t.db), &t.schema, &t.table)
+            .is_some_and(|x| x.kind == ObjectKind::View);
+        let connected = self
+            .conn(t.conn)
+            .is_some_and(|c| c.status == ConnStatus::Connected && !c.cfg.driver.is_nosql());
         if !is_view || !connected {
             return false;
         }
@@ -80,12 +102,24 @@ impl DataCraftApp {
         true
     }
 
-    pub(super) fn view_definition_received(&mut self, conn: ConnId, request_id: u64, result: Result<ViewDefinition, String>) {
-        if let Some(d) = self.views.dialog.as_mut().filter(|d| d.conn == conn && d.loading == Some(request_id)) {
+    pub(super) fn view_definition_received(
+        &mut self,
+        conn: ConnId,
+        request_id: u64,
+        result: Result<ViewDefinition, String>,
+    ) {
+        if let Some(d) = self
+            .views
+            .dialog
+            .as_mut()
+            .filter(|d| d.conn == conn && d.loading == Some(request_id))
+        {
             d.definition_loaded(result);
             return;
         }
-        let Some(t) = self.views.ddl.remove(&request_id) else { return };
+        let Some(t) = self.views.ddl.remove(&request_id) else {
+            return;
+        };
         let def = match result {
             Ok(def) => def,
             Err(e) => {
@@ -93,7 +127,9 @@ impl DataCraftApp {
                 return;
             }
         };
-        let Some(driver) = self.conn(t.conn).map(|c| c.cfg.driver) else { return };
+        let Some(driver) = self.conn(t.conn).map(|c| c.cfg.driver) else {
+            return;
+        };
         let spec = ViewSpec {
             schema: t.schema.clone(),
             name: t.table.clone(),
@@ -103,22 +139,40 @@ impl DataCraftApp {
             security: def.security,
             ..Default::default()
         };
-        let text = format!("{};\n", views::create_view_sql(driver, &spec, &t.table, false));
+        let text = format!(
+            "{};\n",
+            views::create_view_sql(driver, &spec, &t.table, false)
+        );
         let i = self.new_console(Some(t.conn), Some(format!("{}.sql", t.table)), text);
         self.consoles[i].db = Some(t.db);
     }
 
     pub(super) fn view_dialog(&mut self, ctx: &egui::Context) {
-        let Some(d) = self.views.dialog.as_ref() else { return };
-        let schemas: Vec<String> =
-            self.conn(d.conn).and_then(|c| c.schemas(Some(&d.db))).unwrap_or_default().iter().map(|s| s.name.clone()).collect();
-        let Some(d) = self.views.dialog.as_mut() else { return };
+        let Some(d) = self.views.dialog.as_ref() else {
+            return;
+        };
+        let schemas: Vec<String> = self
+            .conn(d.conn)
+            .and_then(|c| c.schemas(Some(&d.db)))
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        let Some(d) = self.views.dialog.as_mut() else {
+            return;
+        };
         match d.show(ctx, &schemas) {
             Some(ViewResult::Run(run)) => {
                 d.running = true;
                 d.error = None;
                 let (conn, db) = (d.conn, Some(d.db.clone()));
-                self.worker.send(Request::RunDdl { conn, db, statements: run.statements, close_db: None, transaction: run.transaction });
+                self.worker.send(Request::RunDdl {
+                    conn,
+                    db,
+                    statements: run.statements,
+                    close_db: None,
+                    transaction: run.transaction,
+                });
             }
             Some(ViewResult::Cancel) => self.views.dialog = None,
             None => {}
@@ -127,13 +181,22 @@ impl DataCraftApp {
 
     /// Reply to the dialog's statements. false if they weren't the dialog's.
     pub(super) fn view_ddl_done(&mut self, conn: ConnId, result: &Result<(), String>) -> bool {
-        let Some(d) = self.views.dialog.as_mut().filter(|d| d.conn == conn && d.running) else { return false };
+        let Some(d) = self
+            .views
+            .dialog
+            .as_mut()
+            .filter(|d| d.conn == conn && d.running)
+        else {
+            return false;
+        };
         if let Err(e) = result {
             d.running = false;
             d.error = Some(e.clone());
             return true;
         }
-        let Some(d) = self.views.dialog.take() else { return true };
+        let Some(d) = self.views.dialog.take() else {
+            return true;
+        };
         let name = d.spec.name.trim().to_string();
         let db = d.db.clone();
         let schema = match d.driver {
@@ -141,11 +204,20 @@ impl DataCraftApp {
             Driver::MySql | Driver::MariaDb => db.clone(),
             _ => d.spec.schema.trim().to_string(),
         };
-        let tref = TableRef { conn, db: db.clone(), schema: schema.clone(), table: name.clone() };
+        let tref = TableRef {
+            conn,
+            db: db.clone(),
+            schema: schema.clone(),
+            table: name.clone(),
+        };
         self.explorer.expanded.insert(format!("c:{conn}"));
         self.explorer.expanded.insert(explorer::db_key(conn, &db));
-        self.explorer.expanded.insert(format!("s:{conn}:{db}:{schema}"));
-        self.explorer.expanded.remove(&format!("g:{conn}:{db}:{schema}:v:closed"));
+        self.explorer
+            .expanded
+            .insert(format!("s:{conn}:{db}:{schema}"));
+        self.explorer
+            .expanded
+            .remove(&format!("g:{conn}:{db}:{schema}:v:closed"));
         self.explorer.selected = Some(explorer::table_key(&tref));
         self.explorer.selected_table = Some(tref);
         // As after "New Table": a load already in progress may miss the change, so ask again.
@@ -166,14 +238,23 @@ impl DataCraftApp {
     pub(super) fn demo_view(&mut self, conn: ConnId) {
         let mode = std::env::var("DATACRAFT_DEMO_VIEW").unwrap_or_default();
         let Some(c) = self.conn(conn) else { return };
-        let Some(db) = c.default_db().map(str::to_string) else { return };
+        let Some(db) = c.default_db().map(str::to_string) else {
+            return;
+        };
         let schemas = c.schemas(None).unwrap_or_default();
         let find = |kind: ObjectKind| {
-            schemas.iter().find_map(|s| s.tables.iter().find(|t| t.kind == kind).map(|t| (s.name.clone(), t.name.clone())))
+            schemas.iter().find_map(|s| {
+                s.tables
+                    .iter()
+                    .find(|t| t.kind == kind)
+                    .map(|t| (s.name.clone(), t.name.clone()))
+            })
         };
         match mode.as_str() {
             "new" => {
-                let Some((schema, table)) = find(ObjectKind::Table) else { return };
+                let Some((schema, table)) = find(ObjectKind::Table) else {
+                    return;
+                };
                 self.open_new_view(conn, db, Some(schema));
                 if let Some(d) = self.views.dialog.as_mut() {
                     d.spec.name = format!("{table}_view");
@@ -182,7 +263,12 @@ impl DataCraftApp {
             }
             "edit" => {
                 if let Some((schema, table)) = find(ObjectKind::View) {
-                    self.open_edit_view(TableRef { conn, db, schema, table });
+                    self.open_edit_view(TableRef {
+                        conn,
+                        db,
+                        schema,
+                        table,
+                    });
                 }
             }
             _ => {}

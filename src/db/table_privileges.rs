@@ -38,14 +38,26 @@ pub struct Edit {
     pub expected: Vec<String>,
 }
 
-fn checked_statements(driver: Driver, schema: &str, table: &str, edit: &Edit, current: &Grants) -> anyhow::Result<Vec<String>> {
+fn checked_statements(
+    driver: Driver,
+    schema: &str,
+    table: &str,
+    edit: &Edit,
+    current: &Grants,
+) -> anyhow::Result<Vec<String>> {
     let mut actual = current.granted.clone();
     let mut old = edit.old.clone();
     actual.sort();
     old.sort();
-    anyhow::ensure!(actual == old, tr("The privileges changed. Reload them before applying."));
+    anyhow::ensure!(
+        actual == old,
+        tr("The privileges changed. Reload them before applying.")
+    );
     let result = statements(driver, schema, table, &edit.principal, &edit.old, &edit.new)?;
-    anyhow::ensure!(result == edit.expected, tr("Preview the privileges again before applying."));
+    anyhow::ensure!(
+        result == edit.expected,
+        tr("Preview the privileges again before applying.")
+    );
     Ok(result)
 }
 
@@ -86,18 +98,37 @@ async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
 }
 
 /// Uses a private session: grants never wait behind or alter the data editor's transaction.
-pub async fn run(cfg: ConnectionConfig, db: &str, schema: &str, table: &str, request: Request, cancel: Arc<AtomicBool>) -> anyhow::Result<Grants> {
+pub async fn run(
+    cfg: ConnectionConfig,
+    db: &str,
+    schema: &str,
+    table: &str,
+    request: Request,
+    cancel: Arc<AtomicBool>,
+) -> anyhow::Result<Grants> {
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), tr("Cancelled"));
     if matches!(request, Request::Apply(_)) {
         anyhow::ensure!(!cfg.read_only, tr("Read-only connection"));
     }
     let driver = cfg.driver;
     validate(driver, schema, table, None)?;
-    let mut session = cancellable(Box::pin(open(cfg, db)), None, &cancel, Duration::from_secs(30)).await?;
+    let mut session = cancellable(
+        Box::pin(open(cfg, db)),
+        None,
+        &cancel,
+        Duration::from_secs(30),
+    )
+    .await?;
     macro_rules! read {
         ($principal:expr) => {{
             let handle = session.cancel_handle();
-            cancellable(Box::pin(load(&mut session, driver, schema, table, $principal)), handle, &cancel, Duration::from_secs(30)).await?
+            cancellable(
+                Box::pin(load(&mut session, driver, schema, table, $principal)),
+                handle,
+                &cancel,
+                Duration::from_secs(30),
+            )
+            .await?
         }};
     }
     match request {
@@ -107,7 +138,13 @@ pub async fn run(cfg: ConnectionConfig, db: &str, schema: &str, table: &str, req
             let current = read!(Some(&edit.principal));
             for statement in checked_statements(driver, schema, table, &edit, &current)? {
                 let handle = session.cancel_handle();
-                cancellable(Box::pin(session.execute(&statement, 0)), handle, &cancel, Duration::from_secs(600)).await?;
+                cancellable(
+                    Box::pin(session.execute(&statement, 0)),
+                    handle,
+                    &cancel,
+                    Duration::from_secs(600),
+                )
+                .await?;
             }
             // Some engines commit each grant independently; errors require an explicit reload.
             Ok(read!(Some(&edit.principal)))
@@ -116,30 +153,104 @@ pub async fn run(cfg: ConnectionConfig, db: &str, schema: &str, table: &str, req
 }
 
 pub fn supported(driver: Driver) -> bool {
-    !matches!(driver, Driver::Sqlite | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
+    !matches!(
+        driver,
+        Driver::Sqlite | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto
+    )
 }
 
 fn privileges(driver: Driver) -> &'static [&'static str] {
     match driver {
-        Driver::Postgres => &["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"],
-        Driver::MySql | Driver::MariaDb => {
-            &["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "REFERENCES", "INDEX", "ALTER", "CREATE VIEW", "SHOW VIEW", "TRIGGER"]
-        }
-        Driver::MsSql => &["SELECT", "INSERT", "UPDATE", "DELETE", "REFERENCES", "ALTER", "CONTROL", "TAKE OWNERSHIP", "VIEW DEFINITION"],
-        Driver::Oracle => &["SELECT", "INSERT", "UPDATE", "DELETE", "REFERENCES", "ALTER", "INDEX", "READ", "FLASHBACK", "DEBUG"],
-        Driver::Snowflake => &["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES"],
-        Driver::ClickHouse => &["SELECT", "INSERT", "ALTER UPDATE", "ALTER DELETE", "TRUNCATE", "OPTIMIZE"],
+        Driver::Postgres => &[
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+        ],
+        Driver::MySql | Driver::MariaDb => &[
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "CREATE",
+            "DROP",
+            "REFERENCES",
+            "INDEX",
+            "ALTER",
+            "CREATE VIEW",
+            "SHOW VIEW",
+            "TRIGGER",
+        ],
+        Driver::MsSql => &[
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "REFERENCES",
+            "ALTER",
+            "CONTROL",
+            "TAKE OWNERSHIP",
+            "VIEW DEFINITION",
+        ],
+        Driver::Oracle => &[
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "REFERENCES",
+            "ALTER",
+            "INDEX",
+            "READ",
+            "FLASHBACK",
+            "DEBUG",
+        ],
+        Driver::Snowflake => &[
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+        ],
+        Driver::ClickHouse => &[
+            "SELECT",
+            "INSERT",
+            "ALTER UPDATE",
+            "ALTER DELETE",
+            "TRUNCATE",
+            "OPTIMIZE",
+        ],
         _ => &[],
     }
 }
 
-fn validate(driver: Driver, schema: &str, table: &str, principal: Option<&Principal>) -> anyhow::Result<()> {
-    anyhow::ensure!(supported(driver), tr("Table grants are not available for this engine"));
-    anyhow::ensure!(!schema.is_empty() && !table.is_empty() && !schema.contains('\0') && !table.contains('\0'), tr("Invalid table name"));
+fn validate(
+    driver: Driver,
+    schema: &str,
+    table: &str,
+    principal: Option<&Principal>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        supported(driver),
+        tr("Table grants are not available for this engine")
+    );
+    anyhow::ensure!(
+        !schema.is_empty() && !table.is_empty() && !schema.contains('\0') && !table.contains('\0'),
+        tr("Invalid table name")
+    );
     if let Some(p) = principal {
-        anyhow::ensure!(!p.name.contains('\0') && !p.host.contains('\0'), tr("Invalid principal"));
+        anyhow::ensure!(
+            !p.name.contains('\0') && !p.host.contains('\0'),
+            tr("Invalid principal")
+        );
         if !matches!(driver, Driver::MySql | Driver::MariaDb) {
-            anyhow::ensure!(!p.name.is_empty() && p.host.is_empty(), tr("Invalid principal"));
+            anyhow::ensure!(
+                !p.name.is_empty() && p.host.is_empty(),
+                tr("Invalid principal")
+            );
         }
     }
     Ok(())
@@ -150,14 +261,24 @@ fn rights(driver: Driver, values: &[String]) -> anyhow::Result<BTreeSet<String>>
         .iter()
         .map(|value| {
             let value = value.trim().to_ascii_uppercase();
-            anyhow::ensure!(privileges(driver).contains(&value.as_str()), tr("Unsupported table privilege"));
+            anyhow::ensure!(
+                privileges(driver).contains(&value.as_str()),
+                tr("Unsupported table privilege")
+            );
             Ok(value)
         })
         .collect()
 }
 
 /// Only diff a freshly loaded, editable snapshot. Grant options and grantors are never edited.
-pub fn statements(driver: Driver, schema: &str, table: &str, principal: &Principal, old: &[String], new: &[String]) -> anyhow::Result<Vec<String>> {
+pub fn statements(
+    driver: Driver,
+    schema: &str,
+    table: &str,
+    principal: &Principal,
+    old: &[String],
+    new: &[String],
+) -> anyhow::Result<Vec<String>> {
     validate(driver, schema, table, Some(principal))?;
     let old = rights(driver, old)?;
     let new = rights(driver, new)?;
@@ -169,7 +290,11 @@ pub fn statements(driver: Driver, schema: &str, table: &str, principal: &Princip
     };
     let who = if matches!(driver, Driver::MySql | Driver::MariaDb) {
         // Identifier quoting is independent of NO_BACKSLASH_ESCAPES and ANSI_QUOTES.
-        format!("{}@{}", driver.quote_ident(&principal.name), driver.quote_ident(&principal.host))
+        format!(
+            "{}@{}",
+            driver.quote_ident(&principal.name),
+            driver.quote_ident(&principal.host)
+        )
     } else if driver == Driver::Snowflake {
         format!("ROLE {}", driver.quote_ident(&principal.name))
     } else {
@@ -178,8 +303,15 @@ pub fn statements(driver: Driver, schema: &str, table: &str, principal: &Princip
     let mut result = Vec::new();
     let removed = old.difference(&new).cloned().collect::<Vec<_>>();
     if !removed.is_empty() {
-        let restrict = if matches!(driver, Driver::Postgres | Driver::Snowflake) { " RESTRICT" } else { "" };
-        result.push(format!("REVOKE {} ON {target} FROM {who}{restrict}", removed.join(", ")));
+        let restrict = if matches!(driver, Driver::Postgres | Driver::Snowflake) {
+            " RESTRICT"
+        } else {
+            ""
+        };
+        result.push(format!(
+            "REVOKE {} ON {target} FROM {who}{restrict}",
+            removed.join(", ")
+        ));
     }
     let added = new.difference(&old).cloned().collect::<Vec<_>>();
     if !added.is_empty() {
@@ -192,38 +324,69 @@ fn field<'a>(rs: &ResultSet, row: &'a [Option<String>], name: &str) -> anyhow::R
     nullable_field(rs, row, name)?.context(tr("Incomplete table grant metadata"))
 }
 
-fn nullable_field<'a>(rs: &ResultSet, row: &'a [Option<String>], name: &str) -> anyhow::Result<Option<&'a str>> {
-    let index = rs.columns.iter().position(|c| c.eq_ignore_ascii_case(name)).context(tr("Incomplete table grant metadata"))?;
-    row.get(index).map(|value| value.as_deref()).context(tr("Incomplete table grant metadata"))
+fn nullable_field<'a>(
+    rs: &ResultSet,
+    row: &'a [Option<String>],
+    name: &str,
+) -> anyhow::Result<Option<&'a str>> {
+    let index = rs
+        .columns
+        .iter()
+        .position(|c| c.eq_ignore_ascii_case(name))
+        .context(tr("Incomplete table grant metadata"))?;
+    row.get(index)
+        .map(|value| value.as_deref())
+        .context(tr("Incomplete table grant metadata"))
 }
 
 fn checked_grants(driver: Driver, rs: &ResultSet) -> anyhow::Result<Vec<String>> {
     anyhow::ensure!(!rs.truncated, tr("Table grant metadata was truncated"));
     anyhow::ensure!(
-        rs.columns.iter().any(|c| c.eq_ignore_ascii_case("privilege")) && rs.columns.iter().any(|c| c.eq_ignore_ascii_case("editable")),
+        rs.columns
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case("privilege"))
+            && rs
+                .columns
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("editable")),
         tr("Incomplete table grant metadata")
     );
     let mut result = BTreeSet::new();
     for row in &rs.rows {
         anyhow::ensure!(
             field(rs, row, "editable")? == "1",
-            tr("This principal has grant options, column permissions, ownership, or grants from another grantor; edit these grants in the SQL editor")
+            tr(
+                "This principal has grant options, column permissions, ownership, or grants from another grantor; edit these grants in the SQL editor"
+            )
         );
-        let values = field(rs, row, "privilege")?.split(',').filter(|s| !s.trim().is_empty()).map(String::from).collect::<Vec<_>>();
+        let values = field(rs, row, "privilege")?
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>();
         result.extend(rights(driver, &values)?);
     }
     Ok(result.into_iter().collect())
 }
 
 async fn query(session: &mut Session, sql: &str) -> anyhow::Result<ResultSet> {
-    let result = session.execute(sql, 100_000).await?.into_iter().next().context(tr("Incomplete table grant metadata"))?;
+    let result = session
+        .execute(sql, 100_000)
+        .await?
+        .into_iter()
+        .next()
+        .context(tr("Incomplete table grant metadata"))?;
     anyhow::ensure!(!result.truncated, tr("Table grant metadata was truncated"));
     Ok(result)
 }
 
 fn catalog_literal(driver: Driver, value: &str) -> String {
     if matches!(driver, Driver::MySql | Driver::MariaDb) {
-        let hex = value.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let hex = value
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         format!("CONVERT(X'{hex}' USING utf8mb4)")
     } else if driver == Driver::Postgres {
         format!("E'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
@@ -235,7 +398,9 @@ fn catalog_literal(driver: Driver, value: &str) -> String {
 fn principals_sql(driver: Driver) -> &'static str {
     match driver {
         Driver::Postgres => "SELECT rolname AS name, '' AS host FROM pg_roles ORDER BY 1",
-        Driver::MySql => "SELECT CONVERT(User USING utf8mb4) AS name, CONVERT(Host USING utf8mb4) AS host FROM mysql.user ORDER BY 1, 2",
+        Driver::MySql => {
+            "SELECT CONVERT(User USING utf8mb4) AS name, CONVERT(Host USING utf8mb4) AS host FROM mysql.user ORDER BY 1, 2"
+        }
         // MariaDB role grants use a different TO grammar from user@host grants.
         Driver::MariaDb => {
             "SELECT CONVERT(User USING utf8mb4) AS name, CONVERT(Host USING utf8mb4) AS host FROM mysql.user WHERE IFNULL(is_role, 'N') <> 'Y' ORDER BY 1, 2"
@@ -243,10 +408,14 @@ fn principals_sql(driver: Driver) -> &'static str {
         Driver::MsSql => {
             "SELECT name, '' AS host FROM sys.database_principals WHERE type IN ('S','U','G','R','E','X') AND name NOT IN ('dbo','guest','INFORMATION_SCHEMA','sys') ORDER BY 1"
         }
-        Driver::Oracle => "SELECT username AS name, '' AS host FROM dba_users UNION SELECT role AS name, '' AS host FROM dba_roles ORDER BY 1",
+        Driver::Oracle => {
+            "SELECT username AS name, '' AS host FROM dba_users UNION SELECT role AS name, '' AS host FROM dba_roles ORDER BY 1"
+        }
         Driver::Snowflake => "SHOW ROLES",
         // User and role names share ClickHouse's GRANT namespace. Reject collisions below.
-        Driver::ClickHouse => "SELECT name, '' AS host FROM system.users UNION ALL SELECT name, '' AS host FROM system.roles ORDER BY name",
+        Driver::ClickHouse => {
+            "SELECT name, '' AS host FROM system.users UNION ALL SELECT name, '' AS host FROM system.roles ORDER BY name"
+        }
         _ => "",
     }
 }
@@ -283,27 +452,68 @@ fn grants_sql(driver: Driver, schema: &str, table: &str, p: &Principal) -> Strin
              FROM dba_tab_privs WHERE owner = {s} AND table_name = {t} AND grantee = {name} \
              UNION ALL SELECT privilege, 0 FROM dba_col_privs WHERE owner = {s} AND table_name = {t} AND grantee = {name}"
         ),
-        Driver::Snowflake => format!("SHOW GRANTS ON TABLE {}", Session::quote_table(driver, schema, table)),
+        Driver::Snowflake => format!(
+            "SHOW GRANTS ON TABLE {}",
+            Session::quote_table(driver, schema, table)
+        ),
         // Read the actual column list: older catalogs do not expose is_wildcard.
-        Driver::ClickHouse => format!("SELECT * FROM system.grants WHERE user_name = {name} OR role_name = {name}"),
+        Driver::ClickHouse => {
+            format!("SELECT * FROM system.grants WHERE user_name = {name} OR role_name = {name}")
+        }
         _ => String::new(),
     }
 }
 
-fn clickhouse_snapshot(rs: &ResultSet, schema: &str, table: &str, legacy_version: Option<&str>) -> anyhow::Result<ResultSet> {
+fn clickhouse_snapshot(
+    rs: &ResultSet,
+    schema: &str,
+    table: &str,
+    legacy_version: Option<&str>,
+) -> anyhow::Result<ResultSet> {
     anyhow::ensure!(!rs.truncated, tr("Table grant metadata was truncated"));
-    for name in ["access_type", "database", "table", "column", "is_partial_revoke", "grant_option"] {
-        anyhow::ensure!(rs.columns.iter().any(|column| column.eq_ignore_ascii_case(name)), tr("Incomplete table grant metadata"));
+    for name in [
+        "access_type",
+        "database",
+        "table",
+        "column",
+        "is_partial_revoke",
+        "grant_option",
+    ] {
+        anyhow::ensure!(
+            rs.columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case(name)),
+            tr("Incomplete table grant metadata")
+        );
     }
-    let has_wildcard = rs.columns.iter().any(|column| column.eq_ignore_ascii_case("is_wildcard"));
+    let has_wildcard = rs
+        .columns
+        .iter()
+        .any(|column| column.eq_ignore_ascii_case("is_wildcard"));
     if !has_wildcard {
-        let mut version = legacy_version.context(tr("Incomplete table grant metadata"))?.split('.');
-        let major: u32 = version.next().context(tr("Incomplete table grant metadata"))?.parse().context(tr("Incomplete table grant metadata"))?;
-        let minor: u32 = version.next().context(tr("Incomplete table grant metadata"))?.parse().context(tr("Incomplete table grant metadata"))?;
+        let mut version = legacy_version
+            .context(tr("Incomplete table grant metadata"))?
+            .split('.');
+        let major: u32 = version
+            .next()
+            .context(tr("Incomplete table grant metadata"))?
+            .parse()
+            .context(tr("Incomplete table grant metadata"))?;
+        let minor: u32 = version
+            .next()
+            .context(tr("Incomplete table grant metadata"))?
+            .parse()
+            .context(tr("Incomplete table grant metadata"))?;
         // Prefix grants exist since 24.10, including releases whose catalog loses the prefix flag.
-        anyhow::ensure!((major, minor) < (24, 10), tr("This ClickHouse version lacks wildcard grant metadata; use the SQL editor"));
+        anyhow::ensure!(
+            (major, minor) < (24, 10),
+            tr("This ClickHouse version lacks wildcard grant metadata; use the SQL editor")
+        );
     }
-    let mut result = ResultSet { columns: vec!["privilege".into(), "editable".into()], ..Default::default() };
+    let mut result = ResultSet {
+        columns: vec!["privilege".into(), "editable".into()],
+        ..Default::default()
+    };
     for row in &rs.rows {
         let wildcard = if has_wildcard {
             match field(rs, row, "is_wildcard")? {
@@ -317,8 +527,20 @@ fn clickhouse_snapshot(rs: &ResultSet, schema: &str, table: &str, legacy_version
         let database = nullable_field(rs, row, "database")?;
         let grant_table = nullable_field(rs, row, "table")?;
         // The prefix flag applies to the last specified path component: db*.* or db.table*.
-        let database_matches = database.is_none_or(|name| if wildcard && grant_table.is_none() { schema.starts_with(name) } else { schema == name });
-        let table_matches = grant_table.is_none_or(|name| if wildcard { table.starts_with(name) } else { table == name });
+        let database_matches = database.is_none_or(|name| {
+            if wildcard && grant_table.is_none() {
+                schema.starts_with(name)
+            } else {
+                schema == name
+            }
+        });
+        let table_matches = grant_table.is_none_or(|name| {
+            if wildcard {
+                table.starts_with(name)
+            } else {
+                table == name
+            }
+        });
         if !database_matches || !table_matches {
             continue;
         }
@@ -328,53 +550,111 @@ fn clickhouse_snapshot(rs: &ResultSet, schema: &str, table: &str, legacy_version
             && nullable_field(rs, row, "column")?.is_none()
             && field(rs, row, "is_partial_revoke")? == "0"
             && field(rs, row, "grant_option")? == "0";
-        result.rows.push(vec![Some(field(rs, row, "access_type")?.into()), Some(if editable { "1" } else { "0" }.into())]);
+        result.rows.push(vec![
+            Some(field(rs, row, "access_type")?.into()),
+            Some(if editable { "1" } else { "0" }.into()),
+        ]);
     }
     Ok(result)
 }
 
 /// Requires catalog visibility; a missing permission is an error, never an empty grant list.
 /// Call again immediately before applying to reject a changed or newly unsafe snapshot.
-pub async fn load(session: &mut Session, driver: Driver, schema: &str, table: &str, principal: Option<&Principal>) -> anyhow::Result<Grants> {
+pub async fn load(
+    session: &mut Session,
+    driver: Driver,
+    schema: &str,
+    table: &str,
+    principal: Option<&Principal>,
+) -> anyhow::Result<Grants> {
     validate(driver, schema, table, principal)?;
     if matches!(driver, Driver::MySql | Driver::MariaDb) {
         // Older MySQL and MariaDB can recreate an account dropped after metadata was loaded.
-        let mode = query(session, "SELECT @@SESSION.sql_mode AS mode, VERSION() AS version").await?;
-        let row = mode.rows.first().context(tr("Incomplete table grant metadata"))?;
-        let major = field(&mode, row, "version")?.split('.').next().context(tr("Incomplete table grant metadata"))?.parse::<u32>()?;
+        let mode = query(
+            session,
+            "SELECT @@SESSION.sql_mode AS mode, VERSION() AS version",
+        )
+        .await?;
+        let row = mode
+            .rows
+            .first()
+            .context(tr("Incomplete table grant metadata"))?;
+        let major = field(&mode, row, "version")?
+            .split('.')
+            .next()
+            .context(tr("Incomplete table grant metadata"))?
+            .parse::<u32>()?;
         if driver == Driver::MariaDb || major < 8 {
             anyhow::ensure!(
-                field(&mode, row, "mode")?.split(',').any(|m| m.eq_ignore_ascii_case("NO_AUTO_CREATE_USER")),
+                field(&mode, row, "mode")?
+                    .split(',')
+                    .any(|m| m.eq_ignore_ascii_case("NO_AUTO_CREATE_USER")),
                 tr("Table grants require NO_AUTO_CREATE_USER in this session SQL mode")
             );
         }
     }
     if driver == Driver::MsSql {
         // Catalog filtering must not turn another grantor's hidden grants into unchecked boxes.
-        let visibility = query(session, "SELECT HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION') AS visible").await?;
-        let row = visibility.rows.first().context(tr("Incomplete table grant metadata"))?;
-        anyhow::ensure!(field(&visibility, row, "visible")? == "1", tr("Viewing all table grants requires VIEW DEFINITION on the database"));
+        let visibility = query(
+            session,
+            "SELECT HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION') AS visible",
+        )
+        .await?;
+        let row = visibility
+            .rows
+            .first()
+            .context(tr("Incomplete table grant metadata"))?;
+        anyhow::ensure!(
+            field(&visibility, row, "visible")? == "1",
+            tr("Viewing all table grants requires VIEW DEFINITION on the database")
+        );
     }
-    let list = query(session, principals_sql(driver)).await.context(tr("Could not read table grant principals; catalog access is required"))?;
+    let list = query(session, principals_sql(driver)).await.context(tr(
+        "Could not read table grant principals; catalog access is required",
+    ))?;
     let mut principals = Vec::new();
     for row in &list.rows {
         let name = field(&list, row, "name")?.to_string();
-        let host = if driver == Driver::Snowflake { String::new() } else { field(&list, row, "host")?.to_string() };
+        let host = if driver == Driver::Snowflake {
+            String::new()
+        } else {
+            field(&list, row, "host")?.to_string()
+        };
         let p = Principal { name, host };
         anyhow::ensure!(!principals.contains(&p), tr("Ambiguous principal name"));
         principals.push(p);
     }
     let mut granted = Vec::new();
     if let Some(p) = principal {
-        anyhow::ensure!(principals.contains(p), tr("The principal no longer exists or is not visible"));
-        let raw =
-            query(session, &grants_sql(driver, schema, table, p)).await.context(tr("Could not read explicit table grants; catalog access is required"))?;
+        anyhow::ensure!(
+            principals.contains(p),
+            tr("The principal no longer exists or is not visible")
+        );
+        let raw = query(session, &grants_sql(driver, schema, table, p))
+            .await
+            .context(tr(
+                "Could not read explicit table grants; catalog access is required",
+            ))?;
         let raw = if driver == Driver::ClickHouse {
-            let version = if raw.columns.iter().any(|column| column.eq_ignore_ascii_case("is_wildcard")) {
+            let version = if raw
+                .columns
+                .iter()
+                .any(|column| column.eq_ignore_ascii_case("is_wildcard"))
+            {
                 None
             } else {
                 let version = query(session, "SELECT version() AS version").await?;
-                Some(field(&version, version.rows.first().context(tr("Incomplete table grant metadata"))?, "version")?.to_string())
+                Some(
+                    field(
+                        &version,
+                        version
+                            .rows
+                            .first()
+                            .context(tr("Incomplete table grant metadata"))?,
+                        "version",
+                    )?
+                    .to_string(),
+                )
             };
             clickhouse_snapshot(&raw, schema, table, version.as_deref())?
         } else if driver == Driver::Snowflake {
@@ -384,26 +664,53 @@ pub async fn load(session: &mut Session, driver: Driver, schema: &str, table: &s
                 &format!("SELECT IS_MANAGED_ACCESS AS managed FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = {}", catalog_literal(driver, schema)),
             )
             .await?;
-            let row = schema_state.rows.first().context(tr("Incomplete table grant metadata"))?;
-            anyhow::ensure!(field(&schema_state, row, "managed")?.eq_ignore_ascii_case("NO"), tr("Edit managed access schema grants in the SQL editor"));
+            let row = schema_state
+                .rows
+                .first()
+                .context(tr("Incomplete table grant metadata"))?;
+            anyhow::ensure!(
+                field(&schema_state, row, "managed")?.eq_ignore_ascii_case("NO"),
+                tr("Edit managed access schema grants in the SQL editor")
+            );
             let current = query(session, "SELECT CURRENT_ROLE() AS name").await?;
-            let role = field(&current, current.rows.first().context(tr("Incomplete table grant metadata"))?, "name")?;
+            let role = field(
+                &current,
+                current
+                    .rows
+                    .first()
+                    .context(tr("Incomplete table grant metadata"))?,
+                "name",
+            )?;
             let mut owns_table = false;
             for row in &raw.rows {
-                if field(&raw, row, "privilege")? == "OWNERSHIP" && field(&raw, row, "granted_to")? == "ROLE" && field(&raw, row, "grantee_name")? == role {
+                if field(&raw, row, "privilege")? == "OWNERSHIP"
+                    && field(&raw, row, "granted_to")? == "ROLE"
+                    && field(&raw, row, "grantee_name")? == role
+                {
                     owns_table = true;
                 }
             }
-            anyhow::ensure!(owns_table, tr("Use the table owner role to edit Snowflake table grants"));
-            let mut normalized = ResultSet { columns: vec!["privilege".into(), "editable".into()], ..Default::default() };
+            anyhow::ensure!(
+                owns_table,
+                tr("Use the table owner role to edit Snowflake table grants")
+            );
+            let mut normalized = ResultSet {
+                columns: vec!["privilege".into(), "editable".into()],
+                ..Default::default()
+            };
             for row in &raw.rows {
-                if field(&raw, row, "granted_to")? != "ROLE" || field(&raw, row, "grantee_name")? != p.name {
+                if field(&raw, row, "granted_to")? != "ROLE"
+                    || field(&raw, row, "grantee_name")? != p.name
+                {
                     continue;
                 }
                 let editable = field(&raw, row, "grant_option")?.eq_ignore_ascii_case("false")
                     && field(&raw, row, "granted_by")? == role
                     && field(&raw, row, "granted_by_role_type")? == "ROLE";
-                normalized.rows.push(vec![Some(field(&raw, row, "privilege")?.into()), Some(if editable { "1" } else { "0" }.into())]);
+                normalized.rows.push(vec![
+                    Some(field(&raw, row, "privilege")?.into()),
+                    Some(if editable { "1" } else { "0" }.into()),
+                ]);
             }
             normalized
         } else {
@@ -411,7 +718,11 @@ pub async fn load(session: &mut Session, driver: Driver, schema: &str, table: &s
         };
         granted = checked_grants(driver, &raw)?;
     }
-    Ok(Grants { principals, privileges: privileges(driver).iter().map(|p| (*p).into()).collect(), granted })
+    Ok(Grants {
+        principals,
+        privileges: privileges(driver).iter().map(|p| (*p).into()).collect(),
+        granted,
+    })
 }
 
 #[cfg(test)]
@@ -419,22 +730,40 @@ mod tests {
     use super::*;
 
     fn principal(name: &str, host: &str) -> Principal {
-        Principal { name: name.into(), host: host.into() }
+        Principal {
+            name: name.into(),
+            host: host.into(),
+        }
     }
 
     fn rights(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| (*v).into()).collect()
     }
 
-    type ClickHouseGrant<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a str>, &'a str, u8, u8, u8);
+    type ClickHouseGrant<'a> = (
+        Option<&'a str>,
+        Option<&'a str>,
+        Option<&'a str>,
+        &'a str,
+        u8,
+        u8,
+        u8,
+    );
 
-    fn clickhouse_catalog(rows: &[ClickHouseGrant<'_>], wildcard_column: bool) -> rusqlite::Connection {
+    fn clickhouse_catalog(
+        rows: &[ClickHouseGrant<'_>],
+        wildcard_column: bool,
+    ) -> rusqlite::Connection {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(&format!("ATTACH ':memory:' AS system; CREATE TABLE system.grants(user_name TEXT,role_name TEXT,access_type TEXT,database TEXT,\"table\" TEXT,\"column\" TEXT,is_partial_revoke INTEGER,grant_option INTEGER{});", if wildcard_column { ",is_wildcard INTEGER" } else { "" })).unwrap();
         for &(database, table, column, privilege, wildcard, grant_option, partial_revoke) in rows {
             db.execute("INSERT INTO system.grants(user_name,access_type,database,\"table\",\"column\",is_partial_revoke,grant_option) VALUES('reader',?1,?2,?3,?4,?5,?6)", rusqlite::params![privilege,database,table,column,partial_revoke,grant_option]).unwrap();
             if wildcard_column {
-                db.execute("UPDATE system.grants SET is_wildcard=?1 WHERE rowid=last_insert_rowid()", [wildcard]).unwrap();
+                db.execute(
+                    "UPDATE system.grants SET is_wildcard=?1 WHERE rowid=last_insert_rowid()",
+                    [wildcard],
+                )
+                .unwrap();
             }
         }
         db
@@ -453,7 +782,9 @@ mod tests {
                     .map(|index| {
                         Ok(match row.get_ref(index)? {
                             rusqlite::types::ValueRef::Null => None,
-                            rusqlite::types::ValueRef::Text(value) => Some(String::from_utf8(value.to_vec()).unwrap()),
+                            rusqlite::types::ValueRef::Text(value) => {
+                                Some(String::from_utf8(value.to_vec()).unwrap())
+                            }
                             rusqlite::types::ValueRef::Integer(value) => Some(value.to_string()),
                             _ => panic!("unexpected catalog fixture type"),
                         })
@@ -463,7 +794,11 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        ResultSet { columns, rows, ..Default::default() }
+        ResultSet {
+            columns,
+            rows,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -482,7 +817,10 @@ mod tests {
         db.execute("INSERT INTO system.grants(user_name,access_type,database,\"table\",is_partial_revoke,grant_option,is_wildcard) VALUES('someone_else','UPDATE','sales','orders',0,1,0)", []).unwrap();
         let raw = clickhouse_fixture_query(&db, "sales", "orders");
         let snapshot = clickhouse_snapshot(&raw, "sales", "orders", None).unwrap();
-        assert_eq!(checked_grants(Driver::ClickHouse, &snapshot).unwrap(), ["SELECT"]);
+        assert_eq!(
+            checked_grants(Driver::ClickHouse, &snapshot).unwrap(),
+            ["SELECT"]
+        );
     }
 
     #[test]
@@ -500,24 +838,44 @@ mod tests {
             let db = clickhouse_catalog(&[row], true);
             let raw = clickhouse_fixture_query(&db, "sales", "orders");
             let snapshot = clickhouse_snapshot(&raw, "sales", "orders", None).unwrap();
-            assert!(checked_grants(Driver::ClickHouse, &snapshot).is_err(), "{row:?}");
+            assert!(
+                checked_grants(Driver::ClickHouse, &snapshot).is_err(),
+                "{row:?}"
+            );
         }
     }
 
     #[test]
     fn clickhouse_legacy_exact_grants_do_not_require_wildcard_column() {
         for (schema, table) in [("sales", "orders"), ("sa*les", "ord_ers%")] {
-            let db = clickhouse_catalog(&[(Some(schema), Some(table), None, "SELECT", 0, 0, 0)], false);
+            let db = clickhouse_catalog(
+                &[(Some(schema), Some(table), None, "SELECT", 0, 0, 0)],
+                false,
+            );
             let raw = clickhouse_fixture_query(&db, schema, table);
             let snapshot = clickhouse_snapshot(&raw, schema, table, Some("24.9.3.128")).unwrap();
-            assert_eq!(checked_grants(Driver::ClickHouse, &snapshot).unwrap(), ["SELECT"]);
+            assert_eq!(
+                checked_grants(Driver::ClickHouse, &snapshot).unwrap(),
+                ["SELECT"]
+            );
         }
     }
 
     #[test]
     fn clickhouse_legacy_prefix_capable_catalogs_fail_closed() {
         let raw = ResultSet {
-            columns: ["user_name", "role_name", "access_type", "database", "table", "column", "is_partial_revoke", "grant_option"].map(String::from).into(),
+            columns: [
+                "user_name",
+                "role_name",
+                "access_type",
+                "database",
+                "table",
+                "column",
+                "is_partial_revoke",
+                "grant_option",
+            ]
+            .map(String::from)
+            .into(),
             rows: vec![],
             ..Default::default()
         };
@@ -528,7 +886,10 @@ mod tests {
 
     #[test]
     fn clickhouse_malformed_catalogs_never_become_editable_snapshots() {
-        let db = clickhouse_catalog(&[(Some("sales"), Some("orders"), None, "SELECT", 0, 0, 0)], true);
+        let db = clickhouse_catalog(
+            &[(Some("sales"), Some("orders"), None, "SELECT", 0, 0, 0)],
+            true,
+        );
         let raw = clickhouse_fixture_query(&db, "sales", "orders");
         let mut bad = raw.clone();
         bad.truncated = true;
@@ -537,14 +898,22 @@ mod tests {
         bad.columns.retain(|name| name != "grant_option");
         assert!(clickhouse_snapshot(&bad, "sales", "orders", None).is_err());
         bad = raw;
-        let wildcard = bad.columns.iter().position(|name| name == "is_wildcard").unwrap();
+        let wildcard = bad
+            .columns
+            .iter()
+            .position(|name| name == "is_wildcard")
+            .unwrap();
         bad.rows[0][wildcard] = Some("2".into());
         assert!(clickhouse_snapshot(&bad, "sales", "orders", None).is_err());
     }
 
     #[test]
     fn grants_apply_rejects_drift_and_unapproved_sql() {
-        let current = Grants { principals: vec![], privileges: vec![], granted: rights(&["SELECT"]) };
+        let current = Grants {
+            principals: vec![],
+            privileges: vec![],
+            granted: rights(&["SELECT"]),
+        };
         let edit = Edit {
             principal: principal("reader", ""),
             old: rights(&["SELECT"]),
@@ -554,29 +923,62 @@ mod tests {
                 "GRANT UPDATE ON TABLE \"public\".\"notes\" TO \"reader\"",
             ]),
         };
-        assert_eq!(checked_statements(Driver::Postgres, "public", "notes", &edit, &current).unwrap(), edit.expected);
+        assert_eq!(
+            checked_statements(Driver::Postgres, "public", "notes", &edit, &current).unwrap(),
+            edit.expected
+        );
         let mut changed = edit.clone();
         changed.old.clear();
-        assert!(checked_statements(Driver::Postgres, "public", "notes", &changed, &current).is_err());
+        assert!(
+            checked_statements(Driver::Postgres, "public", "notes", &changed, &current).is_err()
+        );
         changed = edit;
         changed.expected = rights(&["DROP USER reader"]);
-        assert!(checked_statements(Driver::Postgres, "public", "notes", &changed, &current).is_err());
+        assert!(
+            checked_statements(Driver::Postgres, "public", "notes", &changed, &current).is_err()
+        );
     }
 
     #[tokio::test]
     async fn grants_read_only_and_cancelled_requests_stop_before_opening_a_session() {
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.read_only = true;
-        let edit = Edit { principal: principal("reader", ""), old: vec![], new: rights(&["SELECT"]), expected: vec![] };
-        let error = run(cfg.clone(), "main", "main", "notes", Request::Apply(edit), Arc::default()).await.unwrap_err();
+        let edit = Edit {
+            principal: principal("reader", ""),
+            old: vec![],
+            new: rights(&["SELECT"]),
+            expected: vec![],
+        };
+        let error = run(
+            cfg.clone(),
+            "main",
+            "main",
+            "notes",
+            Request::Apply(edit),
+            Arc::default(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.to_string(), tr("Read-only connection"));
-        let error = run(cfg, "main", "main", "notes", Request::Load(None), Arc::new(AtomicBool::new(true))).await.unwrap_err();
+        let error = run(
+            cfg,
+            "main",
+            "main",
+            "notes",
+            Request::Load(None),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.to_string(), tr("Cancelled"));
     }
 
     #[tokio::test]
     async fn grants_cancellation_interrupts_native_work_and_timeout_is_bounded() {
-        let path = std::env::temp_dir().join(format!("datacraft-grants-cancel-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-grants-cancel-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         drop(rusqlite::Connection::open(&path).unwrap());
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
@@ -588,12 +990,28 @@ mod tests {
             trigger.store(true, Ordering::Relaxed);
         });
         let handle = session.cancel_handle();
-        let sql = "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n) SELECT max(x) FROM n";
-        let result = cancellable(Box::pin(session.execute(sql, 1)), handle, &cancel, Duration::from_secs(5)).await;
+        let sql =
+            "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n) SELECT max(x) FROM n";
+        let result = cancellable(
+            Box::pin(session.execute(sql, 1)),
+            handle,
+            &cancel,
+            Duration::from_secs(5),
+        )
+        .await;
         assert_eq!(result.unwrap_err().to_string(), tr("Cancelled"));
         task.await.unwrap();
-        let timeout = cancellable(std::future::pending::<anyhow::Result<()>>(), None, &AtomicBool::new(false), Duration::from_millis(5)).await;
-        assert_eq!(timeout.unwrap_err().to_string(), tr("Table operation timed out"));
+        let timeout = cancellable(
+            std::future::pending::<anyhow::Result<()>>(),
+            None,
+            &AtomicBool::new(false),
+            Duration::from_millis(5),
+        )
+        .await;
+        assert_eq!(
+            timeout.unwrap_err().to_string(),
+            tr("Table operation timed out")
+        );
         drop(session);
         std::fs::remove_file(path).unwrap();
     }
@@ -602,41 +1020,138 @@ mod tests {
     fn diffs_only_named_table_rights_without_changing_grant_option() {
         let who = principal("reporter", "");
         assert_eq!(
-            statements(Driver::Postgres, "public", "orders", &who, &rights(&["SELECT", "INSERT"]), &rights(&["SELECT", "UPDATE"])).unwrap(),
-            ["REVOKE INSERT ON TABLE \"public\".\"orders\" FROM \"reporter\" RESTRICT", "GRANT UPDATE ON TABLE \"public\".\"orders\" TO \"reporter\"",]
+            statements(
+                Driver::Postgres,
+                "public",
+                "orders",
+                &who,
+                &rights(&["SELECT", "INSERT"]),
+                &rights(&["SELECT", "UPDATE"])
+            )
+            .unwrap(),
+            [
+                "REVOKE INSERT ON TABLE \"public\".\"orders\" FROM \"reporter\" RESTRICT",
+                "GRANT UPDATE ON TABLE \"public\".\"orders\" TO \"reporter\"",
+            ]
         );
-        assert!(statements(Driver::Postgres, "public", "orders", &who, &rights(&["SELECT"]), &rights(&["select", "SELECT"])).unwrap().is_empty());
+        assert!(
+            statements(
+                Driver::Postgres,
+                "public",
+                "orders",
+                &who,
+                &rights(&["SELECT"]),
+                &rights(&["select", "SELECT"])
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
     fn quotes_dialect_specific_targets_and_accounts() {
         for (driver, schema, table, who, expected) in [
-            (Driver::Postgres, "s\"x", "t\"x", principal("r\";DROP ROLE x;--", ""), "GRANT SELECT ON TABLE \"s\"\"x\".\"t\"\"x\" TO \"r\"\";DROP ROLE x;--\""),
-            (Driver::MySql, "s`x", "t`x", principal("r`'\\x", "h`%"), "GRANT SELECT ON `s``x`.`t``x` TO `r``'\\x`@`h``%`"),
-            (Driver::MariaDb, "s", "t", principal("r", "localhost"), "GRANT SELECT ON `s`.`t` TO `r`@`localhost`"),
-            (Driver::MsSql, "s]x", "t]x", principal("r]x", ""), "GRANT SELECT ON OBJECT::[s]]x].[t]]x] TO [r]]x]"),
-            (Driver::Oracle, "SCHEMA", "T", principal("REPORTER", ""), "GRANT SELECT ON \"SCHEMA\".\"T\" TO \"REPORTER\""),
-            (Driver::Snowflake, "S", "T", principal("ROLE", ""), "GRANT SELECT ON TABLE \"S\".\"T\" TO ROLE \"ROLE\""),
-            (Driver::ClickHouse, "s", "t`\\x", principal("r`\\x", ""), "GRANT SELECT ON `s`.`t\\`\\\\x` TO `r\\`\\\\x`"),
+            (
+                Driver::Postgres,
+                "s\"x",
+                "t\"x",
+                principal("r\";DROP ROLE x;--", ""),
+                "GRANT SELECT ON TABLE \"s\"\"x\".\"t\"\"x\" TO \"r\"\";DROP ROLE x;--\"",
+            ),
+            (
+                Driver::MySql,
+                "s`x",
+                "t`x",
+                principal("r`'\\x", "h`%"),
+                "GRANT SELECT ON `s``x`.`t``x` TO `r``'\\x`@`h``%`",
+            ),
+            (
+                Driver::MariaDb,
+                "s",
+                "t",
+                principal("r", "localhost"),
+                "GRANT SELECT ON `s`.`t` TO `r`@`localhost`",
+            ),
+            (
+                Driver::MsSql,
+                "s]x",
+                "t]x",
+                principal("r]x", ""),
+                "GRANT SELECT ON OBJECT::[s]]x].[t]]x] TO [r]]x]",
+            ),
+            (
+                Driver::Oracle,
+                "SCHEMA",
+                "T",
+                principal("REPORTER", ""),
+                "GRANT SELECT ON \"SCHEMA\".\"T\" TO \"REPORTER\"",
+            ),
+            (
+                Driver::Snowflake,
+                "S",
+                "T",
+                principal("ROLE", ""),
+                "GRANT SELECT ON TABLE \"S\".\"T\" TO ROLE \"ROLE\"",
+            ),
+            (
+                Driver::ClickHouse,
+                "s",
+                "t`\\x",
+                principal("r`\\x", ""),
+                "GRANT SELECT ON `s`.`t\\`\\\\x` TO `r\\`\\\\x`",
+            ),
         ] {
-            assert_eq!(statements(driver, schema, table, &who, &[], &rights(&["SELECT"])).unwrap(), [expected]);
+            assert_eq!(
+                statements(driver, schema, table, &who, &[], &rights(&["SELECT"])).unwrap(),
+                [expected]
+            );
         }
     }
 
     #[test]
     fn rejects_privilege_injection_and_unsupported_engines() {
         for driver in Driver::ALL {
-            let who = principal("reporter", if matches!(driver, Driver::MySql | Driver::MariaDb) { "%" } else { "" });
-            assert!(statements(driver, "s", "t", &who, &[], &rights(&["SELECT; DROP TABLE t"])).is_err());
+            let who = principal(
+                "reporter",
+                if matches!(driver, Driver::MySql | Driver::MariaDb) {
+                    "%"
+                } else {
+                    ""
+                },
+            );
+            assert!(
+                statements(
+                    driver,
+                    "s",
+                    "t",
+                    &who,
+                    &[],
+                    &rights(&["SELECT; DROP TABLE t"])
+                )
+                .is_err()
+            );
             assert!(statements(driver, "s", "t", &who, &rights(&["GRANT OPTION"]), &[]).is_err());
-            if matches!(driver, Driver::Sqlite | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto) {
+            if matches!(
+                driver,
+                Driver::Sqlite | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto
+            ) {
                 assert!(!supported(driver));
                 assert!(statements(driver, "s", "t", &who, &[], &[]).is_err());
             } else {
                 assert!(supported(driver));
             }
         }
-        assert!(statements(Driver::Postgres, "s", "t", &principal("r", "host"), &[], &[]).is_err());
+        assert!(
+            statements(
+                Driver::Postgres,
+                "s",
+                "t",
+                &principal("r", "host"),
+                &[],
+                &[]
+            )
+            .is_err()
+        );
         assert!(statements(Driver::Postgres, "s", "t\0", &principal("r", ""), &[], &[]).is_err());
     }
 
@@ -647,7 +1162,10 @@ mod tests {
             rows: vec![vec![Some(privilege.into()), Some(editable.into())]],
             ..Default::default()
         };
-        assert_eq!(checked_grants(Driver::MySql, &row("Select,Insert", "1")).unwrap(), ["INSERT", "SELECT"]);
+        assert_eq!(
+            checked_grants(Driver::MySql, &row("Select,Insert", "1")).unwrap(),
+            ["INSERT", "SELECT"]
+        );
         assert!(checked_grants(Driver::Postgres, &row("SELECT", "0")).is_err());
         assert!(checked_grants(Driver::MySql, &row("Select,Grant", "1")).is_err());
         assert!(checked_grants(Driver::Postgres, &row("SELECT", "unknown")).is_err());

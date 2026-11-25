@@ -61,7 +61,10 @@ impl RestoreContent {
 
 /// Engines with a native restore; Oracle Data Pump imports, SQLite and Snowflake are not offered.
 pub fn supported(driver: Driver) -> bool {
-    matches!(driver, Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::MsSql)
+    matches!(
+        driver,
+        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::MsSql
+    )
 }
 
 /// Local engines read the backup on this computer; SQL Server reads it on the server.
@@ -141,17 +144,27 @@ impl RestoreRequest {
             bail!(tr("Restore is not available for this engine"));
         }
         let fields = [&self.source, &self.db, &self.utility, &self.maintenance];
-        if self.source.trim().is_empty() || self.db.trim().is_empty() || fields.iter().any(|s| s.contains('\0')) {
+        if self.source.trim().is_empty()
+            || self.db.trim().is_empty()
+            || fields.iter().any(|s| s.contains('\0'))
+        {
             bail!(tr("Invalid restore parameter"));
         }
         let Some(format) = self.format else {
             bail!(tr("Inspect the backup before restoring"));
         };
-        if (driver == Driver::MsSql) != (format == RestoreFormat::MsSql) || (driver != Driver::Postgres && format.archive()) {
+        if (driver == Driver::MsSql) != (format == RestoreFormat::MsSql)
+            || (driver != Driver::Postgres && format.archive())
+        {
             bail!(tr("Choose a .sql or .sql.gz dump for this engine"));
         }
         if driver == Driver::MsSql {
-            if self.position == 0 || self.moves.iter().any(|(l, p)| l.is_empty() || p.trim().is_empty() || p.contains('\0')) {
+            if self.position == 0
+                || self
+                    .moves
+                    .iter()
+                    .any(|(l, p)| l.is_empty() || p.trim().is_empty() || p.contains('\0'))
+            {
                 bail!(tr("Invalid restore parameter"));
             }
             return Ok(());
@@ -169,13 +182,20 @@ impl RestoreRequest {
         {
             bail!(tr("Choose a native restore executable"));
         }
-        if driver == Driver::Postgres && [&self.db, &self.maintenance].iter().any(|s| s.contains(['\n', '\r'])) {
+        if driver == Driver::Postgres
+            && [&self.db, &self.maintenance]
+                .iter()
+                .any(|s| s.contains(['\n', '\r']))
+        {
             bail!(tr("Invalid restore parameter"));
         }
         if self.clean && self.content == RestoreContent::Data {
             bail!(tr("Clean cannot be combined with Data only"));
         }
-        if !(1..=64).contains(&self.jobs) || (self.jobs > 1 && !matches!(format, RestoreFormat::Custom | RestoreFormat::Directory)) {
+        if !(1..=64).contains(&self.jobs)
+            || (self.jobs > 1
+                && !matches!(format, RestoreFormat::Custom | RestoreFormat::Directory))
+        {
             bail!(tr("Parallel jobs need a custom or directory archive"));
         }
         if self.create && driver == Driver::Postgres && self.maintenance.trim().is_empty() {
@@ -200,12 +220,20 @@ impl RestoreRequest {
         let value = |v: &str| literal(Driver::MsSql, &Some(v.into()));
         let db = Driver::MsSql.quote_ident(&self.db);
         let mut options = vec![format!("FILE = {}", self.position)];
-        options.extend(self.moves.iter().map(|(logical, physical)| format!("MOVE {} TO {}", value(logical), value(physical))));
+        options.extend(
+            self.moves.iter().map(|(logical, physical)| {
+                format!("MOVE {} TO {}", value(logical), value(physical))
+            }),
+        );
         if self.replace {
             options.push("REPLACE".into());
         }
         options.extend(["RECOVERY".into(), "STATS = 5".into()]);
-        let restore = format!("RESTORE DATABASE {db} FROM DISK = {} WITH {}", value(&self.source), options.join(", "));
+        let restore = format!(
+            "RESTORE DATABASE {db} FROM DISK = {} WITH {}",
+            value(&self.source),
+            options.join(", ")
+        );
         Ok(if self.single_user {
             format!("ALTER DATABASE {db} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\n{restore}")
         } else {
@@ -215,10 +243,16 @@ impl RestoreRequest {
 }
 
 pub fn mssql_headers_sql(source: &str) -> String {
-    format!("RESTORE HEADERONLY FROM DISK = {}", literal(Driver::MsSql, &Some(source.into())))
+    format!(
+        "RESTORE HEADERONLY FROM DISK = {}",
+        literal(Driver::MsSql, &Some(source.into()))
+    )
 }
 pub fn mssql_files_sql(source: &str, position: u32) -> String {
-    format!("RESTORE FILELISTONLY FROM DISK = {} WITH FILE = {position}", literal(Driver::MsSql, &Some(source.into())))
+    format!(
+        "RESTORE FILELISTONLY FROM DISK = {} WITH FILE = {position}",
+        literal(Driver::MsSql, &Some(source.into()))
+    )
 }
 
 /// Shared between the dialog and the job: cancellation and progress in per mille.
@@ -228,7 +262,10 @@ pub struct RestoreProgress {
 }
 impl Default for RestoreProgress {
     fn default() -> Self {
-        Self { cancel: AtomicBool::new(false), permille: AtomicU32::new(u32::MAX) }
+        Self {
+            cancel: AtomicBool::new(false),
+            permille: AtomicU32::new(u32::MAX),
+        }
     }
 }
 impl RestoreProgress {
@@ -239,7 +276,8 @@ impl RestoreProgress {
     }
     pub fn set(&self, done: u64, total: u64) {
         if let Some(permille) = done.saturating_mul(1000).checked_div(total) {
-            self.permille.store(permille.min(1000) as u32, Ordering::Relaxed);
+            self.permille
+                .store(permille.min(1000) as u32, Ordering::Relaxed);
         }
     }
     fn cancelled(&self) -> bool {
@@ -347,10 +385,15 @@ pub fn parse_toc(text: &str) -> Toc {
 }
 
 fn column(result: &ResultSet, name: &str) -> Option<usize> {
-    result.columns.iter().position(|c| c.eq_ignore_ascii_case(name))
+    result
+        .columns
+        .iter()
+        .position(|c| c.eq_ignore_ascii_case(name))
 }
 fn cell(result: &ResultSet, row: &[Option<String>], name: &str) -> String {
-    column(result, name).and_then(|i| row.get(i).cloned().flatten()).unwrap_or_default()
+    column(result, name)
+        .and_then(|i| row.get(i).cloned().flatten())
+        .unwrap_or_default()
 }
 
 pub fn parse_headers(result: &ResultSet) -> Vec<BackupSet> {
@@ -385,7 +428,16 @@ pub fn parse_files(result: &ResultSet) -> Vec<BackupFile> {
 /// New server paths: the original folder, with the source database name in the file name
 /// replaced by the target (or the target prefixed), so a copy never reuses the source's files.
 pub fn default_moves(files: &[BackupFile], source_db: &str, target: &str) -> Vec<(String, String)> {
-    let safe: String = target.chars().map(|c| if c.is_alphanumeric() || matches!(c, '_' | '-' | '.') { c } else { '_' }).collect();
+    let safe: String = target
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     files
         .iter()
         .map(|f| {
@@ -413,16 +465,28 @@ fn pg_dsn(cfg: &ConnectionConfig, db: &str) -> String {
     )
 }
 
-fn restore_command(cfg: &ConnectionConfig, request: &RestoreRequest, credentials: &Credentials) -> anyhow::Result<Command> {
-    if [&cfg.host, &cfg.user, &cfg.password].iter().any(|s| s.contains('\0')) {
+fn restore_command(
+    cfg: &ConnectionConfig,
+    request: &RestoreRequest,
+    credentials: &Credentials,
+) -> anyhow::Result<Command> {
+    if [&cfg.host, &cfg.user, &cfg.password]
+        .iter()
+        .any(|s| s.contains('\0'))
+    {
         bail!(tr("Invalid restore parameter"));
     }
-    let format = request.format.context(tr("Inspect the backup before restoring"))?;
+    let format = request
+        .format
+        .context(tr("Inspect the backup before restoring"))?;
     let mut command = Command::new(&request.utility);
     hide(&mut command);
     match cfg.driver {
         Driver::Postgres => {
-            if [&cfg.host, &cfg.user, &cfg.password].iter().any(|s| s.contains(['\n', '\r'])) {
+            if [&cfg.host, &cfg.user, &cfg.password]
+                .iter()
+                .any(|s| s.contains(['\n', '\r']))
+            {
                 bail!(tr("Invalid restore parameter"));
             }
             let escape = |s: &str| s.replace('\\', "\\\\").replace(':', "\\:");
@@ -435,7 +499,13 @@ fn restore_command(cfg: &ConnectionConfig, request: &RestoreRequest, credentials
                 escape(&cfg.password)
             ))?;
             // English client messages: progress and diagnostics are recognised by their text.
-            command.env_remove("PGPASSWORD").env("PGPASSFILE", pass).env("LC_MESSAGES", "C").arg("--dbname").arg(pg_dsn(cfg, &request.db)).arg("--no-password");
+            command
+                .env_remove("PGPASSWORD")
+                .env("PGPASSFILE", pass)
+                .env("LC_MESSAGES", "C")
+                .arg("--dbname")
+                .arg(pg_dsn(cfg, &request.db))
+                .arg("--no-password");
             if format.archive() {
                 command.args(["--exit-on-error", "--verbose"]);
                 if request.clean {
@@ -493,18 +563,39 @@ fn database_statement(driver: Driver, line: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(&line[..line.len().min(1024)]);
     let mut s = text.trim();
     if let Some(rest) = s.strip_prefix("/*!") {
-        s = rest.trim_start_matches(|c: char| c.is_ascii_digit()).trim_start();
+        s = rest
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start();
     }
     let keywords: &[&str] = if driver == Driver::Postgres {
-        &["CREATE DATABASE", "DROP DATABASE", "ALTER DATABASE", "\\CONNECT", "\\C"]
+        &[
+            "CREATE DATABASE",
+            "DROP DATABASE",
+            "ALTER DATABASE",
+            "\\CONNECT",
+            "\\C",
+        ]
     } else {
-        &["CREATE DATABASE", "CREATE SCHEMA", "DROP DATABASE", "DROP SCHEMA", "ALTER DATABASE", "ALTER SCHEMA", "USE", "CONNECT", "\\U", "\\R"]
+        &[
+            "CREATE DATABASE",
+            "CREATE SCHEMA",
+            "DROP DATABASE",
+            "DROP SCHEMA",
+            "ALTER DATABASE",
+            "ALTER SCHEMA",
+            "USE",
+            "CONNECT",
+            "\\U",
+            "\\R",
+        ]
     };
     let upper = s.to_ascii_uppercase();
     let rest = keywords.iter().find_map(|k| {
         let rest = upper.strip_prefix(k)?;
         // Whole words only: `USER`, `\copy` and `CONNECTION` switch nothing.
-        (rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | ';' | '/'))).then(|| &s[k.len()..])
+        (rest.is_empty()
+            || rest.starts_with(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | ';' | '/')))
+        .then(|| &s[k.len()..])
     })?;
     for quote in ['`', '"'] {
         if let Some(start) = rest.find(quote)
@@ -513,8 +604,17 @@ fn database_statement(driver: Driver, line: &[u8]) -> Option<String> {
             return Some(rest[start + 1..start + 1 + len].into());
         }
     }
-    let mut words = rest.split_whitespace().filter(|w| !w.starts_with("/*") && !w.ends_with("*/") && !["IF", "NOT", "EXISTS"].contains(&w.to_ascii_uppercase().as_str()));
-    Some(words.next().map(|w| w.trim_end_matches(';').to_string()).unwrap_or_default())
+    let mut words = rest.split_whitespace().filter(|w| {
+        !w.starts_with("/*")
+            && !w.ends_with("*/")
+            && !["IF", "NOT", "EXISTS"].contains(&w.to_ascii_uppercase().as_str())
+    });
+    Some(
+        words
+            .next()
+            .map(|w| w.trim_end_matches(';').to_string())
+            .unwrap_or_default(),
+    )
 }
 
 /// The database statements of a plain script: PostgreSQL scripts with any are refused (psql would
@@ -536,12 +636,18 @@ impl Switches {
                 return Ok(false);
             }
         }
-        let Some(name) = database_statement(driver, line) else { return Ok(false) };
+        let Some(name) = database_statement(driver, line) else {
+            return Ok(false);
+        };
         if driver == Driver::Postgres {
-            bail!(tr("The script creates, drops or switches databases (CREATE DATABASE, \\connect); remove those lines or restore it with psql yourself"));
+            bail!(tr(
+                "The script creates, drops or switches databases (CREATE DATABASE, \\connect); remove those lines or restore it with psql yourself"
+            ));
         }
         match &self.database {
-            Some(first) if !name.is_empty() && *first != name => bail!(tr("The dump contains several databases; restore one database at a time")),
+            Some(first) if !name.is_empty() && *first != name => bail!(tr(
+                "The dump contains several databases; restore one database at a time"
+            )),
             None if !name.is_empty() => self.database = Some(name),
             _ => {}
         }
@@ -564,8 +670,14 @@ fn mysql_open(mut open: Option<u8>, line: &[u8]) -> Option<u8> {
             None => match rest[0] {
                 q @ (b'\'' | b'"' | b'`') => open = Some(q),
                 b'#' => break,
-                b'-' if rest.starts_with(b"--") && rest.get(2).is_none_or(u8::is_ascii_whitespace) => break,
-                b'/' if rest.starts_with(b"/*") && !rest.starts_with(b"/*!") => (open, i) = (Some(b'*'), i + 1),
+                b'-' if rest.starts_with(b"--")
+                    && rest.get(2).is_none_or(u8::is_ascii_whitespace) =>
+                {
+                    break;
+                }
+                b'/' if rest.starts_with(b"/*") && !rest.starts_with(b"/*!") => {
+                    (open, i) = (Some(b'*'), i + 1)
+                }
                 _ => {}
             },
         }
@@ -595,17 +707,33 @@ impl Tail {
         }
     }
     fn text(&self) -> String {
-        self.lines.iter().map(String::as_str).collect::<Vec<_>>().join("\n")
+        self.lines
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
 /// pg_restore's verbose lines that mark one finished step.
 fn progress_line(line: &str) -> bool {
-    line.strip_prefix("pg_restore: ").is_some_and(|rest| ["creating ", "processing data ", "executing ", "finished item "].iter().any(|p| rest.starts_with(p)))
+    line.strip_prefix("pg_restore: ").is_some_and(|rest| {
+        [
+            "creating ",
+            "processing data ",
+            "executing ",
+            "finished item ",
+        ]
+        .iter()
+        .any(|p| rest.starts_with(p))
+    })
 }
 /// Diagnostics worth showing: everything but pg_restore's verbose chatter.
 fn diagnostic_line(line: &str) -> bool {
-    !line.starts_with("pg_restore: ") || ["error", "warning", "TOC entry", "Command was"].iter().any(|k| line.contains(k))
+    !line.starts_with("pg_restore: ")
+        || ["error", "warning", "TOC entry", "Command was"]
+            .iter()
+            .any(|k| line.contains(k))
 }
 
 struct Counted<R> {
@@ -623,10 +751,20 @@ impl<R: Read> Read for Counted<R> {
     }
 }
 
-fn feed(request: &RestoreRequest, driver: Driver, mut stdin: impl Write, progress: Arc<RestoreProgress>) -> anyhow::Result<()> {
+fn feed(
+    request: &RestoreRequest,
+    driver: Driver,
+    mut stdin: impl Write,
+    progress: Arc<RestoreProgress>,
+) -> anyhow::Result<()> {
     let file = File::open(&request.source)?;
     let total = file.metadata()?.len();
-    let counted = Counted { inner: file, read: 0, total, progress: progress.clone() };
+    let counted = Counted {
+        inner: file,
+        read: 0,
+        total,
+        progress: progress.clone(),
+    };
     let reader: Box<dyn Read> = if request.format == Some(RestoreFormat::SqlGz) {
         Box::new(flate2::read::MultiGzDecoder::new(counted))
     } else {
@@ -666,8 +804,18 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Ve
 fn list_archive(utility: &str, source: &str) -> anyhow::Result<Toc> {
     let mut command = Command::new(utility);
     hide(&mut command);
-    command.env("LC_MESSAGES", "C").arg("--list").arg(source).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = DumpChild(command.spawn().context(tr("Restore utility was not found or could not be started"))?);
+    command
+        .env("LC_MESSAGES", "C")
+        .arg("--list")
+        .arg(source)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = DumpChild(
+        command
+            .spawn()
+            .context(tr("Restore utility was not found or could not be started"))?,
+    );
     let (stdout, stderr) = (drain(child.0.stdout.take()), drain(child.0.stderr.take()));
     let start = std::time::Instant::now();
     let status = loop {
@@ -679,45 +827,85 @@ fn list_archive(utility: &str, source: &str) -> anyhow::Result<Toc> {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let (stdout, stderr) = (stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default());
+    let (stdout, stderr) = (
+        stdout.join().unwrap_or_default(),
+        stderr.join().unwrap_or_default(),
+    );
     if !status.success() {
-        bail!("{}: {}", tr("Could not read the backup"), String::from_utf8_lossy(&stderr).trim());
+        bail!(
+            "{}: {}",
+            tr("Could not read the backup"),
+            String::from_utf8_lossy(&stderr).trim()
+        );
     }
     Ok(parse_toc(&String::from_utf8_lossy(&stdout)))
 }
 
 fn named(utility: &str, name: &str) -> bool {
-    Path::new(utility).file_stem().is_some_and(|s| s.eq_ignore_ascii_case(name))
+    Path::new(utility)
+        .file_stem()
+        .is_some_and(|s| s.eq_ignore_ascii_case(name))
 }
 
-fn run_native(cfg: &ConnectionConfig, request: &RestoreRequest, progress: &Arc<RestoreProgress>) -> anyhow::Result<()> {
-    let format = request.format.context(tr("Inspect the backup before restoring"))?;
-    let total = if format.archive() { list_archive(&request.utility, &request.source)?.1.len() as u64 } else { 0 };
+fn run_native(
+    cfg: &ConnectionConfig,
+    request: &RestoreRequest,
+    progress: &Arc<RestoreProgress>,
+) -> anyhow::Result<()> {
+    let format = request
+        .format
+        .context(tr("Inspect the backup before restoring"))?;
+    let total = if format.archive() {
+        list_archive(&request.utility, &request.source)?.1.len() as u64
+    } else {
+        0
+    };
     let credentials = Credentials::new()?;
     let mut command = restore_command(cfg, request, &credentials)?;
-    command.stdout(Stdio::null()).stderr(Stdio::piped()).stdin(if format.archive() { Stdio::null() } else { Stdio::piped() });
-    let mut child = DumpChild(command.spawn().context(tr("Restore utility was not found or could not be started"))?);
-    let stderr = child.0.stderr.take().context(tr("Database restore failed"))?;
+    command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .stdin(if format.archive() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        });
+    let mut child = DumpChild(
+        command
+            .spawn()
+            .context(tr("Restore utility was not found or could not be started"))?,
+    );
+    let stderr = child
+        .0
+        .stderr
+        .take()
+        .context(tr("Database restore failed"))?;
     let counter = progress.clone();
-    let reader = std::thread::Builder::new().name("restore-stderr".into()).spawn(move || {
-        // The last lines: the error that stopped the client comes after any notices.
-        let mut tail = Tail::default();
-        let mut done = 0;
-        for line in BufReader::new(stderr).split(b'\n') {
-            let line = String::from_utf8_lossy(&line?).trim_end().to_string();
-            if total > 0 && progress_line(&line) {
-                done += 1;
-                counter.set(done, total + 1);
-            } else if diagnostic_line(&line) {
-                tail.push(&line);
+    let reader = std::thread::Builder::new()
+        .name("restore-stderr".into())
+        .spawn(move || {
+            // The last lines: the error that stopped the client comes after any notices.
+            let mut tail = Tail::default();
+            let mut done = 0;
+            for line in BufReader::new(stderr).split(b'\n') {
+                let line = String::from_utf8_lossy(&line?).trim_end().to_string();
+                if total > 0 && progress_line(&line) {
+                    done += 1;
+                    counter.set(done, total + 1);
+                } else if diagnostic_line(&line) {
+                    tail.push(&line);
+                }
             }
-        }
-        std::io::Result::Ok(tail.text())
-    })?;
+            std::io::Result::Ok(tail.text())
+        })?;
     let feeder = match child.0.stdin.take() {
         Some(stdin) => {
             let (request, driver, progress) = (request.clone(), cfg.driver, progress.clone());
-            Some(std::thread::Builder::new().name("restore-input".into()).spawn(move || feed(&request, driver, stdin, progress))?)
+            Some(
+                std::thread::Builder::new()
+                    .name("restore-input".into())
+                    .spawn(move || feed(&request, driver, stdin, progress))?,
+            )
         }
         None => None,
     };
@@ -730,9 +918,13 @@ fn run_native(cfg: &ConnectionConfig, request: &RestoreRequest, progress: &Arc<R
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    let stderr = reader.join().map_err(|_| anyhow::anyhow!(tr("Database restore failed")))??;
+    let stderr = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!(tr("Database restore failed")))??;
     let fed = match feeder {
-        Some(feeder) => feeder.join().map_err(|_| anyhow::anyhow!(tr("Database restore failed")))?,
+        Some(feeder) => feeder
+            .join()
+            .map_err(|_| anyhow::anyhow!(tr("Database restore failed")))?,
         None => Ok(()),
     };
     if !status.success() {
@@ -745,25 +937,54 @@ fn run_native(cfg: &ConnectionConfig, request: &RestoreRequest, progress: &Arc<R
 }
 
 async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Session> {
-    tokio::time::timeout(Duration::from_secs(30), Session::connect(cfg)).await.context(tr("Restore operation timed out"))?
+    tokio::time::timeout(Duration::from_secs(30), Session::connect(cfg))
+        .await
+        .context(tr("Restore operation timed out"))?
 }
 
 async fn first_cell(session: &mut Session, sql: &str) -> Option<String> {
-    session.execute(sql, 1).await.ok()?.into_iter().next()?.rows.into_iter().next()?.into_iter().next()?
+    session
+        .execute(sql, 1)
+        .await
+        .ok()?
+        .into_iter()
+        .next()?
+        .rows
+        .into_iter()
+        .next()?
+        .into_iter()
+        .next()?
 }
 
-async fn run_mssql(mut cfg: ConnectionConfig, mut request: RestoreRequest, progress: Arc<RestoreProgress>) -> anyhow::Result<()> {
+async fn run_mssql(
+    mut cfg: ConnectionConfig,
+    mut request: RestoreRequest,
+    progress: Arc<RestoreProgress>,
+) -> anyhow::Result<()> {
     cfg.database = "master".into();
     request.validate(Driver::MsSql)?;
     let mut session = connect(&cfg).await?;
     // The dialog's database list may be stale: overwriting needs the user's confirmation now.
-    let exists = first_cell(&mut session, &format!("SELECT DB_ID({})", literal(Driver::MsSql, &Some(request.db.clone())))).await.is_some();
+    let exists = first_cell(
+        &mut session,
+        &format!(
+            "SELECT DB_ID({})",
+            literal(Driver::MsSql, &Some(request.db.clone()))
+        ),
+    )
+    .await
+    .is_some();
     if exists && !request.overwrite {
-        bail!(tr("The target database exists now; confirm overwriting it and start the restore again"));
+        bail!(tr(
+            "The target database exists now; confirm overwriting it and start the restore again"
+        ));
     }
     request.single_user &= exists;
     let batch = request.mssql_sql()?;
-    let spid: u32 = first_cell(&mut session, "SELECT @@SPID").await.and_then(|s| s.trim().parse().ok()).context(tr("Database restore failed"))?;
+    let spid: u32 = first_cell(&mut session, "SELECT @@SPID")
+        .await
+        .and_then(|s| s.trim().parse().ok())
+        .context(tr("Database restore failed"))?;
     // tiberius drops informational messages, so STATS progress is read from the same counter.
     let mut monitor = connect(&cfg).await.ok();
     let outcome = {
@@ -798,7 +1019,11 @@ async fn run_mssql(mut cfg: ConnectionConfig, mut request: RestoreRequest, progr
     };
     if request.single_user {
         // Restored databases keep the backup's access mode; a failed restore must not stay single-user.
-        let reset = format!("IF DB_ID({0}) IS NOT NULL AND DATABASEPROPERTYEX({0}, 'UserAccess') = 'SINGLE_USER' AND DATABASEPROPERTYEX({0}, 'Status') = 'ONLINE' ALTER DATABASE {1} SET MULTI_USER", literal(Driver::MsSql, &Some(request.db.clone())), Driver::MsSql.quote_ident(&request.db));
+        let reset = format!(
+            "IF DB_ID({0}) IS NOT NULL AND DATABASEPROPERTYEX({0}, 'UserAccess') = 'SINGLE_USER' AND DATABASEPROPERTYEX({0}, 'Status') = 'ONLINE' ALTER DATABASE {1} SET MULTI_USER",
+            literal(Driver::MsSql, &Some(request.db.clone())),
+            Driver::MsSql.quote_ident(&request.db)
+        );
         let cleanup = async {
             let mut session = match monitor {
                 Some(monitor) => monitor,
@@ -822,7 +1047,10 @@ async fn create_database(cfg: &ConnectionConfig, request: &RestoreRequest) -> an
 }
 
 /// Reads what the backup contains; local archives are listed without a database connection.
-pub async fn inspect(mut cfg: ConnectionConfig, request: RestoreRequest) -> anyhow::Result<RestorePreview> {
+pub async fn inspect(
+    mut cfg: ConnectionConfig,
+    request: RestoreRequest,
+) -> anyhow::Result<RestorePreview> {
     if !supported(cfg.driver) {
         bail!(tr("Restore is not available for this engine"));
     }
@@ -832,7 +1060,12 @@ pub async fn inspect(mut cfg: ConnectionConfig, request: RestoreRequest) -> anyh
     if cfg.driver == Driver::MsSql {
         cfg.database = "master".into();
         let mut session = connect(&cfg).await?;
-        let headers = tokio::time::timeout(INSPECT_TIMEOUT, session.execute(&mssql_headers_sql(&request.source), 0)).await.context(tr("Restore operation timed out"))??;
+        let headers = tokio::time::timeout(
+            INSPECT_TIMEOUT,
+            session.execute(&mssql_headers_sql(&request.source), 0),
+        )
+        .await
+        .context(tr("Restore operation timed out"))??;
         let sets = headers.first().map(parse_headers).unwrap_or_default();
         let set = sets
             .iter()
@@ -840,7 +1073,12 @@ pub async fn inspect(mut cfg: ConnectionConfig, request: RestoreRequest) -> anyh
             .or_else(|| sets.iter().rev().find(|s| s.kind == 1))
             .context(tr("The file contains no full database backup"))?
             .clone();
-        let files = tokio::time::timeout(INSPECT_TIMEOUT, session.execute(&mssql_files_sql(&request.source, set.position), 0)).await.context(tr("Restore operation timed out"))??;
+        let files = tokio::time::timeout(
+            INSPECT_TIMEOUT,
+            session.execute(&mssql_files_sql(&request.source, set.position), 0),
+        )
+        .await
+        .context(tr("Restore operation timed out"))??;
         let details = vec![
             (tr("Database").to_string(), set.database.clone()),
             (tr("Server").to_string(), set.server.clone()),
@@ -860,32 +1098,61 @@ pub async fn inspect(mut cfg: ConnectionConfig, request: RestoreRequest) -> anyh
     let driver = cfg.driver;
     tokio::task::spawn_blocking(move || {
         let format = detect(driver, &request.source)?;
-        let size = std::fs::metadata(&request.source).ok().filter(|m| m.is_file()).map(|m| m.len());
+        let size = std::fs::metadata(&request.source)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len());
         let (details, entries) = if format.archive() {
-            let utility = if named(&request.utility, "pg_restore") { request.utility.clone() } else { utility_path(driver, format) };
+            let utility = if named(&request.utility, "pg_restore") {
+                request.utility.clone()
+            } else {
+                utility_path(driver, format)
+            };
             list_archive(&utility, &request.source)?
         } else {
             let file = File::open(&request.source)?;
-            let reader: Box<dyn Read> = if format == RestoreFormat::SqlGz { Box::new(flate2::read::MultiGzDecoder::new(file)) } else { Box::new(file) };
+            let reader: Box<dyn Read> = if format == RestoreFormat::SqlGz {
+                Box::new(flate2::read::MultiGzDecoder::new(file))
+            } else {
+                Box::new(file)
+            };
             // Database statements are near the top of a dump; the restore checks the rest as it goes.
             let (mut switches, mut entries) = (Switches::default(), Vec::new());
             for line in BufReader::new(reader.take(8 << 20)).split(b'\n') {
                 let line = line?;
                 switches.check(driver, &line)?;
-                let text = String::from_utf8_lossy(&line).trim_end().chars().take(200).collect::<String>();
+                let text = String::from_utf8_lossy(&line)
+                    .trim_end()
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
                 if entries.len() < 20 && !text.is_empty() {
                     entries.push(text);
                 }
             }
-            let details = switches.database.map(|db| (tr("Database in the dump").to_string(), db)).into_iter().collect();
+            let details = switches
+                .database
+                .map(|db| (tr("Database in the dump").to_string(), db))
+                .into_iter()
+                .collect();
             (details, entries)
         };
-        Ok(RestorePreview { format: Some(format), size, details, entries, ..Default::default() })
+        Ok(RestorePreview {
+            format: Some(format),
+            size,
+            details,
+            entries,
+            ..Default::default()
+        })
     })
     .await?
 }
 
-pub async fn run(cfg: ConnectionConfig, request: RestoreRequest, progress: Arc<RestoreProgress>) -> anyhow::Result<()> {
+pub async fn run(
+    cfg: ConnectionConfig,
+    request: RestoreRequest,
+    progress: Arc<RestoreProgress>,
+) -> anyhow::Result<()> {
     request.validate(cfg.driver)?;
     if progress.cancelled() {
         bail!(tr("Restore was cancelled"));
@@ -897,12 +1164,17 @@ pub async fn run(cfg: ConnectionConfig, request: RestoreRequest, progress: Arc<R
         return run_mssql(cfg, request, progress).await;
     }
     // Native clients reach the server through the data source's SSH tunnel, like its sessions.
-    let tunnel = if super::ssh::tunnels(&cfg) { Some(super::ssh::shared(&cfg).await?) } else { None };
+    let tunnel = if super::ssh::tunnels(&cfg) {
+        Some(super::ssh::shared(&cfg).await?)
+    } else {
+        None
+    };
     let native = super::through(&cfg, tunnel.as_deref()).into_owned();
     if request.create {
         create_database(&cfg, &request).await?;
     }
-    let result = tokio::task::spawn_blocking(move || run_native(&native, &request, &progress)).await?;
+    let result =
+        tokio::task::spawn_blocking(move || run_native(&native, &request, &progress)).await?;
     drop(tunnel);
     result
 }
@@ -913,7 +1185,10 @@ mod tests {
 
     fn pg_request(file: &str, format: RestoreFormat) -> RestoreRequest {
         let mut request = RestoreRequest::new("shop".into());
-        request.source = std::env::temp_dir().join(file).to_string_lossy().into_owned();
+        request.source = std::env::temp_dir()
+            .join(file)
+            .to_string_lossy()
+            .into_owned();
         request.format = Some(format);
         request.utility = "tool".into();
         request
@@ -927,9 +1202,15 @@ mod tests {
         tar[..7].copy_from_slice(b"toc.dat");
         tar[257..262].copy_from_slice(b"ustar");
         assert_eq!(sniff(&tar), RestoreFormat::Tar);
-        assert_eq!(sniff(b"-- MariaDB dump 10.19\nCREATE TABLE t (id int);"), RestoreFormat::Sql);
+        assert_eq!(
+            sniff(b"-- MariaDB dump 10.19\nCREATE TABLE t (id int);"),
+            RestoreFormat::Sql
+        );
         assert_eq!(sniff(b""), RestoreFormat::Sql);
-        assert_eq!(detect(Driver::MsSql, "relative.bak").unwrap(), RestoreFormat::MsSql);
+        assert_eq!(
+            detect(Driver::MsSql, "relative.bak").unwrap(),
+            RestoreFormat::MsSql
+        );
     }
 
     #[test]
@@ -939,7 +1220,14 @@ mod tests {
         assert!(details.contains(&("dbname".into(), "shop".into())));
         assert!(details.contains(&("Format".into(), "CUSTOM".into())));
         assert!(details.contains(&("Dumped from database version".into(), "16.4".into())));
-        assert_eq!(entries, ["TABLE public items postgres", "TABLE DATA public items postgres", "CONSTRAINT public items items_pkey postgres"]);
+        assert_eq!(
+            entries,
+            [
+                "TABLE public items postgres",
+                "TABLE DATA public items postgres",
+                "CONSTRAINT public items items_pkey postgres"
+            ]
+        );
     }
 
     #[test]
@@ -951,18 +1239,47 @@ mod tests {
         request.no_owner = true;
         request.content = RestoreContent::Schema;
         request.jobs = 4;
-        request.validate(Driver::Postgres).unwrap_or_else(|e| panic!("{e}"));
+        request
+            .validate(Driver::Postgres)
+            .unwrap_or_else(|e| panic!("{e}"));
         let credentials = Credentials::new().unwrap();
-        let args = |command: &Command| command.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let args = |command: &Command| {
+            command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
         let archive = args(&restore_command(&cfg, &request, &credentials).unwrap());
-        for flag in ["--exit-on-error", "--clean", "--if-exists", "--no-owner", "--schema-only", "--jobs=4", request.source.as_str()] {
+        for flag in [
+            "--exit-on-error",
+            "--clean",
+            "--if-exists",
+            "--no-owner",
+            "--schema-only",
+            "--jobs=4",
+            request.source.as_str(),
+        ] {
             assert!(archive.contains(&flag.to_string()), "{flag}: {archive:?}");
         }
         assert!(!format!("{archive:?}").contains("secret"));
         let credentials = Credentials::new().unwrap();
-        let plain = args(&restore_command(&cfg, &pg_request("shop.sql", RestoreFormat::Sql), &credentials).unwrap());
-        assert!(plain.contains(&"--set=ON_ERROR_STOP=1".to_string()) && plain.contains(&"--no-psqlrc".to_string()));
-        assert!(!plain.iter().any(|a| a.contains("shop.sql") || a.contains("secret")));
+        let plain = args(
+            &restore_command(
+                &cfg,
+                &pg_request("shop.sql", RestoreFormat::Sql),
+                &credentials,
+            )
+            .unwrap(),
+        );
+        assert!(
+            plain.contains(&"--set=ON_ERROR_STOP=1".to_string())
+                && plain.contains(&"--no-psqlrc".to_string())
+        );
+        assert!(
+            !plain
+                .iter()
+                .any(|a| a.contains("shop.sql") || a.contains("secret"))
+        );
     }
 
     #[test]
@@ -975,7 +1292,10 @@ mod tests {
             request.validate(driver).unwrap();
             let credentials = Credentials::new().unwrap();
             let command = restore_command(&cfg, &request, &credentials).unwrap();
-            let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            let args: Vec<_> = command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
             assert!(args[0].starts_with("--defaults-file="), "{args:?}");
             assert!(args.contains(&"--database=shop copy".to_string()));
             assert!(!format!("{args:?}").contains("secret"));
@@ -1021,14 +1341,35 @@ mod tests {
         ] {
             assert_eq!(named(line).as_deref(), Some(db), "{}", String::from_utf8_lossy(line));
         }
-        for line in [&b"INSERT INTO `t` VALUES ('USE `x`;');\n"[..], b"CREATE TABLE `users` (\n", b"USER_ID INT,\n", b"  `used` int,\n", b"CREATE SCHEMA_x;\n"] {
+        for line in [
+            &b"INSERT INTO `t` VALUES ('USE `x`;');\n"[..],
+            b"CREATE TABLE `users` (\n",
+            b"USER_ID INT,\n",
+            b"  `used` int,\n",
+            b"CREATE SCHEMA_x;\n",
+        ] {
             assert_eq!(named(line), None, "{}", String::from_utf8_lossy(line));
         }
         let mut switches = Switches::default();
-        assert!(switches.check(Driver::MySql, b"/*!40000 DROP DATABASE IF EXISTS `shop`*/;\n").unwrap());
+        assert!(
+            switches
+                .check(
+                    Driver::MySql,
+                    b"/*!40000 DROP DATABASE IF EXISTS `shop`*/;\n"
+                )
+                .unwrap()
+        );
         assert!(switches.check(Driver::MySql, b"USE `shop`;\n").unwrap());
-        assert!(!switches.check(Driver::MySql, b"INSERT INTO t VALUES (1);\n").unwrap());
-        assert!(switches.check(Driver::MySql, b"USE `analytics`;\n").is_err());
+        assert!(
+            !switches
+                .check(Driver::MySql, b"INSERT INTO t VALUES (1);\n")
+                .unwrap()
+        );
+        assert!(
+            switches
+                .check(Driver::MySql, b"USE `analytics`;\n")
+                .is_err()
+        );
         // Lines inside a hand-written multi-line literal or comment are kept as they are.
         let mut switches = Switches::default();
         for line in [
@@ -1045,7 +1386,11 @@ mod tests {
             b"/*!40101 SET @saved_cs_client = @@character_set_client */;\n",
             b"INSERT INTO notes VALUES ('it''s', `odd``name`);\n",
         ] {
-            assert!(!switches.check(Driver::MySql, line).unwrap(), "{}", String::from_utf8_lossy(line));
+            assert!(
+                !switches.check(Driver::MySql, line).unwrap(),
+                "{}",
+                String::from_utf8_lossy(line)
+            );
         }
         assert!(switches.check(Driver::MySql, b"USE `shop`;\n").unwrap());
         assert!(switches.check(Driver::MySql, b"USE other;\n").is_err());
@@ -1053,11 +1398,31 @@ mod tests {
 
     #[test]
     fn postgres_scripts_that_switch_databases_are_refused() {
-        for line in [&b"CREATE DATABASE shop WITH TEMPLATE = template0 ENCODING = 'UTF8';\n"[..], b"DROP DATABASE shop;\n", b"\\connect shop\n", b"\\c shop\n", b"\\connect -reuse-previous=on \"dbname='shop'\"\n", b"ALTER DATABASE shop OWNER TO postgres;\n"] {
-            assert!(Switches::default().check(Driver::Postgres, line).is_err(), "{}", String::from_utf8_lossy(line));
+        for line in [
+            &b"CREATE DATABASE shop WITH TEMPLATE = template0 ENCODING = 'UTF8';\n"[..],
+            b"DROP DATABASE shop;\n",
+            b"\\connect shop\n",
+            b"\\c shop\n",
+            b"\\connect -reuse-previous=on \"dbname='shop'\"\n",
+            b"ALTER DATABASE shop OWNER TO postgres;\n",
+        ] {
+            assert!(
+                Switches::default().check(Driver::Postgres, line).is_err(),
+                "{}",
+                String::from_utf8_lossy(line)
+            );
         }
-        for line in [&b"CREATE SCHEMA sales;\n"[..], b"\\copy items FROM stdin\n", b"COPY public.items (id) FROM stdin;\n", b"SET client_encoding = 'UTF8';\n"] {
-            assert!(!Switches::default().check(Driver::Postgres, line).unwrap(), "{}", String::from_utf8_lossy(line));
+        for line in [
+            &b"CREATE SCHEMA sales;\n"[..],
+            b"\\copy items FROM stdin\n",
+            b"COPY public.items (id) FROM stdin;\n",
+            b"SET client_encoding = 'UTF8';\n",
+        ] {
+            assert!(
+                !Switches::default().check(Driver::Postgres, line).unwrap(),
+                "{}",
+                String::from_utf8_lossy(line)
+            );
         }
     }
 
@@ -1066,7 +1431,9 @@ mod tests {
         let mut tail = Tail::default();
         tail.push(&"x".repeat(5000));
         for i in 0..2000 {
-            tail.push(&format!("psql:<stdin>:{i}: NOTICE:  relation exists, skipping"));
+            tail.push(&format!(
+                "psql:<stdin>:{i}: NOTICE:  relation exists, skipping"
+            ));
         }
         tail.push("psql:<stdin>:2001: ERROR:  syntax error");
         let text = tail.text();
@@ -1080,44 +1447,86 @@ mod tests {
     #[test]
     fn pg_restore_verbose_lines_drive_progress_and_errors_stay_visible() {
         assert!(progress_line("pg_restore: creating TABLE \"public.items\""));
-        assert!(progress_line("pg_restore: processing data for table \"public.items\""));
-        assert!(progress_line("pg_restore: finished item 3340 TABLE DATA items"));
+        assert!(progress_line(
+            "pg_restore: processing data for table \"public.items\""
+        ));
+        assert!(progress_line(
+            "pg_restore: finished item 3340 TABLE DATA items"
+        ));
         assert!(!progress_line("pg_restore: error: could not execute query"));
-        assert!(!diagnostic_line("pg_restore: connecting to database for restore"));
-        assert!(diagnostic_line("pg_restore: error: could not execute query: ERROR:  relation \"items\" already exists"));
-        assert!(diagnostic_line("Command was: CREATE TABLE public.items ();"));
-        assert!(diagnostic_line("psql:<stdin>:12: ERROR:  syntax error at or near \"x\""));
+        assert!(!diagnostic_line(
+            "pg_restore: connecting to database for restore"
+        ));
+        assert!(diagnostic_line(
+            "pg_restore: error: could not execute query: ERROR:  relation \"items\" already exists"
+        ));
+        assert!(diagnostic_line(
+            "Command was: CREATE TABLE public.items ();"
+        ));
+        assert!(diagnostic_line(
+            "psql:<stdin>:12: ERROR:  syntax error at or near \"x\""
+        ));
     }
 
     #[test]
     fn sql_server_restore_moves_files_and_quotes_every_value() {
         let headers = ResultSet {
-            columns: ["BackupName", "BackupType", "Position", "ServerName", "DatabaseName", "BackupStartDate"].map(String::from).to_vec(),
+            columns: [
+                "BackupName",
+                "BackupType",
+                "Position",
+                "ServerName",
+                "DatabaseName",
+                "BackupStartDate",
+            ]
+            .map(String::from)
+            .to_vec(),
             rows: vec![
-                ["full", "1", "1", "SQL01", "shop", "2026-10-01 10:00:00"].map(|s| Some(s.to_string())).to_vec(),
-                ["log", "2", "2", "SQL01", "shop", "2026-10-01 11:00:00"].map(|s| Some(s.to_string())).to_vec(),
+                ["full", "1", "1", "SQL01", "shop", "2026-10-01 10:00:00"]
+                    .map(|s| Some(s.to_string()))
+                    .to_vec(),
+                ["log", "2", "2", "SQL01", "shop", "2026-10-01 11:00:00"]
+                    .map(|s| Some(s.to_string()))
+                    .to_vec(),
             ],
             ..Default::default()
         };
         let sets = parse_headers(&headers);
         assert_eq!(sets.len(), 2);
-        assert_eq!((sets[0].position, sets[0].kind, sets[0].database.as_str()), (1, 1, "shop"));
+        assert_eq!(
+            (sets[0].position, sets[0].kind, sets[0].database.as_str()),
+            (1, 1, "shop")
+        );
         assert_eq!(sets[1].kind_label(), "Transaction log backup");
         let list = ResultSet {
-            columns: ["LogicalName", "PhysicalName", "Type", "FileGroupName"].map(String::from).to_vec(),
+            columns: ["LogicalName", "PhysicalName", "Type", "FileGroupName"]
+                .map(String::from)
+                .to_vec(),
             rows: vec![
-                ["shop", "C:\\Data\\shop.mdf", "D", "PRIMARY"].map(|s| Some(s.to_string())).to_vec(),
-                ["shop_log", "C:\\Data\\shop_log.ldf", "L", ""].map(|s| Some(s.to_string())).to_vec(),
-                ["archive", "/var/opt/mssql/data/arch.ndf", "D", "ARCHIVE"].map(|s| Some(s.to_string())).to_vec(),
+                ["shop", "C:\\Data\\shop.mdf", "D", "PRIMARY"]
+                    .map(|s| Some(s.to_string()))
+                    .to_vec(),
+                ["shop_log", "C:\\Data\\shop_log.ldf", "L", ""]
+                    .map(|s| Some(s.to_string()))
+                    .to_vec(),
+                ["archive", "/var/opt/mssql/data/arch.ndf", "D", "ARCHIVE"]
+                    .map(|s| Some(s.to_string()))
+                    .to_vec(),
             ],
             ..Default::default()
         };
         let files = parse_files(&list);
         let moves = default_moves(&files, "shop", "shop'copy");
         assert_eq!(moves[0], ("shop".into(), "C:\\Data\\shop_copy.mdf".into()));
-        assert_eq!(moves[1], ("shop_log".into(), "C:\\Data\\shop_copy_log.ldf".into()));
+        assert_eq!(
+            moves[1],
+            ("shop_log".into(), "C:\\Data\\shop_copy_log.ldf".into())
+        );
         assert_eq!(moves[2].1, "/var/opt/mssql/data/shop_copy_arch.ndf");
-        assert_eq!(default_moves(&files, "shop", "shop")[0].1, "C:\\Data\\shop.mdf");
+        assert_eq!(
+            default_moves(&files, "shop", "shop")[0].1,
+            "C:\\Data\\shop.mdf"
+        );
         let mut request = RestoreRequest::new("shop'copy]".into());
         request.source = "D:\\Backups\\shop's.bak".into();
         request.format = Some(RestoreFormat::MsSql);
@@ -1128,10 +1537,17 @@ mod tests {
         let sql = request.mssql_sql().unwrap();
         assert!(sql.starts_with("ALTER DATABASE [shop'copy]]] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nRESTORE DATABASE [shop'copy]]] FROM DISK = N'D:\\Backups\\shop''s.bak' WITH FILE = 1, MOVE N'shop' TO N'C:\\Data\\shop_copy.mdf'"), "{sql}");
         assert!(sql.ends_with("REPLACE, RECOVERY, STATS = 5"), "{sql}");
-        assert_eq!(mssql_files_sql("x'.bak", 3), "RESTORE FILELISTONLY FROM DISK = N'x''.bak' WITH FILE = 3");
+        assert_eq!(
+            mssql_files_sql("x'.bak", 3),
+            "RESTORE FILELISTONLY FROM DISK = N'x''.bak' WITH FILE = 3"
+        );
         request.position = 0;
         assert!(request.mssql_sql().is_err());
-        assert!(RestoreRequest::new("x".into()).create_sql(Driver::Postgres).ends_with("TEMPLATE template0"));
+        assert!(
+            RestoreRequest::new("x".into())
+                .create_sql(Driver::Postgres)
+                .ends_with("TEMPLATE template0")
+        );
     }
 
     #[tokio::test]
@@ -1139,28 +1555,47 @@ mod tests {
         let root = std::env::temp_dir().join(format!("dc-restore-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let source = root.join("shop.sql.gz");
-        let mut gzip = flate2::write::GzEncoder::new(File::create(&source).unwrap(), flate2::Compression::default());
-        gzip.write_all(b"-- MySQL dump 10.13\n\nCREATE TABLE t (id int);\n").unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(
+            File::create(&source).unwrap(),
+            flate2::Compression::default(),
+        );
+        gzip.write_all(b"-- MySQL dump 10.13\n\nCREATE TABLE t (id int);\n")
+            .unwrap();
         gzip.finish().unwrap();
         let cfg = ConnectionConfig::new(1, Driver::MySql);
         let mut request = RestoreRequest::new("shop".into());
         request.source = source.to_string_lossy().into_owned();
         let preview = inspect(cfg.clone(), request.clone()).await.unwrap();
         assert_eq!(preview.format, Some(RestoreFormat::SqlGz));
-        assert_eq!(preview.entries, ["-- MySQL dump 10.13", "CREATE TABLE t (id int);"]);
+        assert_eq!(
+            preview.entries,
+            ["-- MySQL dump 10.13", "CREATE TABLE t (id int);"]
+        );
         // A pg_dump -C script would leave the target for the database it names.
         let created = root.join("created.sql");
         std::fs::write(&created, "SET client_encoding = 'UTF8';\nCREATE DATABASE shop;\n\\connect shop\nCREATE TABLE t (id int);\n").unwrap();
         let mut pg = request.clone();
         pg.source = created.to_string_lossy().into_owned();
-        let error = inspect(ConnectionConfig::new(2, Driver::Postgres), pg).await.unwrap_err();
+        let error = inspect(ConnectionConfig::new(2, Driver::Postgres), pg)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("switches databases"), "{error}");
         request.format = preview.format;
         request.utility = root.join("missing.exe").to_string_lossy().into_owned();
         let progress = Arc::new(RestoreProgress::default());
         progress.cancel.store(true, Ordering::Relaxed);
-        assert!(run(cfg.clone(), request.clone(), progress).await.unwrap_err().to_string().contains("cancelled"));
-        assert!(run(cfg, request, Arc::new(RestoreProgress::default())).await.is_err());
+        assert!(
+            run(cfg.clone(), request.clone(), progress)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        assert!(
+            run(cfg, request, Arc::new(RestoreProgress::default()))
+                .await
+                .is_err()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1181,39 +1616,86 @@ mod tests {
         cfg.password = env("DATACRAFT_PG_PASSWORD", "");
         cfg.database = env("DATACRAFT_PG_DB", "postgres");
         let suffix = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-        let (source_db, root) = (format!("dc_restore_src_{suffix}"), std::env::temp_dir().join(format!("dc-restore-{suffix}")));
+        let (source_db, root) = (
+            format!("dc_restore_src_{suffix}"),
+            std::env::temp_dir().join(format!("dc-restore-{suffix}")),
+        );
         std::fs::create_dir(&root).unwrap();
         let mut admin = Session::connect(&cfg).await.unwrap();
-        admin.execute(&format!("CREATE DATABASE {source_db}"), 0).await.unwrap();
+        admin
+            .execute(&format!("CREATE DATABASE {source_db}"), 0)
+            .await
+            .unwrap();
         let mut source_cfg = cfg.clone();
         source_cfg.database.clone_from(&source_db);
         let mut source = Session::connect(&source_cfg).await.unwrap();
-        source.execute("CREATE TABLE items (id serial PRIMARY KEY, name text NOT NULL)", 0).await.unwrap();
-        source.execute("INSERT INTO items (name) VALUES ('alpha'), ('beta'), ('gamma')", 0).await.unwrap();
+        source
+            .execute(
+                "CREATE TABLE items (id serial PRIMARY KEY, name text NOT NULL)",
+                0,
+            )
+            .await
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO items (name) VALUES ('alpha'), ('beta'), ('gamma')",
+                0,
+            )
+            .await
+            .unwrap();
         drop(source);
         let mut targets = Vec::new();
         for archive in [true, false] {
-            let mut backup = crate::db::backup::BackupRequest::new(source_db.clone(), Driver::Postgres);
+            let mut backup =
+                crate::db::backup::BackupRequest::new(source_db.clone(), Driver::Postgres);
             backup.archive = archive;
             backup.compress = !archive;
-            backup.destination = root.join(if archive { "shop.dump" } else { "shop.sql.gz" }).to_string_lossy().into_owned();
-            crate::db::backup::run(cfg.clone(), backup.clone(), Arc::new(AtomicBool::new(false))).await.unwrap();
-            let target = format!("dc_restore_{}_{suffix}", if archive { "archive" } else { "plain" });
+            backup.destination = root
+                .join(if archive { "shop.dump" } else { "shop.sql.gz" })
+                .to_string_lossy()
+                .into_owned();
+            crate::db::backup::run(
+                cfg.clone(),
+                backup.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+            let target = format!(
+                "dc_restore_{}_{suffix}",
+                if archive { "archive" } else { "plain" }
+            );
             let mut request = RestoreRequest::new(target.clone());
             request.source = backup.destination.clone();
             request.maintenance.clone_from(&cfg.database);
             request.create = true;
             request.no_owner = true;
             let preview = inspect(cfg.clone(), request.clone()).await.unwrap();
-            assert_eq!(preview.format, Some(if archive { RestoreFormat::Custom } else { RestoreFormat::SqlGz }));
+            assert_eq!(
+                preview.format,
+                Some(if archive {
+                    RestoreFormat::Custom
+                } else {
+                    RestoreFormat::SqlGz
+                })
+            );
             if archive {
-                assert!(preview.entries.iter().any(|e| e.starts_with("TABLE DATA public items")), "{:?}", preview.entries);
+                assert!(
+                    preview
+                        .entries
+                        .iter()
+                        .any(|e| e.starts_with("TABLE DATA public items")),
+                    "{:?}",
+                    preview.entries
+                );
                 request.jobs = 2;
             }
             request.format = preview.format;
             request.utility = utility_path(Driver::Postgres, preview.format.unwrap());
             let progress = Arc::new(RestoreProgress::default());
-            run(cfg.clone(), request, progress.clone()).await.unwrap_or_else(|e| panic!("{e:#}"));
+            run(cfg.clone(), request, progress.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{e:#}"));
             assert_eq!(progress.fraction(), Some(1.0));
             let mut target_cfg = cfg.clone();
             target_cfg.database.clone_from(&target);
@@ -1227,11 +1709,23 @@ mod tests {
                 request.source = backup.destination.clone();
                 request.format = preview.format;
                 request.utility = utility_path(Driver::Postgres, RestoreFormat::Custom);
-                let error = run(cfg.clone(), request.clone(), Arc::new(RestoreProgress::default())).await.unwrap_err();
+                let error = run(
+                    cfg.clone(),
+                    request.clone(),
+                    Arc::new(RestoreProgress::default()),
+                )
+                .await
+                .unwrap_err();
                 // The server's own text follows its lc_messages; pg_restore's part is English.
-                assert!(format!("{error:#}").contains("pg_restore: error:") && format!("{error:#}").contains("items"), "{error:#}");
+                assert!(
+                    format!("{error:#}").contains("pg_restore: error:")
+                        && format!("{error:#}").contains("items"),
+                    "{error:#}"
+                );
                 request.clean = true;
-                run(cfg.clone(), request, Arc::new(RestoreProgress::default())).await.unwrap_or_else(|e| panic!("{e:#}"));
+                run(cfg.clone(), request, Arc::new(RestoreProgress::default()))
+                    .await
+                    .unwrap_or_else(|e| panic!("{e:#}"));
             }
             targets.push(target);
         }
@@ -1239,7 +1733,16 @@ mod tests {
         let folder = root.join("shop.dir");
         let status = Command::new(crate::db::backup::utility_path(Driver::Postgres))
             .env("PGPASSWORD", &cfg.password)
-            .args(["-Fd", "-h", &cfg.host, "-p", &cfg.port.to_string(), "-U", &cfg.user, "-f"])
+            .args([
+                "-Fd",
+                "-h",
+                &cfg.host,
+                "-p",
+                &cfg.port.to_string(),
+                "-U",
+                &cfg.user,
+                "-f",
+            ])
             .arg(&folder)
             .arg(&source_db)
             .status()
@@ -1254,13 +1757,26 @@ mod tests {
         request.format = inspect(cfg.clone(), request.clone()).await.unwrap().format;
         assert_eq!(request.format, Some(RestoreFormat::Directory));
         request.utility = utility_path(Driver::Postgres, RestoreFormat::Directory);
-        run(cfg.clone(), request, Arc::new(RestoreProgress::default())).await.unwrap_or_else(|e| panic!("{e:#}"));
+        run(cfg.clone(), request, Arc::new(RestoreProgress::default()))
+            .await
+            .unwrap_or_else(|e| panic!("{e:#}"));
         targets.push(target);
         // A pg_dump -C script would \connect to the source: refused by Inspect and by the restore itself.
         let script = root.join("created.sql");
         let status = Command::new(crate::db::backup::utility_path(Driver::Postgres))
             .env("PGPASSWORD", &cfg.password)
-            .args(["-C", "-c", "--if-exists", "-h", &cfg.host, "-p", &cfg.port.to_string(), "-U", &cfg.user, "-f"])
+            .args([
+                "-C",
+                "-c",
+                "--if-exists",
+                "-h",
+                &cfg.host,
+                "-p",
+                &cfg.port.to_string(),
+                "-U",
+                &cfg.user,
+                "-f",
+            ])
             .arg(&script)
             .arg(&source_db)
             .status()
@@ -1271,14 +1787,33 @@ mod tests {
         request.source = script.to_string_lossy().into_owned();
         request.maintenance.clone_from(&cfg.database);
         request.create = true;
-        assert!(inspect(cfg.clone(), request.clone()).await.unwrap_err().to_string().contains("switches databases"));
+        assert!(
+            inspect(cfg.clone(), request.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("switches databases")
+        );
         request.format = Some(RestoreFormat::Sql);
         request.utility = utility_path(Driver::Postgres, RestoreFormat::Sql);
-        let error = run(cfg.clone(), request, Arc::new(RestoreProgress::default())).await.unwrap_err();
-        assert!(format!("{error:#}").contains("switches databases"), "{error:#}");
+        let error = run(cfg.clone(), request, Arc::new(RestoreProgress::default()))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("switches databases"),
+            "{error:#}"
+        );
         targets.push(target);
         let mut source = Session::connect(&source_cfg).await.unwrap();
-        assert_eq!(source.execute("SELECT count(*) FROM items", 1).await.unwrap()[0].rows[0][0].as_deref(), Some("3"));
+        assert_eq!(
+            source
+                .execute("SELECT count(*) FROM items", 1)
+                .await
+                .unwrap()[0]
+                .rows[0][0]
+                .as_deref(),
+            Some("3")
+        );
         drop(source);
         // Cancelling a running restore stops pg_restore promptly.
         let mut source = Session::connect(&source_cfg).await.unwrap();
@@ -1286,7 +1821,13 @@ mod tests {
         drop(source);
         let mut backup = crate::db::backup::BackupRequest::new(source_db.clone(), Driver::Postgres);
         backup.destination = root.join("large.dump").to_string_lossy().into_owned();
-        crate::db::backup::run(cfg.clone(), backup.clone(), Arc::new(AtomicBool::new(false))).await.unwrap();
+        crate::db::backup::run(
+            cfg.clone(),
+            backup.clone(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
         let target = format!("dc_restore_cancel_{suffix}");
         let mut request = RestoreRequest::new(target.clone());
         request.source = backup.destination;
@@ -1302,10 +1843,17 @@ mod tests {
         });
         let started = std::time::Instant::now();
         let error = run(cfg.clone(), request, progress).await.unwrap_err();
-        assert!(error.to_string().contains("cancelled") && started.elapsed() < Duration::from_secs(10), "{error:#} after {:?}", started.elapsed());
+        assert!(
+            error.to_string().contains("cancelled") && started.elapsed() < Duration::from_secs(10),
+            "{error:#} after {:?}",
+            started.elapsed()
+        );
         targets.push(target);
         for db in targets.iter().chain([&source_db]) {
-            admin.execute(&format!("DROP DATABASE {db} WITH (FORCE)"), 0).await.unwrap();
+            admin
+                .execute(&format!("DROP DATABASE {db} WITH (FORCE)"), 0)
+                .await
+                .unwrap();
         }
         std::fs::remove_dir_all(root).unwrap();
     }

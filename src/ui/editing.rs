@@ -58,9 +58,20 @@ pub fn is_binary_type(data_type: &str) -> bool {
     let t = data_type.to_lowercase();
     // Oracle RAW / LONG RAW, MySQL BIT(n) and spatial types. SQL Server's plain `bit` is a
     // boolean and stays editable.
-    ["blob", "binary", "bytea", "image", "rowversion", "geometry", "geography", "point", "polygon", "linestring"]
-        .iter()
-        .any(|k| t.contains(k))
+    [
+        "blob",
+        "binary",
+        "bytea",
+        "image",
+        "rowversion",
+        "geometry",
+        "geography",
+        "point",
+        "polygon",
+        "linestring",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
         || t == "raw"
         || t.starts_with("raw(")
         || t.starts_with("long raw")
@@ -77,7 +88,11 @@ impl EditState {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { changes: self.changes.clone(), inserted: self.inserted.clone(), deleted: self.deleted.clone() }
+        Snapshot {
+            changes: self.changes.clone(),
+            inserted: self.inserted.clone(),
+            deleted: self.deleted.clone(),
+        }
     }
 
     /// Saves the current state so the next change can be undone.
@@ -145,14 +160,23 @@ impl EditState {
                 Some(v) => Some(v.clone()),
                 None => rs.rows.get(r).and_then(|x| x.get(col)).cloned(),
             },
-            RowRef::New(i) => self.inserted.get(i).and_then(|x| x.get(col)).cloned().flatten(),
+            RowRef::New(i) => self
+                .inserted
+                .get(i)
+                .and_then(|x| x.get(col))
+                .cloned()
+                .flatten(),
         }
     }
 
     pub fn is_modified(&self, row: RowRef, col: usize) -> bool {
         match row {
             RowRef::Existing(r) => self.changes.contains_key(&(r, col)),
-            RowRef::New(i) => self.inserted.get(i).and_then(|x| x.get(col)).is_some_and(|v| v.is_some()),
+            RowRef::New(i) => self
+                .inserted
+                .get(i)
+                .and_then(|x| x.get(col))
+                .is_some_and(|v| v.is_some()),
         }
     }
 
@@ -165,14 +189,22 @@ impl EditState {
         match row {
             RowRef::New(_) => true,
             RowRef::Existing(_) if target.insert_only => false,
-            RowRef::Existing(r) => rs
-                .rows
-                .get(r)
-                .is_some_and(|vals| target.key_cols.iter().all(|&k| vals.get(k).is_some_and(|v| !is_lossy_display(v)))),
+            RowRef::Existing(r) => rs.rows.get(r).is_some_and(|vals| {
+                target
+                    .key_cols
+                    .iter()
+                    .all(|&k| vals.get(k).is_some_and(|v| !is_lossy_display(v)))
+            }),
         }
     }
 
-    pub fn cell_editable(&self, rs: &ResultSet, target: &EditTarget, row: RowRef, col: usize) -> bool {
+    pub fn cell_editable(
+        &self,
+        rs: &ResultSet,
+        target: &EditTarget,
+        row: RowRef,
+        col: usize,
+    ) -> bool {
         if col >= target.col_names.len() || target.binary_cols.get(col).copied().unwrap_or(true) {
             return false;
         }
@@ -181,7 +213,11 @@ impl EditState {
             RowRef::Existing(r) => {
                 !self.deleted.contains(&r)
                     && self.row_identifiable(rs, target, row)
-                    && rs.rows.get(r).and_then(|x| x.get(col)).is_some_and(|v| !is_lossy_display(v))
+                    && rs
+                        .rows
+                        .get(r)
+                        .and_then(|x| x.get(col))
+                        .is_some_and(|v| !is_lossy_display(v))
             }
         }
     }
@@ -306,7 +342,11 @@ impl EditState {
         let existing: Vec<usize> = rows
             .iter()
             .filter_map(|r| match r {
-                RowRef::Existing(i) if !self.deleted.contains(i) && self.row_identifiable(rs, target, *r) => Some(*i),
+                RowRef::Existing(i)
+                    if !self.deleted.contains(i) && self.row_identifiable(rs, target, *r) =>
+                {
+                    Some(*i)
+                }
                 _ => None,
             })
             .collect();
@@ -332,24 +372,45 @@ impl EditState {
 
     /// Number of statements the save will generate.
     pub fn pending_count(&self) -> usize {
-        let updated: BTreeSet<usize> =
-            self.changes.keys().map(|(r, _)| *r).filter(|r| !self.deleted.contains(r)).collect();
+        let updated: BTreeSet<usize> = self
+            .changes
+            .keys()
+            .map(|(r, _)| *r)
+            .filter(|r| !self.deleted.contains(r))
+            .collect();
         updated.len() + self.inserted.len() + self.deleted.len()
     }
 
     /// Changes in order: updates, inserts and deletes.
-    pub fn build_changes(&self, rs: &ResultSet, target: &EditTarget) -> Result<Vec<Change>, String> {
+    pub fn build_changes(
+        &self,
+        rs: &ResultSet,
+        target: &EditTarget,
+    ) -> Result<Vec<Change>, String> {
         let key_of = |r: usize| -> Result<Vec<(String, Cell)>, String> {
-            let vals = rs.rows.get(r).ok_or_else(|| trf("Row {n} does not exist", &[("n", &(r + 1))]))?;
+            let vals = rs
+                .rows
+                .get(r)
+                .ok_or_else(|| trf("Row {n} does not exist", &[("n", &(r + 1))]))?;
             target
                 .key_cols
                 .iter()
                 .map(|&k| {
-                    let v = vals.get(k).cloned().ok_or_else(|| tr("Key column does not exist").to_string())?;
+                    let v = vals
+                        .get(k)
+                        .cloned()
+                        .ok_or_else(|| tr("Key column does not exist").to_string())?;
                     if is_lossy_display(&v) {
-                        return Err(trf("Row {n} cannot be identified (truncated binary value)", &[("n", &(r + 1))]));
+                        return Err(trf(
+                            "Row {n} cannot be identified (truncated binary value)",
+                            &[("n", &(r + 1))],
+                        ));
                     }
-                    let name = target.col_names.get(k).cloned().ok_or_else(|| tr("Key column does not exist").to_string())?;
+                    let name = target
+                        .col_names
+                        .get(k)
+                        .cloned()
+                        .ok_or_else(|| tr("Key column does not exist").to_string())?;
                     Ok((name, v))
                 })
                 .collect()
@@ -363,11 +424,18 @@ impl EditState {
             if self.deleted.contains(r) {
                 continue;
             }
-            let name = target.col_names.get(*c).cloned().ok_or_else(|| tr("Column does not exist").to_string())?;
+            let name = target
+                .col_names
+                .get(*c)
+                .cloned()
+                .ok_or_else(|| tr("Column does not exist").to_string())?;
             by_row.entry(*r).or_default().push((name, v.clone()));
         }
         for (r, set) in by_row {
-            out.push(Change::Update { key: key_of(r)?, set });
+            out.push(Change::Update {
+                key: key_of(r)?,
+                set,
+            });
         }
         for row in &self.inserted {
             let values = row
@@ -462,7 +530,9 @@ fn tokenize(sql: &str) -> Option<Vec<Tok>> {
             out.push(Tok::Quoted(s));
         } else if c.is_alphabetic() || c == '_' || c == '@' || c == '#' {
             let mut s = String::new();
-            while i < chars.len() && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '$' | '@' | '#')) {
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '$' | '@' | '#'))
+            {
                 s.push(chars[i]);
                 i += 1;
             }
@@ -494,8 +564,24 @@ fn ident(t: &Tok) -> Option<&str> {
 
 /// Words that make a query no longer "trivial over one table".
 const NOT_TRIVIAL: &[&str] = &[
-    "JOIN", "GROUP", "HAVING", "DISTINCT", "UNION", "INTERSECT", "EXCEPT", "INTO", "WITH", "SELECT", "APPLY", "PIVOT",
-    "UNPIVOT", "OVER", "WINDOW", "LATERAL", "RETURNING", "FOR",
+    "JOIN",
+    "GROUP",
+    "HAVING",
+    "DISTINCT",
+    "UNION",
+    "INTERSECT",
+    "EXCEPT",
+    "INTO",
+    "WITH",
+    "SELECT",
+    "APPLY",
+    "PIVOT",
+    "UNPIVOT",
+    "OVER",
+    "WINDOW",
+    "LATERAL",
+    "RETURNING",
+    "FOR",
 ];
 
 /// Detects `SELECT [TOP n] (* | col, …) FROM [schema.]table [alias] [WHERE …] [ORDER BY …]
@@ -514,7 +600,10 @@ pub fn single_table_query(sql: &str) -> Option<QueryTable> {
     }
     i += 1;
     // The rest cannot contain another SELECT or multi-table constructs.
-    if toks[i..].iter().any(|t| NOT_TRIVIAL.iter().any(|k| is_kw(t, k))) {
+    if toks[i..]
+        .iter()
+        .any(|t| NOT_TRIVIAL.iter().any(|k| is_kw(t, k)))
+    {
         return None;
     }
     if is_kw(toks.get(i)?, "ALL") {
@@ -601,7 +690,13 @@ pub fn single_table_query(sql: &str) -> Option<QueryTable> {
 
 /// Builds the edit target of a result over `schema.table` (already resolved).
 /// Returns the reason if it is not editable.
-pub fn target_for(result_cols: &[String], schema: &str, kind: ObjectKind, table: &str, columns: &[ColumnInfo]) -> Result<EditTarget, String> {
+pub fn target_for(
+    result_cols: &[String],
+    schema: &str,
+    kind: ObjectKind,
+    table: &str,
+    columns: &[ColumnInfo],
+) -> Result<EditTarget, String> {
     if kind != ObjectKind::Table {
         return Err(tr("Views are read-only").into());
     }
@@ -615,7 +710,12 @@ pub fn target_for(result_cols: &[String], schema: &str, kind: ObjectKind, table:
             .iter()
             .find(|c| c.name == *rc)
             .or_else(|| columns.iter().find(|c| c.name.eq_ignore_ascii_case(rc)))
-            .ok_or_else(|| trf("Column “{column}” does not belong to {table}", &[("column", rc), ("table", &table)]))?;
+            .ok_or_else(|| {
+                trf(
+                    "Column “{column}” does not belong to {table}",
+                    &[("column", rc), ("table", &table)],
+                )
+            })?;
         if col_names.contains(&found.name) {
             return Err(trf("Column “{column}” appears twice", &[("column", rc)]));
         }
@@ -627,10 +727,12 @@ pub fn target_for(result_cols: &[String], schema: &str, kind: ObjectKind, table:
     let key_cols: Vec<usize> = if has_pk {
         let mut keys = Vec::new();
         for c in pk {
-            let idx = col_names
-                .iter()
-                .position(|n| *n == c.name)
-                .ok_or_else(|| trf("The result does not include the primary key “{column}”", &[("column", &c.name)]))?;
+            let idx = col_names.iter().position(|n| *n == c.name).ok_or_else(|| {
+                trf(
+                    "The result does not include the primary key “{column}”",
+                    &[("column", &c.name)],
+                )
+            })?;
             keys.push(idx);
         }
         keys
@@ -640,19 +742,41 @@ pub fn target_for(result_cols: &[String], schema: &str, kind: ObjectKind, table:
     if key_cols.is_empty() {
         return Err(tr("There are no columns to identify the rows").into());
     }
-    Ok(EditTarget { schema: schema.to_string(), table: table.to_string(), col_names, key_cols, binary_cols, has_pk, insert_only: false })
+    Ok(EditTarget {
+        schema: schema.to_string(),
+        table: table.to_string(),
+        col_names,
+        key_cols,
+        binary_cols,
+        has_pk,
+        insert_only: false,
+    })
 }
 
 /// Edit target of a MongoDB collection opened in the data editor: documents are identified by
 /// `_id`, and fields missing from the sampled `columns` are still editable (as strings).
-pub fn document_target(result_cols: &[String], schema: &str, kind: ObjectKind, collection: &str, columns: &[ColumnInfo]) -> Result<EditTarget, String> {
+pub fn document_target(
+    result_cols: &[String],
+    schema: &str,
+    kind: ObjectKind,
+    collection: &str,
+    columns: &[ColumnInfo],
+) -> Result<EditTarget, String> {
     if kind != ObjectKind::Table {
         return Err(tr("Views are read-only").into());
     }
-    let id = result_cols.iter().position(|c| c == "_id").ok_or_else(|| tr("The documents have no _id to identify them").to_string())?;
+    let id = result_cols
+        .iter()
+        .position(|c| c == "_id")
+        .ok_or_else(|| tr("The documents have no _id to identify them").to_string())?;
     let binary_cols = result_cols
         .iter()
-        .map(|rc| columns.iter().find(|c| c.name == *rc).is_some_and(|c| matches!(c.data_type.as_str(), "binData" | "timestamp")))
+        .map(|rc| {
+            columns
+                .iter()
+                .find(|c| c.name == *rc)
+                .is_some_and(|c| matches!(c.data_type.as_str(), "binData" | "timestamp"))
+        })
         .collect();
     Ok(EditTarget {
         schema: schema.to_string(),
@@ -667,17 +791,28 @@ pub fn document_target(result_cols: &[String], schema: &str, kind: ObjectKind, c
 
 /// Edit target of a console result, if the query is trivial over a table known in
 /// `schemas`.
-pub fn console_target(statement: &str, result_cols: &[String], schemas: &[SchemaInfo]) -> Result<EditTarget, String> {
+pub fn console_target(
+    statement: &str,
+    result_cols: &[String],
+    schemas: &[SchemaInfo],
+) -> Result<EditTarget, String> {
     let (s, t) = query_table(statement, schemas)?;
     target_for(result_cols, &s.name, t.kind, &t.name, &t.columns)
 }
 
 /// The one table known in `schemas` that a trivial query reads.
-pub fn query_table<'a>(statement: &str, schemas: &'a [SchemaInfo]) -> Result<(&'a SchemaInfo, &'a TableInfo), String> {
-    let q = single_table_query(statement).ok_or_else(|| tr("Read-only query (not a simple SELECT over one table)").to_string())?;
+pub fn query_table<'a>(
+    statement: &str,
+    schemas: &'a [SchemaInfo],
+) -> Result<(&'a SchemaInfo, &'a TableInfo), String> {
+    let q = single_table_query(statement)
+        .ok_or_else(|| tr("Read-only query (not a simple SELECT over one table)").to_string())?;
     let mut found = Vec::new();
     for s in schemas {
-        if q.schema.as_deref().is_some_and(|x| !x.eq_ignore_ascii_case(&s.name)) {
+        if q.schema
+            .as_deref()
+            .is_some_and(|x| !x.eq_ignore_ascii_case(&s.name))
+        {
             continue;
         }
         for t in &s.tables {
@@ -688,14 +823,21 @@ pub fn query_table<'a>(statement: &str, schemas: &'a [SchemaInfo]) -> Result<(&'
     }
     // Several matches: prefer the exact one, then the default schema.
     if found.len() > 1 {
-        let exact: Vec<_> = found.iter().copied().filter(|(_, t)| t.name == q.table).collect();
+        let exact: Vec<_> = found
+            .iter()
+            .copied()
+            .filter(|(_, t)| t.name == q.table)
+            .collect();
         if !exact.is_empty() {
             found = exact;
         }
     }
     if found.len() > 1 {
-        let default: Vec<_> =
-            found.iter().copied().filter(|(s, _)| ["dbo", "public", "main"].contains(&s.name.as_str())).collect();
+        let default: Vec<_> = found
+            .iter()
+            .copied()
+            .filter(|(s, _)| ["dbo", "public", "main"].contains(&s.name.as_str()))
+            .collect();
         if default.len() == 1 {
             found = default;
         }
@@ -713,7 +855,15 @@ mod tests {
 
     #[test]
     fn binary_types() {
-        for t in ["bytea", "varbinary(16)", "RAW(16)", "long raw", "bit(1)", "geometry", "blob"] {
+        for t in [
+            "bytea",
+            "varbinary(16)",
+            "RAW(16)",
+            "long raw",
+            "bit(1)",
+            "geometry",
+            "blob",
+        ] {
             assert!(is_binary_type(t), "{t}");
         }
         for t in ["bit", "text", "varchar2(20)", "timestamp", "number(10)"] {
@@ -726,37 +876,77 @@ mod tests {
     fn mongodb_documents_are_keyed_by_id() {
         let cols = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let info = vec![
-            ColumnInfo { name: "_id".into(), data_type: "objectId".into(), nullable: false, primary_key: true },
-            ColumnInfo { name: "blob".into(), data_type: "binData".into(), nullable: true, primary_key: false },
+            ColumnInfo {
+                name: "_id".into(),
+                data_type: "objectId".into(),
+                nullable: false,
+                primary_key: true,
+            },
+            ColumnInfo {
+                name: "blob".into(),
+                data_type: "binData".into(),
+                nullable: true,
+                primary_key: false,
+            },
         ];
         // `extra` was not in the sample: still editable.
-        let t = document_target(&cols(&["name", "_id", "blob", "extra"]), "shop", ObjectKind::Table, "users", &info).unwrap();
-        assert_eq!((t.key_cols.clone(), t.binary_cols.clone(), t.has_pk), (vec![1], vec![false, false, true, false], true));
+        let t = document_target(
+            &cols(&["name", "_id", "blob", "extra"]),
+            "shop",
+            ObjectKind::Table,
+            "users",
+            &info,
+        )
+        .unwrap();
+        assert_eq!(
+            (t.key_cols.clone(), t.binary_cols.clone(), t.has_pk),
+            (vec![1], vec![false, false, true, false], true)
+        );
         assert_eq!(t.col_names, cols(&["name", "_id", "blob", "extra"]));
-        assert!(document_target(&cols(&["name"]), "shop", ObjectKind::Table, "users", &info).is_err());
+        assert!(
+            document_target(&cols(&["name"]), "shop", ObjectKind::Table, "users", &info).is_err()
+        );
         assert!(document_target(&cols(&["_id"]), "shop", ObjectKind::View, "v", &info).is_err());
     }
 
     fn col(name: &str, pk: bool) -> ColumnInfo {
-        ColumnInfo { name: name.into(), data_type: "TEXT".into(), nullable: true, primary_key: pk }
+        ColumnInfo {
+            name: name.into(),
+            data_type: "TEXT".into(),
+            nullable: true,
+            primary_key: pk,
+        }
     }
 
     fn rs(rows: Vec<Vec<Option<&str>>>) -> ResultSet {
         ResultSet {
             columns: vec!["id".into(), "name".into()],
-            rows: rows.into_iter().map(|r| r.into_iter().map(|v| v.map(str::to_string)).collect()).collect(),
+            rows: rows
+                .into_iter()
+                .map(|r| r.into_iter().map(|v| v.map(str::to_string)).collect())
+                .collect(),
             ..Default::default()
         }
     }
 
     fn target(pk: bool) -> EditTarget {
-        target_for(&["id".into(), "name".into()], "main", ObjectKind::Table, "users", &[col("id", pk), col("name", false)]).unwrap()
+        target_for(
+            &["id".into(), "name".into()],
+            "main",
+            ObjectKind::Table,
+            "users",
+            &[col("id", pk), col("name", false)],
+        )
+        .unwrap()
     }
 
     #[test]
     fn insert_only_allows_new_rows_only() {
         let rs = rs(vec![vec![Some("1"), Some("a")]]);
-        let t = EditTarget { insert_only: true, ..target(true) };
+        let t = EditTarget {
+            insert_only: true,
+            ..target(true)
+        };
         let mut st = EditState::default();
         assert!(!st.cell_editable(&rs, &t, RowRef::Existing(0), 1));
         assert!(!st.delete_rows(&rs, &t, &[RowRef::Existing(0)]));
@@ -767,10 +957,34 @@ mod tests {
     #[test]
     fn trivial_queries() {
         let q = |s: &str| single_table_query(s);
-        assert_eq!(q("SELECT * FROM users"), Some(QueryTable { schema: None, table: "users".into() }));
-        assert_eq!(q("select id, name from public.users where id > 3 order by name desc, id;"), Some(QueryTable { schema: Some("public".into()), table: "users".into() }));
-        assert_eq!(q("SELECT TOP (10) [id] FROM [dbo].[t] u WHERE u.id = 'a,b'"), Some(QueryTable { schema: Some("dbo".into()), table: "t".into() }));
-        assert_eq!(q("SELECT u.* FROM \"users\" AS u LIMIT 5 OFFSET 2"), Some(QueryTable { schema: None, table: "users".into() }));
+        assert_eq!(
+            q("SELECT * FROM users"),
+            Some(QueryTable {
+                schema: None,
+                table: "users".into()
+            })
+        );
+        assert_eq!(
+            q("select id, name from public.users where id > 3 order by name desc, id;"),
+            Some(QueryTable {
+                schema: Some("public".into()),
+                table: "users".into()
+            })
+        );
+        assert_eq!(
+            q("SELECT TOP (10) [id] FROM [dbo].[t] u WHERE u.id = 'a,b'"),
+            Some(QueryTable {
+                schema: Some("dbo".into()),
+                table: "t".into()
+            })
+        );
+        assert_eq!(
+            q("SELECT u.* FROM \"users\" AS u LIMIT 5 OFFSET 2"),
+            Some(QueryTable {
+                schema: None,
+                table: "users".into()
+            })
+        );
         assert!(q("SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id").is_none());
         assert!(q("SELECT count(*) FROM users").is_none());
         assert!(q("SELECT DISTINCT name FROM users").is_none());
@@ -788,13 +1002,29 @@ mod tests {
     fn console_target_resolution() {
         let schemas = vec![SchemaInfo {
             name: "main".into(),
-            tables: vec![TableInfo { name: "users".into(), kind: ObjectKind::Table, columns: vec![col("id", true), col("name", false)] }],
+            tables: vec![TableInfo {
+                name: "users".into(),
+                kind: ObjectKind::Table,
+                columns: vec![col("id", true), col("name", false)],
+            }],
         }];
-        let t = console_target("select name, id from users", &["name".into(), "id".into()], &schemas).unwrap();
+        let t = console_target(
+            "select name, id from users",
+            &["name".into(), "id".into()],
+            &schemas,
+        )
+        .unwrap();
         assert_eq!(t.key_cols, vec![1]);
         assert!(console_target("select name from users", &["name".into()], &schemas).is_err());
         assert!(console_target("select * from nope", &["id".into()], &schemas).is_err());
-        assert!(console_target("select id, name from users", &["id".into(), "x".into()], &schemas).is_err());
+        assert!(
+            console_target(
+                "select id, name from users",
+                &["id".into(), "x".into()],
+                &schemas
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -815,10 +1045,17 @@ mod tests {
         assert_eq!(
             ch,
             vec![
-                Change::Update { key: vec![kv("id", Some("2"))], set: vec![kv("name", Some("b"))] },
-                Change::Insert { values: vec![kv("name", Some("new"))] },
+                Change::Update {
+                    key: vec![kv("id", Some("2"))],
+                    set: vec![kv("name", Some("b"))]
+                },
+                Change::Insert {
+                    values: vec![kv("name", Some("new"))]
+                },
                 Change::Insert { values: vec![] },
-                Change::Delete { key: vec![kv("id", Some("1"))] },
+                Change::Delete {
+                    key: vec![kv("id", Some("1"))]
+                },
             ]
         );
         assert_eq!(st.pending_count(), 4);
@@ -833,7 +1070,10 @@ mod tests {
 
     #[test]
     fn without_pk_uses_all_columns_and_avoids_lossy() {
-        let rs = rs(vec![vec![Some("1"), Some("0xABCD…")], vec![Some("2"), Some("x")]]);
+        let rs = rs(vec![
+            vec![Some("1"), Some("0xABCD…")],
+            vec![Some("2"), Some("x")],
+        ]);
         let t = target(false);
         assert!(!t.has_pk);
         assert_eq!(t.key_cols, vec![0, 1]);
@@ -846,7 +1086,10 @@ mod tests {
         assert_eq!(
             ch,
             vec![Change::Update {
-                key: vec![("id".into(), Some("2".into())), ("name".into(), Some("x".into()))],
+                key: vec![
+                    ("id".into(), Some("2".into())),
+                    ("name".into(), Some("x".into()))
+                ],
                 set: vec![("id".into(), None)]
             }]
         );

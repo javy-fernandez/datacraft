@@ -66,7 +66,13 @@ fn search_sql(
     // escapes them with a backslash (its LIKE accepts ESCAPE only on recent servers).
     let mut value = request.value.clone();
     if !request.exact && driver == Driver::ClickHouse {
-        value = format!("%{}%", value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        value = format!(
+            "%{}%",
+            value
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
     } else if !request.exact && driver != Driver::Sqlite {
         value = value
             .replace('!', "!!")
@@ -106,7 +112,11 @@ fn search_sql(
                 }
                 Driver::Oracle => format!("CAST({column} AS VARCHAR2(4000))"),
                 Driver::Snowflake => format!("TO_VARCHAR({column})"),
-                Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => column.clone(),
+                Driver::Redis
+                | Driver::MongoDb
+                | Driver::InfluxDb
+                | Driver::Kusto
+                | Driver::Prometheus => column.clone(),
                 Driver::Postgres | Driver::Sqlite => format!("CAST({column} AS TEXT)"),
                 Driver::DuckDb => format!("CAST({column} AS VARCHAR)"),
                 // toString keeps NULL (a CAST to String fails on it) and takes any type.
@@ -178,7 +188,12 @@ pub async fn search(
     };
     let tables: Vec<_> = schemas
         .into_iter()
-        .filter(|s| request.schema.as_ref().is_none_or(|name| name.eq_ignore_ascii_case(&s.name)))
+        .filter(|s| {
+            request
+                .schema
+                .as_ref()
+                .is_none_or(|name| name.eq_ignore_ascii_case(&s.name))
+        })
         .flat_map(|s| {
             s.tables
                 .into_iter()
@@ -207,7 +222,10 @@ pub async fn search(
         };
         let cancelled = match &native_cancel {
             Some(handle) if !matches!(outcome, Some(Ok(_))) => {
-                matches!(tokio::time::timeout(Duration::from_secs(2), handle.cancel()).await, Ok(Ok(())))
+                matches!(
+                    tokio::time::timeout(Duration::from_secs(2), handle.cancel()).await,
+                    Ok(Ok(()))
+                )
             }
             _ => false,
         };
@@ -220,7 +238,11 @@ pub async fn search(
             // A slow table is skipped; without a native cancel the session's state is unknown,
             // so the search goes on with a new one.
             Some(Err(_)) => {
-                report.errors.push(format!("{schema}.{}: {}", table.name, tr("Schema search timed out")));
+                report.errors.push(format!(
+                    "{schema}.{}: {}",
+                    table.name,
+                    tr("Schema search timed out")
+                ));
                 if !cancelled {
                     match connect().await {
                         Ok(s) => session = s,
@@ -318,20 +340,48 @@ mod tests {
 
     #[test]
     fn clickhouse_searches_nullable_columns_and_escapes_with_backslashes() {
-        let column = |name: &str, data_type: &str| ColumnInfo { name: name.into(), data_type: data_type.into(), nullable: true, primary_key: false };
-        let table = TableInfo { name: "t".into(), kind: ObjectKind::Table, columns: vec![column("note", "Nullable(String)")] };
-        let sql = search_sql(Driver::ClickHouse, "db", &table, &request("O'Reilly_50%!\\")).unwrap();
+        let column = |name: &str, data_type: &str| ColumnInfo {
+            name: name.into(),
+            data_type: data_type.into(),
+            nullable: true,
+            primary_key: false,
+        };
+        let table = TableInfo {
+            name: "t".into(),
+            kind: ObjectKind::Table,
+            columns: vec![column("note", "Nullable(String)")],
+        };
+        let sql = search_sql(
+            Driver::ClickHouse,
+            "db",
+            &table,
+            &request("O'Reilly_50%!\\"),
+        )
+        .unwrap();
         // The pattern %O'Reilly\_50\%!\\% in a ClickHouse string, where `\` is escaped again.
-        assert_eq!(sql, r"SELECT * FROM `db`.`t` WHERE LOWER(toString(`note`)) LIKE LOWER('%O''Reilly\\_50\\%!\\\\%') LIMIT 100");
+        assert_eq!(
+            sql,
+            r"SELECT * FROM `db`.`t` WHERE LOWER(toString(`note`)) LIKE LOWER('%O''Reilly\\_50\\%!\\\\%') LIMIT 100"
+        );
     }
 
     #[test]
     fn oracle_searches_clobs_by_prefix_and_skips_long_columns() {
-        let column = |name: &str, data_type: &str| ColumnInfo { name: name.into(), data_type: data_type.into(), nullable: true, primary_key: false };
+        let column = |name: &str, data_type: &str| ColumnInfo {
+            name: name.into(),
+            data_type: data_type.into(),
+            nullable: true,
+            primary_key: false,
+        };
         let table = TableInfo {
             name: "DOCS".into(),
             kind: ObjectKind::Table,
-            columns: vec![column("BODY", "CLOB"), column("LEGACY", "LONG"), column("XML", "XMLTYPE"), column("TITLE", "VARCHAR2")],
+            columns: vec![
+                column("BODY", "CLOB"),
+                column("LEGACY", "LONG"),
+                column("XML", "XMLTYPE"),
+                column("TITLE", "VARCHAR2"),
+            ],
         };
         let sql = search_sql(Driver::Oracle, "APP", &table, &request("x")).unwrap();
         assert!(sql.contains("DBMS_LOB.SUBSTR(\"BODY\", 1000, 1)"), "{sql}");

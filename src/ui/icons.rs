@@ -93,12 +93,36 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             }
         }
         Ico::Code => {
-            line(&[(9.5, 1.5), (3.0, 1.5), (3.0, 14.5), (13.0, 14.5), (13.0, 5.0), (9.5, 1.5), (9.5, 5.0), (13.0, 5.0)], color);
+            line(
+                &[
+                    (9.5, 1.5),
+                    (3.0, 1.5),
+                    (3.0, 14.5),
+                    (13.0, 14.5),
+                    (13.0, 5.0),
+                    (9.5, 1.5),
+                    (9.5, 5.0),
+                    (13.0, 5.0),
+                ],
+                color,
+            );
             line(&[(6.5, 7.5), (4.5, 9.5), (6.5, 11.5)], color);
             line(&[(9.5, 7.5), (11.5, 9.5), (9.5, 11.5)], color);
         }
         Ico::Comment => {
-            line(&[(2.0, 2.5), (14.0, 2.5), (14.0, 11.0), (7.0, 11.0), (3.5, 14.0), (3.5, 11.0), (2.0, 11.0), (2.0, 2.5)], color);
+            line(
+                &[
+                    (2.0, 2.5),
+                    (14.0, 2.5),
+                    (14.0, 11.0),
+                    (7.0, 11.0),
+                    (3.5, 14.0),
+                    (3.5, 11.0),
+                    (2.0, 11.0),
+                    (2.0, 2.5),
+                ],
+                color,
+            );
             line(&[(5.0, 5.5), (11.0, 5.5)], color);
             line(&[(5.0, 8.0), (9.0, 8.0)], color);
         }
@@ -110,7 +134,16 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::WordWrap => {
             line(&[(1.5, 3.0), (14.5, 3.0)], color);
-            line(&[(1.5, 7.0), (11.5, 7.0), (14.0, 9.0), (14.0, 11.0), (7.0, 11.0)], color);
+            line(
+                &[
+                    (1.5, 7.0),
+                    (11.5, 7.0),
+                    (14.0, 9.0),
+                    (14.0, 11.0),
+                    (7.0, 11.0),
+                ],
+                color,
+            );
             line(&[(9.0, 8.5), (6.5, 11.0), (9.0, 13.5)], color);
             line(&[(1.5, 11.0), (4.0, 11.0)], color);
         }
@@ -137,7 +170,15 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
                 Ico::Driver(d) => obj(driver_color(d, p)),
                 _ => obj(p.db_icon),
             };
-            cylinder(painter, at(8.0, 0.0).x, at(0.0, 3.0).y, 5.5 * s, 2.0 * s, 11.0 * s, c);
+            cylinder(
+                painter,
+                at(8.0, 0.0).x,
+                at(0.0, 3.0).y,
+                5.5 * s,
+                2.0 * s,
+                11.0 * s,
+                c,
+            );
         }
         Ico::Schema => {
             let c = obj(p.schema_icon);
@@ -154,15 +195,30 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::Folder => {
             let c = obj(p.folder_icon);
-            let pts = vec![at(1.5, 3.0), at(6.0, 3.0), at(7.5, 4.8), at(14.5, 4.8), at(14.5, 13.0), at(1.5, 13.0)];
-            painter.add(Shape::convex_polygon(pts.clone(), c.gamma_multiply(0.18), Stroke::NONE));
+            let pts = vec![
+                at(1.5, 3.0),
+                at(6.0, 3.0),
+                at(7.5, 4.8),
+                at(14.5, 4.8),
+                at(14.5, 13.0),
+                at(1.5, 13.0),
+            ];
+            painter.add(Shape::convex_polygon(
+                pts.clone(),
+                c.gamma_multiply(0.18),
+                Stroke::NONE,
+            ));
             painter.add(Shape::closed_line(pts, st(c)));
             line(&[(1.5, 6.5), (14.5, 6.5)], c);
         }
         Ico::Table => {
             let c = obj(p.table_icon);
             let r = Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5));
-            painter.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x, at(0.0, 6.0).y)), 2.0 * s, c.gamma_multiply(0.22));
+            painter.rect_filled(
+                Rect::from_min_max(r.min, pos2(r.max.x, at(0.0, 6.0).y)),
+                2.0 * s,
+                c.gamma_multiply(0.22),
+            );
             painter.rect_stroke(r, 2.0 * s, st(c), StrokeKind::Middle);
             line(&[(1.5, 6.0), (14.5, 6.0)], c);
             line(&[(1.5, 9.75), (14.5, 9.75)], c);
@@ -181,7 +237,11 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             let c = obj(p.column_icon);
             let r = Rect::from_min_max(at(2.0, 4.5), at(14.0, 11.5));
             painter.rect_stroke(r, 1.5 * s, st(c), StrokeKind::Middle);
-            painter.rect_filled(Rect::from_min_max(at(2.0, 4.5), at(6.0, 11.5)), 1.5 * s, c.gamma_multiply(0.55));
+            painter.rect_filled(
+                Rect::from_min_max(at(2.0, 4.5), at(6.0, 11.5)),
+                1.5 * s,
+                c.gamma_multiply(0.55),
+            );
         }
         Ico::Key => {
             let c = obj(p.key_icon);
@@ -192,13 +252,33 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::Procedure => {
             let c = obj(p.routine_icon);
-            painter.rect_stroke(Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)), 2.0 * s, st(c), StrokeKind::Middle);
-            painter.add(Shape::convex_polygon(vec![at(6.0, 5.2), at(11.0, 8.0), at(6.0, 10.8)], c, Stroke::NONE));
+            painter.rect_stroke(
+                Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)),
+                2.0 * s,
+                st(c),
+                StrokeKind::Middle,
+            );
+            painter.add(Shape::convex_polygon(
+                vec![at(6.0, 5.2), at(11.0, 8.0), at(6.0, 10.8)],
+                c,
+                Stroke::NONE,
+            ));
         }
         Ico::Function => {
             let c = obj(p.routine_icon);
-            painter.rect_stroke(Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)), 2.0 * s, st(c), StrokeKind::Middle);
-            painter.text(at(8.0, 8.2), egui::Align2::CENTER_CENTER, "fx", FontId::proportional(8.5 * s), c);
+            painter.rect_stroke(
+                Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)),
+                2.0 * s,
+                st(c),
+                StrokeKind::Middle,
+            );
+            painter.text(
+                at(8.0, 8.2),
+                egui::Align2::CENTER_CENTER,
+                "fx",
+                FontId::proportional(8.5 * s),
+                c,
+            );
         }
         Ico::Plus => {
             line(&[(8.0, 2.5), (8.0, 13.5)], color);
@@ -206,10 +286,20 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::Minus => line(&[(2.5, 8.0), (13.5, 8.0)], color),
         Ico::Refresh => {
-            arc(painter, at(8.0, 8.0), 5.2 * s, -PI * 0.25, PI * 1.5, st(color));
+            arc(
+                painter,
+                at(8.0, 8.0),
+                5.2 * s,
+                -PI * 0.25,
+                PI * 1.5,
+                st(color),
+            );
             // Arrowhead at the end of the arc (top), pointing in the direction of rotation.
             let tip = at(8.0, 2.8);
-            painter.add(Shape::line(vec![tip + vec2(-2.6, -2.6) * s, tip, tip + vec2(-2.6, 2.6) * s], st(color)));
+            painter.add(Shape::line(
+                vec![tip + vec2(-2.6, -2.6) * s, tip, tip + vec2(-2.6, 2.6) * s],
+                st(color),
+            ));
         }
         Ico::Stop => {
             let c = if enabled { p.stop } else { color };
@@ -229,7 +319,13 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             line(&[(14.5, 1.5), (9.5, 6.5)], color);
         }
         Ico::Ddl => {
-            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "DDL", FontId::proportional(9.5 * s), color);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "DDL",
+                FontId::proportional(9.5 * s),
+                color,
+            );
         }
         Ico::Eye => {
             let mut top = Vec::new();
@@ -263,7 +359,12 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::Copy => {
             // Two sheets (Duplicate).
-            painter.rect_stroke(Rect::from_min_max(at(5.5, 5.5), at(13.5, 14.0)), 1.5 * s, st(color), StrokeKind::Middle);
+            painter.rect_stroke(
+                Rect::from_min_max(at(5.5, 5.5), at(13.5, 14.0)),
+                1.5 * s,
+                st(color),
+                StrokeKind::Middle,
+            );
             line(&[(2.5, 10.5), (2.5, 3.5), (3.5, 2.5), (10.5, 2.5)], color);
         }
         Ico::Properties => {
@@ -275,7 +376,17 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             }
         }
         Ico::Edit => {
-            line(&[(3.0, 10.5), (10.5, 3.0), (13.0, 5.5), (5.5, 13.0), (2.5, 13.5), (3.0, 10.5)], color);
+            line(
+                &[
+                    (3.0, 10.5),
+                    (10.5, 3.0),
+                    (13.0, 5.5),
+                    (5.5, 13.0),
+                    (2.5, 13.5),
+                    (3.0, 10.5),
+                ],
+                color,
+            );
             line(&[(9.0, 4.5), (11.5, 7.0)], color);
         }
         Ico::Info => {
@@ -285,15 +396,28 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::List | Ico::Record => {
             for y in [4.0, 8.0, 12.0] {
-                painter.rect_filled(Rect::from_min_max(at(2.0, y - 1.0), at(4.0, y + 1.0)), 0.4 * s, color);
+                painter.rect_filled(
+                    Rect::from_min_max(at(2.0, y - 1.0), at(4.0, y + 1.0)),
+                    0.4 * s,
+                    color,
+                );
                 line(&[(6.5, y), (14.0, y)], color);
             }
-            if ico == Ico::Record { line(&[(5.2, 1.5), (5.2, 14.5)], color); }
+            if ico == Ico::Record {
+                line(&[(5.2, 1.5), (5.2, 14.5)], color);
+            }
         }
         Ico::Grid => {
-            for x in [2.0, 9.0] { for y in [2.0, 9.0] {
-                painter.rect_stroke(Rect::from_min_max(at(x, y), at(x + 5.0, y + 5.0)), 0.6 * s, st(color), StrokeKind::Inside);
-            } }
+            for x in [2.0, 9.0] {
+                for y in [2.0, 9.0] {
+                    painter.rect_stroke(
+                        Rect::from_min_max(at(x, y), at(x + 5.0, y + 5.0)),
+                        0.6 * s,
+                        st(color),
+                        StrokeKind::Inside,
+                    );
+                }
+            }
         }
         Ico::Play | Ico::PlayAll => {
             let c = if enabled { p.run } else { color };
@@ -304,15 +428,33 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             };
             painter.add(Shape::convex_polygon(pts, c, Stroke::new(1.0, c)));
             if ico == Ico::PlayAll {
-                painter.add(Shape::convex_polygon(vec![at(8.0, 3.0), at(15.0, 8.0), at(8.0, 13.0)], c, Stroke::new(1.0, c)));
+                painter.add(Shape::convex_polygon(
+                    vec![at(8.0, 3.0), at(15.0, 8.0), at(8.0, 13.0)],
+                    c,
+                    Stroke::new(1.0, c),
+                ));
             }
         }
         Ico::Undo => {
-            arc(painter, at(8.5, 9.0), 4.5 * s, -PI * 0.9, PI * 0.5, st(color));
+            arc(
+                painter,
+                at(8.5, 9.0),
+                4.5 * s,
+                -PI * 0.9,
+                PI * 0.5,
+                st(color),
+            );
             line(&[(2.5, 4.0), (4.0, 8.0), (8.0, 6.8)], color);
         }
         Ico::Revert => {
-            arc(painter, at(8.0, 8.0), 5.0 * s, -PI * 0.8, PI * 1.0, st(color));
+            arc(
+                painter,
+                at(8.0, 8.0),
+                5.0 * s,
+                -PI * 0.8,
+                PI * 1.0,
+                st(color),
+            );
             line(&[(2.0, 3.5), (3.6, 6.4), (6.6, 5.6)], color);
         }
         Ico::Submit => {
@@ -325,12 +467,27 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             line(&[(8.0, 4.5), (8.0, 8.0), (10.5, 9.5)], color);
         }
         Ico::Filter => {
-            let pts = vec![at(2.0, 3.0), at(14.0, 3.0), at(9.5, 8.5), at(9.5, 13.0), at(6.5, 11.5), at(6.5, 8.5)];
+            let pts = vec![
+                at(2.0, 3.0),
+                at(14.0, 3.0),
+                at(9.5, 8.5),
+                at(9.5, 13.0),
+                at(6.5, 11.5),
+                at(6.5, 8.5),
+            ];
             painter.add(Shape::closed_line(pts, st(color)));
         }
         Ico::Sort | Ico::SortAsc | Ico::SortDesc => {
-            let up = if ico == Ico::SortDesc { p.disabled.gamma_multiply(0.6) } else { color };
-            let down = if ico == Ico::SortAsc { p.disabled.gamma_multiply(0.6) } else { color };
+            let up = if ico == Ico::SortDesc {
+                p.disabled.gamma_multiply(0.6)
+            } else {
+                color
+            };
+            let down = if ico == Ico::SortAsc {
+                p.disabled.gamma_multiply(0.6)
+            } else {
+                color
+            };
             line(&[(5.0, 2.5), (5.0, 13.0)], up);
             line(&[(2.5, 5.0), (5.0, 2.5), (7.5, 5.0)], up);
             line(&[(11.0, 3.0), (11.0, 13.5)], down);
@@ -349,7 +506,11 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         }
         Ico::Services => {
             painter.circle_stroke(at(8.0, 8.0), 6.0 * s, st(color));
-            painter.add(Shape::convex_polygon(vec![at(6.5, 5.2), at(11.0, 8.0), at(6.5, 10.8)], color, Stroke::NONE));
+            painter.add(Shape::convex_polygon(
+                vec![at(6.5, 5.2), at(11.0, 8.0), at(6.5, 10.8)],
+                color,
+                Stroke::NONE,
+            ));
         }
         Ico::Terminal => {
             let r = Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5));
@@ -377,9 +538,24 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             line(&[(6.5, 14.0), (9.5, 14.0)], color);
         }
         Ico::Structure => {
-            painter.rect_stroke(Rect::from_min_max(at(2.0, 2.0), at(7.0, 6.0)), 1.0, st(color), StrokeKind::Middle);
-            painter.rect_stroke(Rect::from_min_max(at(9.0, 7.0), at(14.0, 10.0)), 1.0, st(color), StrokeKind::Middle);
-            painter.rect_stroke(Rect::from_min_max(at(9.0, 11.5), at(14.0, 14.5)), 1.0, st(color), StrokeKind::Middle);
+            painter.rect_stroke(
+                Rect::from_min_max(at(2.0, 2.0), at(7.0, 6.0)),
+                1.0,
+                st(color),
+                StrokeKind::Middle,
+            );
+            painter.rect_stroke(
+                Rect::from_min_max(at(9.0, 7.0), at(14.0, 10.0)),
+                1.0,
+                st(color),
+                StrokeKind::Middle,
+            );
+            painter.rect_stroke(
+                Rect::from_min_max(at(9.0, 11.5), at(14.0, 14.5)),
+                1.0,
+                st(color),
+                StrokeKind::Middle,
+            );
             line(&[(4.5, 6.0), (4.5, 13.0), (9.0, 13.0)], color);
             line(&[(4.5, 8.5), (9.0, 8.5)], color);
         }
@@ -404,7 +580,10 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
         Ico::Export => {
             line(&[(8.0, 2.0), (8.0, 10.5)], color);
             line(&[(4.5, 7.0), (8.0, 10.5), (11.5, 7.0)], color);
-            line(&[(2.5, 11.0), (2.5, 13.5), (13.5, 13.5), (13.5, 11.0)], color);
+            line(
+                &[(2.5, 11.0), (2.5, 13.5), (13.5, 13.5), (13.5, 11.0)],
+                color,
+            );
         }
     }
 }
@@ -434,7 +613,10 @@ fn cylinder(painter: &Painter, cx: f32, top: f32, rx: f32, ry: f32, h: f32, c: C
     };
     let bottom = top + h - 2.0 * ry;
     painter.add(Shape::closed_line(ellipse(top, 0.0, TAU), stroke));
-    painter.add(Shape::line(ellipse(top + (bottom - top) / 2.0, 0.0, PI), stroke));
+    painter.add(Shape::line(
+        ellipse(top + (bottom - top) / 2.0, 0.0, PI),
+        stroke,
+    ));
     painter.add(Shape::line(ellipse(bottom, 0.0, PI), stroke));
     painter.line_segment([pos2(cx - rx, top), pos2(cx - rx, bottom)], stroke);
     painter.line_segment([pos2(cx + rx, top), pos2(cx + rx, bottom)], stroke);

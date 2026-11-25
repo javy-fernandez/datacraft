@@ -37,13 +37,21 @@ impl SqliteSession {
             if !std::path::Path::new(&path).exists() {
                 anyhow::bail!(trf("The file {path} does not exist", &[("path", &path)]));
             }
-            let mode = if read_only { OpenFlags::SQLITE_OPEN_READ_ONLY } else { OpenFlags::SQLITE_OPEN_READ_WRITE };
+            let mode = if read_only {
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+            } else {
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+            };
             let flags = mode | OpenFlags::SQLITE_OPEN_URI | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-            Connection::open_with_flags(&path, flags).with_context(|| trf("Could not open {path}", &[("path", &path)]))
+            Connection::open_with_flags(&path, flags)
+                .with_context(|| trf("Could not open {path}", &[("path", &path)]))
         })
         .await??;
         let interrupt = Arc::new(conn.get_interrupt_handle());
-        Ok(Self { conn: Arc::new(Mutex::new(conn)), interrupt })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            interrupt,
+        })
     }
 
     pub fn interrupt_handle(&self) -> Arc<rusqlite::InterruptHandle> {
@@ -58,7 +66,9 @@ impl SqliteSession {
     {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|_| anyhow!(tr("The SQLite connection became unusable")))?;
+            let conn = conn
+                .lock()
+                .map_err(|_| anyhow!(tr("The SQLite connection became unusable")))?;
             f(&conn)
         })
         .await?
@@ -92,7 +102,9 @@ impl SqliteSession {
                         })
                     })
                     .collect::<anyhow::Result<_>>()?;
-                sender.blocking_send(Message::Row(values)).context(tr("Export writer stopped"))?;
+                sender
+                    .blocking_send(Message::Row(values))
+                    .context(tr("Export writer stopped"))?;
             }
             Ok(())
         })
@@ -101,12 +113,19 @@ impl SqliteSession {
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let sql = sql.to_string();
-        self.with_conn(move |conn| run_batch(conn, &sql, &[], max_rows)).await
+        self.with_conn(move |conn| run_batch(conn, &sql, &[], max_rows))
+            .await
     }
 
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let (sql, parameters) = (sql.to_string(), parameters.to_vec());
-        self.with_conn(move |conn| run_batch(conn, &sql, &parameters, max_rows)).await
+        self.with_conn(move |conn| run_batch(conn, &sql, &parameters, max_rows))
+            .await
     }
 
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {
@@ -138,20 +157,38 @@ impl SqliteSession {
     }
 }
 
-fn run_batch(conn: &Connection, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+fn run_batch(
+    conn: &Connection,
+    sql: &str,
+    parameters: &[String],
+    max_rows: usize,
+) -> anyhow::Result<Vec<ResultSet>> {
     let mut results = Vec::new();
     let mut batch = Batch::new(conn, sql);
     loop {
         let start = Instant::now();
         let Some(mut stmt) = batch.next()? else { break };
         let mut rs = ResultSet {
-            statement: if parameters.is_empty() { stmt.expanded_sql().unwrap_or_else(|| sql.trim().to_string()).trim().to_string() } else { sql.trim().to_string() },
+            statement: if parameters.is_empty() {
+                stmt.expanded_sql()
+                    .unwrap_or_else(|| sql.trim().to_string())
+                    .trim()
+                    .to_string()
+            } else {
+                sql.trim().to_string()
+            },
             ..Default::default()
         };
-        for (i, value) in parameters.iter().enumerate() { stmt.raw_bind_parameter(i + 1, value)?; }
+        for (i, value) in parameters.iter().enumerate() {
+            stmt.raw_bind_parameter(i + 1, value)?;
+        }
         let ncols = stmt.column_count();
         if ncols > 0 {
-            rs.columns = stmt.column_names().into_iter().map(str::to_string).collect();
+            rs.columns = stmt
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
             let mut rows = stmt.raw_query();
             while let Some(row) = rows.next()? {
                 if rs.rows.len() >= max_rows {
@@ -161,7 +198,9 @@ fn run_batch(conn: &Connection, sql: &str, parameters: &[String], max_rows: usiz
                     }
                     continue;
                 }
-                let cells = (0..ncols).map(|i| row.get_ref(i).map(value_to_cell)).collect::<Result<_, _>>()?;
+                let cells = (0..ncols)
+                    .map(|i| row.get_ref(i).map(value_to_cell))
+                    .collect::<Result<_, _>>()?;
                 rs.rows.push(cells);
             }
         } else {
@@ -179,7 +218,9 @@ fn run_batch(conn: &Connection, sql: &str, parameters: &[String], max_rows: usiz
 
 fn is_dml(sql: &str) -> bool {
     let first = sql.split_whitespace().next().unwrap_or("");
-    ["INSERT", "UPDATE", "DELETE", "REPLACE", "WITH"].iter().any(|k| first.eq_ignore_ascii_case(k))
+    ["INSERT", "UPDATE", "DELETE", "REPLACE", "WITH"]
+        .iter()
+        .any(|k| first.eq_ignore_ascii_case(k))
 }
 
 fn value_to_cell(v: ValueRef<'_>) -> Cell {
@@ -222,7 +263,11 @@ fn load_schema(conn: &Connection) -> anyhow::Result<Vec<SchemaInfo>> {
         if tables.last().is_none_or(|t| t.name != table) {
             tables.push(TableInfo {
                 name: table,
-                kind: if kind == "view" { ObjectKind::View } else { ObjectKind::Table },
+                kind: if kind == "view" {
+                    ObjectKind::View
+                } else {
+                    ObjectKind::Table
+                },
                 columns: Vec::new(),
             });
         }
@@ -237,7 +282,10 @@ fn load_schema(conn: &Connection) -> anyhow::Result<Vec<SchemaInfo>> {
             });
         }
     }
-    Ok(vec![SchemaInfo { name: "main".into(), tables }])
+    Ok(vec![SchemaInfo {
+        name: "main".into(),
+        tables,
+    }])
 }
 
 #[cfg(test)]
@@ -248,26 +296,50 @@ mod tests {
     #[test]
     fn bound_navigation_matches_quoted_keys_without_executing_their_contents() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE target(id TEXT PRIMARY KEY)").unwrap();
+        conn.execute_batch("CREATE TABLE target(id TEXT PRIMARY KEY)")
+            .unwrap();
         let value = "O'Brien'); DROP TABLE target; --".to_string();
-        conn.execute("INSERT INTO target VALUES (?)", [&value]).unwrap();
+        conn.execute("INSERT INTO target VALUES (?)", [&value])
+            .unwrap();
         let sql = "SELECT * FROM target WHERE id = ? LIMIT 10";
         let rows = run_batch(&conn, sql, std::slice::from_ref(&value), 10).unwrap();
         assert_eq!(rows[0].rows, vec![vec![Some(value)]]);
         assert_eq!(rows[0].statement, sql);
-        assert!(run_batch(&conn, sql, &["missing".into()], 10).unwrap()[0].rows.is_empty());
-        assert_eq!(conn.query_row("SELECT count(*) FROM target", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert!(
+            run_batch(&conn, sql, &["missing".into()], 10).unwrap()[0]
+                .rows
+                .is_empty()
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM target", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
     fn multi_navigation_handles_a_thousand_composite_keys() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE target(id TEXT,shop TEXT); INSERT INTO target VALUES('0','s'),('999','s'),('500','other')").unwrap();
-        let rows: Vec<_> = (0..1000).map(|i| vec![Some(i.to_string()), Some("s".into())]).collect();
-        let filter = super::super::fk_nav::bound_filter_rows(Driver::Sqlite, &["id".into(), "shop".into()], &[], &rows).unwrap();
+        let rows: Vec<_> = (0..1000)
+            .map(|i| vec![Some(i.to_string()), Some("s".into())])
+            .collect();
+        let filter = super::super::fk_nav::bound_filter_rows(
+            Driver::Sqlite,
+            &["id".into(), "shop".into()],
+            &[],
+            &rows,
+        )
+        .unwrap();
         let sql = format!("SELECT * FROM target WHERE {}", filter.sql);
         let results = run_batch(&conn, &sql, &filter.parameters, 10).unwrap();
-        assert_eq!(results[0].rows, vec![vec![Some("0".into()), Some("s".into())], vec![Some("999".into()), Some("s".into())]]);
+        assert_eq!(
+            results[0].rows,
+            vec![
+                vec![Some("0".into()), Some("s".into())],
+                vec![Some("999".into()), Some("s".into())]
+            ]
+        );
     }
 
     /// Database in a temporary file that is removed afterwards.
@@ -275,7 +347,8 @@ mod tests {
 
     impl TempDb {
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("datacraft_{name}_{}.db", std::process::id()));
+            let path =
+                std::env::temp_dir().join(format!("datacraft_{name}_{}.db", std::process::id()));
             let _ = std::fs::remove_file(&path);
             // The driver no longer creates files: this plays the dialog's "New…" button.
             std::fs::File::create(&path).expect("create temporary file");
@@ -316,14 +389,27 @@ mod tests {
         s.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1,'a'),(2,'b'),(3,'b'),(4,'c');", 10)
             .await
             .unwrap();
-        let ok = vec!["UPDATE t SET v = 'x' WHERE id = '1'".to_string(), "DELETE FROM t WHERE id = '4'".to_string()];
+        let ok = vec![
+            "UPDATE t SET v = 'x' WHERE id = '1'".to_string(),
+            "DELETE FROM t WHERE id = '4'".to_string(),
+        ];
         assert_eq!(s.apply_changes(&ok).await.unwrap(), 2);
         // The second one affects 0 rows: the first one is rolled back too.
-        let bad = vec!["UPDATE t SET v = 'y' WHERE id = '1'".to_string(), "UPDATE t SET v = 'z' WHERE id = '99'".to_string()];
+        let bad = vec![
+            "UPDATE t SET v = 'y' WHERE id = '1'".to_string(),
+            "UPDATE t SET v = 'z' WHERE id = '99'".to_string(),
+        ];
         assert!(s.apply_changes(&bad).await.is_err());
         // Non-unique key (no PK): affects 2 rows and is rejected.
-        assert!(s.apply_changes(&["UPDATE t SET v = 'w' WHERE v = 'b'".to_string()]).await.is_err());
-        let rs = s.execute("SELECT id, v FROM t ORDER BY id", 10).await.unwrap();
+        assert!(
+            s.apply_changes(&["UPDATE t SET v = 'w' WHERE v = 'b'".to_string()])
+                .await
+                .is_err()
+        );
+        let rs = s
+            .execute("SELECT id, v FROM t ORDER BY id", 10)
+            .await
+            .unwrap();
         let rows: Vec<Vec<Option<String>>> = rs[0].rows.clone();
         let b = |id: &str, v: &str| vec![Some(id.to_string()), Some(v.to_string())];
         assert_eq!(rows, vec![b("1", "x"), b("2", "b"), b("3", "b")]);
@@ -331,7 +417,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_file_is_not_created() {
-        let path = std::env::temp_dir().join(format!("datacraft_missing_{}.db", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("datacraft_missing_{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
@@ -351,13 +438,27 @@ mod tests {
             primary_key: pk,
             default: default.into(),
         };
-        let cols = [col("id", "INTEGER", true, ""), col("Full Name", "TEXT", false, "'n/a'")];
-        s.execute(&create_table_sql(Driver::Sqlite, "main", "order", &cols), 0).await.unwrap();
-        s.execute("INSERT INTO \"order\" (id) VALUES (1)", 0).await.unwrap();
-        let rs = s.execute("SELECT \"Full Name\" FROM \"order\"", 10).await.unwrap();
+        let cols = [
+            col("id", "INTEGER", true, ""),
+            col("Full Name", "TEXT", false, "'n/a'"),
+        ];
+        s.execute(&create_table_sql(Driver::Sqlite, "main", "order", &cols), 0)
+            .await
+            .unwrap();
+        s.execute("INSERT INTO \"order\" (id) VALUES (1)", 0)
+            .await
+            .unwrap();
+        let rs = s
+            .execute("SELECT \"Full Name\" FROM \"order\"", 10)
+            .await
+            .unwrap();
         assert_eq!(rs[0].rows, vec![vec![Some("n/a".to_string())]]);
         let schemas = s.introspect().await.unwrap();
-        let t = schemas[0].tables.iter().find(|t| t.name == "order").unwrap();
+        let t = schemas[0]
+            .tables
+            .iter()
+            .find(|t| t.name == "order")
+            .unwrap();
         assert!(t.columns[0].primary_key && !t.columns[0].nullable);
     }
 
@@ -365,7 +466,13 @@ mod tests {
     async fn ddl_does_not_inherit_affected_rows() {
         let db = TempDb::new("ddl");
         let mut s = db.open().await;
-        let rs = s.execute("CREATE TABLE t(x); INSERT INTO t VALUES (1),(2),(3); CREATE TABLE u(y);", 10).await.unwrap();
+        let rs = s
+            .execute(
+                "CREATE TABLE t(x); INSERT INTO t VALUES (1),(2),(3); CREATE TABLE u(y);",
+                10,
+            )
+            .await
+            .unwrap();
         assert_eq!(rs[1].affected, Some(3));
         assert_eq!(rs[2].affected, None);
     }
@@ -374,24 +481,49 @@ mod tests {
     async fn create_insert_and_select() {
         let db = TempDb::new("crud");
         let mut s = db.open().await;
-        let rs = s.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT, r REAL, b BLOB)", 10).await.unwrap();
+        let rs = s
+            .execute(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, n TEXT, r REAL, b BLOB)",
+                10,
+            )
+            .await
+            .unwrap();
         assert_eq!(rs.len(), 1);
         assert!(rs[0].is_command());
 
         let rs = s
-            .execute("INSERT INTO t (n, r, b) VALUES ('one', 1.5, x'00FF'), (NULL, NULL, NULL)", 10)
+            .execute(
+                "INSERT INTO t (n, r, b) VALUES ('one', 1.5, x'00FF'), (NULL, NULL, NULL)",
+                10,
+            )
             .await
             .unwrap();
         assert_eq!(rs[0].affected, Some(2));
 
         let big = "AB".repeat(100);
-        s.execute(&format!("INSERT INTO t (n, b) VALUES ('big', x'{big}')"), 10).await.unwrap();
+        s.execute(
+            &format!("INSERT INTO t (n, b) VALUES ('big', x'{big}')"),
+            10,
+        )
+        .await
+        .unwrap();
 
-        let rs = s.execute("SELECT id, n, r, b FROM t ORDER BY id", 10).await.unwrap();
+        let rs = s
+            .execute("SELECT id, n, r, b FROM t ORDER BY id", 10)
+            .await
+            .unwrap();
         assert_eq!(rs[0].columns, ["id", "n", "r", "b"]);
         assert!(!rs[0].truncated);
         let rows = &rs[0].rows;
-        assert_eq!(rows[0], [Some("1".into()), Some("one".into()), Some("1.5".into()), Some("0x00FF".into())]);
+        assert_eq!(
+            rows[0],
+            [
+                Some("1".into()),
+                Some("one".into()),
+                Some("1.5".into()),
+                Some("0x00FF".into())
+            ]
+        );
         assert_eq!(rows[1], [Some("2".into()), None, None, None]);
         let blob = rows[2][3].as_deref().unwrap();
         assert!(blob.starts_with("0xABAB") && blob.ends_with('…'));
@@ -423,7 +555,11 @@ mod tests {
         assert_eq!(rs[4].affected, Some(2));
 
         // An error halfway through the batch is propagated.
-        assert!(s.execute("SELECT 1; SELECT * FROM missing", 10).await.is_err());
+        assert!(
+            s.execute("SELECT 1; SELECT * FROM missing", 10)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -467,7 +603,25 @@ mod tests {
         assert!(pair.columns.iter().all(|c| c.primary_key));
         let users = &schemas[0].tables[2];
         assert_eq!(users.kind, ObjectKind::Table);
-        let cols: Vec<_> = users.columns.iter().map(|c| (c.name.as_str(), c.data_type.as_str(), c.nullable, c.primary_key)).collect();
-        assert_eq!(cols, [("id", "INTEGER", false, true), ("email", "TEXT", false, false), ("bio", "TEXT", true, false)]);
+        let cols: Vec<_> = users
+            .columns
+            .iter()
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    c.data_type.as_str(),
+                    c.nullable,
+                    c.primary_key,
+                )
+            })
+            .collect();
+        assert_eq!(
+            cols,
+            [
+                ("id", "INTEGER", false, true),
+                ("email", "TEXT", false, false),
+                ("bio", "TEXT", true, false)
+            ]
+        );
     }
 }

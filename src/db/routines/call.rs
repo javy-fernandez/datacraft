@@ -20,15 +20,41 @@ pub struct ArgValue {
 fn is_numeric(data_type: &str) -> bool {
     let t = data_type.trim().to_ascii_lowercase();
     [
-        "int", "integer", "smallint", "bigint", "tinyint", "mediumint", "numeric", "decimal", "number", "float", "real",
-        "double", "money", "smallmoney", "serial", "bit", "binary_float", "binary_double", "pls_integer", "binary_integer",
+        "int",
+        "integer",
+        "smallint",
+        "bigint",
+        "tinyint",
+        "mediumint",
+        "numeric",
+        "decimal",
+        "number",
+        "float",
+        "real",
+        "double",
+        "money",
+        "smallmoney",
+        "serial",
+        "bit",
+        "binary_float",
+        "binary_double",
+        "pls_integer",
+        "binary_integer",
     ]
     .iter()
-    .any(|n| t == *n || t.starts_with(&format!("{n}(")) || t.starts_with(&format!("{n} ")) || (*n == "int" && t.starts_with("int")))
+    .any(|n| {
+        t == *n
+            || t.starts_with(&format!("{n}("))
+            || t.starts_with(&format!("{n} "))
+            || (*n == "int" && t.starts_with("int"))
+    })
 }
 
 fn is_boolean(data_type: &str) -> bool {
-    matches!(data_type.trim().to_ascii_lowercase().as_str(), "boolean" | "bool")
+    matches!(
+        data_type.trim().to_ascii_lowercase().as_str(),
+        "boolean" | "bool"
+    )
 }
 
 /// The SQL for one argument.
@@ -95,17 +121,24 @@ fn plsql_type(data_type: &str) -> String {
     let t = data_type.trim();
     let upper = t.to_ascii_uppercase();
     let base = upper.trim_start_matches("NOCOPY ").trim();
-    if matches!(base, "VARCHAR2" | "NVARCHAR2" | "VARCHAR" | "CHAR" | "NCHAR" | "RAW") {
+    if matches!(
+        base,
+        "VARCHAR2" | "NVARCHAR2" | "VARCHAR" | "CHAR" | "NCHAR" | "RAW"
+    ) {
         format!("{base}(32767)")
     } else {
-        t.trim_start_matches("NOCOPY ").trim_start_matches("nocopy ").to_string()
+        t.trim_start_matches("NOCOPY ")
+            .trim_start_matches("nocopy ")
+            .to_string()
     }
 }
 
 fn oracle_print(name: &str, var: &str, data_type: &str) -> String {
     let label = name.replace('\'', "''");
     if is_boolean(data_type) {
-        format!("dbms_output.put_line('{label} = ' || case when {var} then 'TRUE' when not {var} then 'FALSE' end);")
+        format!(
+            "dbms_output.put_line('{label} = ' || case when {var} then 'TRUE' when not {var} then 'FALSE' end);"
+        )
     } else {
         format!("dbms_output.put_line('{label} = ' || {var});")
     }
@@ -130,7 +163,16 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
                 .enumerate()
                 // Functions take only input arguments; procedures also get NULL for OUT ones.
                 .filter(|(_, p)| !function || p.mode != ParamMode::Out)
-                .map(|(i, p)| (p, if p.mode == ParamMode::Out { Some("null".into()) } else { input(i, p) }))
+                .map(|(i, p)| {
+                    (
+                        p,
+                        if p.mode == ParamMode::Out {
+                            Some("null".into())
+                        } else {
+                            input(i, p)
+                        },
+                    )
+                })
                 .unzip();
             let args = arg_list(&params, &args);
             if !function {
@@ -143,7 +185,12 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
         }
         Driver::MySql | Driver::MariaDb => {
             if function {
-                let args: Vec<String> = spec.params.iter().enumerate().map(|(i, p)| argument(driver, p, value(i))).collect();
+                let args: Vec<String> = spec
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| argument(driver, p, value(i)))
+                    .collect();
                 return format!("select {name}({});", args.join(", "));
             }
             let var = |p: &Param| format!("@{}", param_name(p));
@@ -153,7 +200,11 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
                 match p.mode {
                     ParamMode::Out => args.push(var(p)),
                     ParamMode::InOut => {
-                        lines.push(format!("set {} = {};", var(p), argument(driver, p, value(i))));
+                        lines.push(format!(
+                            "set {} = {};",
+                            var(p),
+                            argument(driver, p, value(i))
+                        ));
                         args.push(var(p));
                     }
                     _ => args.push(argument(driver, p, value(i))),
@@ -164,7 +215,13 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
                 .params
                 .iter()
                 .filter(|p| p.mode.returns_output())
-                .map(|p| format!("{} as {}", var(p), crate::ui::quote_ident_if_needed(driver, &param_name(p))))
+                .map(|p| {
+                    format!(
+                        "{} as {}",
+                        var(p),
+                        crate::ui::quote_ident_if_needed(driver, &param_name(p))
+                    )
+                })
                 .collect();
             if !outs.is_empty() {
                 lines.push(format!("select {};", outs.join(", ")));
@@ -193,7 +250,11 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
                 if p.mode.returns_output() {
                     let ty = p.data_type.trim();
                     let v = value(i);
-                    let init = if v.value.trim().is_empty() && !v.null && !v.expression { String::new() } else { format!(" = {}", argument(driver, p, v)) };
+                    let init = if v.value.trim().is_empty() && !v.null && !v.expression {
+                        String::new()
+                    } else {
+                        format!(" = {}", argument(driver, p, v))
+                    };
                     lines.push(format!("declare {pname} {ty}{init};"));
                     args.push(format!("{pname} = {pname} output"));
                 } else if let Some(a) = input(i, p) {
@@ -201,7 +262,11 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
                 }
             }
             lines.push("declare @dc_return int;".into());
-            let args = if args.is_empty() { String::new() } else { format!(" {}", args.join(", ")) };
+            let args = if args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", args.join(", "))
+            };
             lines.push(format!("exec @dc_return = {name}{args};"));
             let mut outs: Vec<String> = spec
                 .params
@@ -220,10 +285,23 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
                 .params
                 .iter()
                 .enumerate()
-                .map(|(i, p)| (p, if p.mode.returns_output() { Some(format!("v_{}", param_name(p))) } else { input(i, p) }))
+                .map(|(i, p)| {
+                    (
+                        p,
+                        if p.mode.returns_output() {
+                            Some(format!("v_{}", param_name(p)))
+                        } else {
+                            input(i, p)
+                        },
+                    )
+                })
                 .unzip();
             let args = arg_list(&params, &args);
-            let call = if args.is_empty() { name.clone() } else { format!("{name}({args})") };
+            let call = if args.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}({args})")
+            };
             if function && !outputs && !boolean_result {
                 return if spec.options.pipelined {
                     format!("select * from table({call});")
@@ -236,28 +314,57 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
             }
             let mut decl = Vec::new();
             let mut body = vec!["    dbms_output.enable(null);".to_string()];
-            for (i, p) in spec.params.iter().enumerate().filter(|(_, p)| p.mode.returns_output()) {
+            for (i, p) in spec
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.mode.returns_output())
+            {
                 let var = format!("v_{}", param_name(p));
                 decl.push(format!("    {var} {};", plsql_type(&p.data_type)));
                 let v = value(i);
-                if p.mode == ParamMode::InOut && (v.null || v.expression || !v.value.trim().is_empty()) {
+                if p.mode == ParamMode::InOut
+                    && (v.null || v.expression || !v.value.trim().is_empty())
+                {
                     body.push(format!("    {var} := {};", argument(driver, p, v)));
                 }
             }
             if function {
-                decl.push(format!("    v_result {};", plsql_type(&spec.returns.data_type)));
+                decl.push(format!(
+                    "    v_result {};",
+                    plsql_type(&spec.returns.data_type)
+                ));
                 body.push(format!("    v_result := {call};"));
-                body.push(format!("    {}", oracle_print("result", "v_result", &spec.returns.data_type)));
+                body.push(format!(
+                    "    {}",
+                    oracle_print("result", "v_result", &spec.returns.data_type)
+                ));
             } else {
                 body.push(format!("    {call};"));
             }
             for p in spec.params.iter().filter(|p| p.mode.returns_output()) {
-                body.push(format!("    {}", oracle_print(&param_name(p), &format!("v_{}", param_name(p)), &p.data_type)));
+                body.push(format!(
+                    "    {}",
+                    oracle_print(
+                        &param_name(p),
+                        &format!("v_{}", param_name(p)),
+                        &p.data_type
+                    )
+                ));
             }
-            format!("declare\n{}\nbegin\n{}\nend;", decl.join("\n"), body.join("\n"))
+            format!(
+                "declare\n{}\nbegin\n{}\nend;",
+                decl.join("\n"),
+                body.join("\n")
+            )
         }
         Driver::Snowflake => {
-            let (params, args): (Vec<&Param>, Vec<Option<String>>) = spec.params.iter().enumerate().map(|(i, p)| (p, input(i, p))).unzip();
+            let (params, args): (Vec<&Param>, Vec<Option<String>>) = spec
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (p, input(i, p)))
+                .unzip();
             let args = arg_list(&params, &args);
             if !function {
                 format!("call {name}({args});")
@@ -273,5 +380,8 @@ pub fn call_sql(driver: Driver, spec: &RoutineSpec, values: &[ArgValue]) -> Stri
 
 /// Routines "Execute…" can't call (PostgreSQL trigger functions run only from their trigger).
 pub fn callable(spec: &RoutineSpec) -> bool {
-    !matches!(spec.returns.data_type.trim().to_ascii_lowercase().as_str(), "trigger" | "event_trigger")
+    !matches!(
+        spec.returns.data_type.trim().to_ascii_lowercase().as_str(),
+        "trigger" | "event_trigger"
+    )
 }

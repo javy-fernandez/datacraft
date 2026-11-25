@@ -55,22 +55,46 @@ impl Dialog {
         }
     }
     fn edit(&self) -> anyhow::Result<Edit> {
-        anyhow::ensure!(self.loaded && !self.pending, tr("Preview the privileges again before applying."));
+        anyhow::ensure!(
+            self.loaded && !self.pending,
+            tr("Preview the privileges again before applying.")
+        );
         let Some(principal) = self.selected.clone() else {
             anyhow::bail!(tr("Select user or role"));
         };
         let new: Vec<_> = self.chosen.iter().cloned().collect();
-        let expected = table_privileges::statements(self.driver, &self.table.schema, &self.table.table, &principal, &self.old, &new)?;
-        Ok(Edit { principal, old: self.old.clone(), new, expected })
+        let expected = table_privileges::statements(
+            self.driver,
+            &self.table.schema,
+            &self.table.table,
+            &principal,
+            &self.old,
+            &new,
+        )?;
+        Ok(Edit {
+            principal,
+            old: self.old.clone(),
+            new,
+            expected,
+        })
     }
 
     fn show(&mut self, ctx: &egui::Context) -> Option<Intent> {
         let mut intent = None;
-        let subtitle = format!("{} / {} / {}", self.table.db, self.table.schema, self.table.table);
+        let subtitle = format!(
+            "{} / {} / {}",
+            self.table.db, self.table.schema, self.table.table
+        );
         let pending = self.pending;
-        crate::ui::workflow_dialog::show(ctx, egui::Id::new("table_grants"), tr("Set Privileges"), &subtitle, vec2(680.0, 600.0), |root, regions| {
-            let mut body = regions.body_ui(root);
-            egui::ScrollArea::both().auto_shrink([false, false]).show(&mut body, |ui| {
+        crate::ui::workflow_dialog::show(
+            ctx,
+            egui::Id::new("table_grants"),
+            tr("Set Privileges"),
+            &subtitle,
+            vec2(680.0, 600.0),
+            |root, regions| {
+                let mut body = regions.body_ui(root);
+                egui::ScrollArea::both().auto_shrink([false, false]).show(&mut body, |ui| {
                 ui.label(tr("These are explicit table grants, not the user's full effective permissions."));
                 ui.add_enabled_ui(!pending, |ui| {
                     let account_label =
@@ -122,30 +146,36 @@ impl Dialog {
                     ui.colored_label(palette(ctx.global_style().visuals.dark_mode).error, error);
                 }
             });
-            let mut footer = regions.footer_ui(root);
-            footer.horizontal(|ui| {
-                if pending {
-                    ui.spinner();
-                    ui.label(tr("Loading…"));
-                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(tr(if pending { "Cancel" } else { "Close" })).clicked() {
-                        if pending {
-                            self.cancel.store(true, Ordering::Relaxed);
-                        } else {
-                            intent = Some(Intent::Close);
+                let mut footer = regions.footer_ui(root);
+                footer.horizontal(|ui| {
+                    if pending {
+                        ui.spinner();
+                        ui.label(tr("Loading…"));
+                        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(tr(if pending { "Cancel" } else { "Close" }))
+                            .clicked()
+                        {
+                            if pending {
+                                self.cancel.store(true, Ordering::Relaxed);
+                            } else {
+                                intent = Some(Intent::Close);
+                            }
                         }
-                    }
-                    let edit = self.edit().ok().filter(|edit| !edit.expected.is_empty());
-                    if ui.add_enabled(edit.is_some(), egui::Button::new(tr("Apply"))).clicked()
-                        && let Some(edit) = edit
-                    {
-                        intent = Some(Intent::Request(table_privileges::Request::Apply(edit)));
-                    }
+                        let edit = self.edit().ok().filter(|edit| !edit.expected.is_empty());
+                        if ui
+                            .add_enabled(edit.is_some(), egui::Button::new(tr("Apply")))
+                            .clicked()
+                            && let Some(edit) = edit
+                        {
+                            intent = Some(Intent::Request(table_privileges::Request::Apply(edit)));
+                        }
+                    });
                 });
-            });
-        });
+            },
+        );
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
             if pending {
                 self.cancel.store(true, Ordering::Relaxed);
@@ -170,7 +200,10 @@ enum Intent {
 
 impl DataCraftApp {
     fn table_grants_driver(&self, table: &TableRef) -> Result<Driver, &'static str> {
-        let connection = self.conn(table.conn).filter(|connection| connection.status == ConnStatus::Connected).ok_or(tr("The connection is not open"))?;
+        let connection = self
+            .conn(table.conn)
+            .filter(|connection| connection.status == ConnStatus::Connected)
+            .ok_or(tr("The connection is not open"))?;
         if connection.cfg.read_only {
             return Err(tr("Read-only connection"));
         }
@@ -178,7 +211,10 @@ impl DataCraftApp {
         if !table_privileges::supported(driver) {
             return Err(tr("Table grants are not available for this engine"));
         }
-        if !self.table_info(table.conn, Some(&table.db), &table.schema, &table.table).is_some_and(|info| info.kind == crate::db::ObjectKind::Table) {
+        if !self
+            .table_info(table.conn, Some(&table.db), &table.schema, &table.table)
+            .is_some_and(|info| info.kind == crate::db::ObjectKind::Table)
+        {
             return Err(tr("Select one supported table"));
         }
         Ok(driver)
@@ -193,7 +229,9 @@ impl DataCraftApp {
             }
         };
         if self.table_has_pending_edits(&table) {
-            self.error(tr("Save or discard this table's pending edits before changing it."));
+            self.error(tr(
+                "Save or discard this table's pending edits before changing it.",
+            ));
             return;
         }
         self.table_grants.dialog = Some(Dialog::new(table, driver));
@@ -201,7 +239,12 @@ impl DataCraftApp {
     }
 
     fn start_table_grants(&mut self, request: table_privileges::Request) {
-        let Some(dialog) = self.table_grants.dialog.as_ref().filter(|dialog| !dialog.pending) else {
+        let Some(dialog) = self
+            .table_grants
+            .dialog
+            .as_ref()
+            .filter(|dialog| !dialog.pending)
+        else {
             return;
         };
         let table = dialog.table.clone();
@@ -210,8 +253,12 @@ impl DataCraftApp {
             self.error(error);
             return;
         }
-        if matches!(request, table_privileges::Request::Apply(_)) && self.table_has_pending_edits(&table) {
-            self.error(tr("Save or discard this table's pending edits before changing it."));
+        if matches!(request, table_privileges::Request::Apply(_))
+            && self.table_has_pending_edits(&table)
+        {
+            self.error(tr(
+                "Save or discard this table's pending edits before changing it.",
+            ));
             return;
         }
         self.table_grants.next_request += 1;
@@ -233,7 +280,12 @@ impl DataCraftApp {
         });
     }
 
-    pub(super) fn table_grants_received(&mut self, conn: ConnId, id: u64, result: Result<Grants, String>) {
+    pub(super) fn table_grants_received(
+        &mut self,
+        conn: ConnId,
+        id: u64,
+        result: Result<Grants, String>,
+    ) {
         let Some(table) = self
             .table_grants
             .dialog
@@ -268,7 +320,12 @@ impl DataCraftApp {
     }
 
     pub(super) fn table_grants_dialog(&mut self, ctx: &egui::Context) {
-        let Some(table) = self.table_grants.dialog.as_ref().map(|dialog| dialog.table.clone()) else {
+        let Some(table) = self
+            .table_grants
+            .dialog
+            .as_ref()
+            .map(|dialog| dialog.table.clone())
+        else {
             return;
         };
         if let Err(error) = self.table_grants_driver(&table) {
@@ -276,7 +333,12 @@ impl DataCraftApp {
             self.error(error);
             return;
         }
-        match self.table_grants.dialog.as_mut().and_then(|dialog| dialog.show(ctx)) {
+        match self
+            .table_grants
+            .dialog
+            .as_mut()
+            .and_then(|dialog| dialog.show(ctx))
+        {
             Some(Intent::Request(request)) => self.start_table_grants(request),
             Some(Intent::Close) => self.table_grants.dialog = None,
             None => {}
@@ -291,7 +353,10 @@ mod tests {
 
     fn snapshot() -> Grants {
         Grants {
-            principals: vec![Principal { name: "reader".into(), host: "".into() }],
+            principals: vec![Principal {
+                name: "reader".into(),
+                host: "".into(),
+            }],
             privileges: vec!["SELECT".into(), "UPDATE".into()],
             granted: vec!["SELECT".into()],
         }
@@ -312,7 +377,8 @@ mod tests {
             assert_eq!(app.table_grants.dialog.is_some(), accepted, "{driver:?}");
         }
         let (mut app, table) = super::super::tests::table_menu_app(Driver::Postgres, true);
-        app.conns[0].databases[0].schemas.as_mut().unwrap()[0].tables[0].kind = crate::db::ObjectKind::View;
+        app.conns[0].databases[0].schemas.as_mut().unwrap()[0].tables[0].kind =
+            crate::db::ObjectKind::View;
         app.open_table_grants(table);
         assert!(app.table_grants.dialog.is_none());
     }
@@ -323,7 +389,10 @@ mod tests {
         let mut dialog = Dialog::new(table, Driver::Postgres);
         dialog.id = 4;
         dialog.pending = true;
-        dialog.selected = Some(Principal { name: "reader".into(), host: "".into() });
+        dialog.selected = Some(Principal {
+            name: "reader".into(),
+            host: "".into(),
+        });
         app.table_grants.dialog = Some(dialog);
         app.table_grants_received(7, 3, Ok(snapshot()));
         assert!(app.table_grants.dialog.as_ref().unwrap().pending);
@@ -331,7 +400,10 @@ mod tests {
         let dialog = app.table_grants.dialog.as_mut().unwrap();
         assert!(dialog.loaded && !dialog.pending);
         dialog.chosen.insert("UPDATE".into());
-        assert_eq!(dialog.edit().unwrap().expected, ["GRANT UPDATE ON TABLE \"main\".\"notes\" TO \"reader\""]);
+        assert_eq!(
+            dialog.edit().unwrap().expected,
+            ["GRANT UPDATE ON TABLE \"main\".\"notes\" TO \"reader\""]
+        );
         dialog.id = 5;
         dialog.pending = true;
         app.table_grants_received(7, 5, Err("catalog permission denied".into()));
@@ -363,18 +435,20 @@ mod tests {
         dialog.chosen = grants.granted.into_iter().collect();
         dialog.loaded = true;
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder().with_size(vec2(800.0, 700.0)).build_ui_state(
-            move |ui, (dialog, intent): &mut (Dialog, Option<Intent>)| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    return;
-                }
-                if let Some(action) = dialog.show(ui.ctx()) {
-                    *intent = Some(action);
-                }
-            },
-            (dialog, None),
-        );
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(800.0, 700.0))
+            .build_ui_state(
+                move |ui, (dialog, intent): &mut (Dialog, Option<Intent>)| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    if let Some(action) = dialog.show(ui.ctx()) {
+                        *intent = Some(action);
+                    }
+                },
+                (dialog, None),
+            );
         harness.run_steps(2);
         assert!(harness.get_by_label("Apply").accesskit_node().is_disabled());
         harness.get_by_label("UPDATE").click();
@@ -382,12 +456,16 @@ mod tests {
         assert!(harness.query_by_label("SQL preview").is_some());
         harness.get_by_label("Apply").click();
         harness.run_steps(2);
-        let Some(Intent::Request(table_privileges::Request::Apply(edit))) = &harness.state().1 else {
+        let Some(Intent::Request(table_privileges::Request::Apply(edit))) = &harness.state().1
+        else {
             panic!("expected an apply request");
         };
         assert_eq!(edit.old, ["SELECT"]);
         assert_eq!(edit.new, ["SELECT", "UPDATE"]);
-        assert_eq!(edit.expected, ["GRANT UPDATE ON TABLE \"main\".\"notes\" TO \"reader\""]);
+        assert_eq!(
+            edit.expected,
+            ["GRANT UPDATE ON TABLE \"main\".\"notes\" TO \"reader\""]
+        );
     }
 
     #[test]
@@ -397,16 +475,18 @@ mod tests {
         dialog.pending = true;
         let cancel = dialog.cancel.clone();
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder().with_size(vec2(800.0, 700.0)).build_ui_state(
-            move |ui, dialog: &mut Dialog| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    return;
-                }
-                dialog.show(ui.ctx());
-            },
-            dialog,
-        );
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(800.0, 700.0))
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.show(ui.ctx());
+                },
+                dialog,
+            );
         harness.run_steps(2);
         assert!(harness.get_by_label("Apply").accesskit_node().is_disabled());
         harness.get_by_label("Cancel").click();
@@ -418,32 +498,47 @@ mod tests {
     fn grants_principal_selection_discards_the_previous_snapshot_before_loading() {
         let (_, table) = super::super::tests::table_menu_app(Driver::Postgres, true);
         let mut dialog = Dialog::new(table, Driver::Postgres);
-        dialog.selected = Some(Principal { name: "reader".into(), host: "".into() });
-        dialog.principals = vec![dialog.selected.clone().unwrap(), Principal { name: "writer".into(), host: "".into() }];
+        dialog.selected = Some(Principal {
+            name: "reader".into(),
+            host: "".into(),
+        });
+        dialog.principals = vec![
+            dialog.selected.clone().unwrap(),
+            Principal {
+                name: "writer".into(),
+                host: "".into(),
+            },
+        ];
         dialog.old = vec!["SELECT".into()];
         dialog.chosen = ["SELECT".into(), "UPDATE".into()].into();
         dialog.loaded = true;
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder().with_size(vec2(800.0, 700.0)).build_ui_state(
-            move |ui, (dialog, intent): &mut (Dialog, Option<Intent>)| {
-                if std::mem::take(&mut first) {
-                    theme::install_fonts(ui.ctx());
-                    return;
-                }
-                if let Some(action) = dialog.show(ui.ctx()) {
-                    *intent = Some(action);
-                }
-            },
-            (dialog, None),
-        );
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(vec2(800.0, 700.0))
+            .build_ui_state(
+                move |ui, (dialog, intent): &mut (Dialog, Option<Intent>)| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    if let Some(action) = dialog.show(ui.ctx()) {
+                        *intent = Some(action);
+                    }
+                },
+                (dialog, None),
+            );
         harness.run_steps(2);
-        harness.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Select user or role").click();
+        harness
+            .get_by_role_and_label(egui::accesskit::Role::ComboBox, "Select user or role")
+            .click();
         harness.run_steps(2);
         harness.get_by_label("writer").click();
         harness.run_steps(2);
         let (dialog, intent) = harness.state();
         assert!(!dialog.loaded && dialog.old.is_empty() && dialog.chosen.is_empty());
-        assert!(matches!(intent, Some(Intent::Request(table_privileges::Request::Load(Some(principal)))) if principal.name == "writer"));
+        assert!(
+            matches!(intent, Some(Intent::Request(table_privileges::Request::Load(Some(principal)))) if principal.name == "writer")
+        );
         assert!(harness.get_by_label("Apply").accesskit_node().is_disabled());
     }
 
@@ -452,7 +547,14 @@ mod tests {
         let (mut app, table) = super::super::tests::table_menu_app(Driver::Postgres, true);
         app.open_table(&table);
         let index = app.active;
-        let mut view = ResultView::new(crate::db::ResultSet { columns: vec!["id".into()], rows: vec![vec![Some("1".into())]], ..Default::default() }, 901);
+        let mut view = ResultView::new(
+            crate::db::ResultSet {
+                columns: vec!["id".into()],
+                rows: vec![vec![Some("1".into())]],
+                ..Default::default()
+            },
+            901,
+        );
         view.set_edit_target(Ok(editing::EditTarget {
             schema: "main".into(),
             table: "notes".into(),
@@ -462,7 +564,12 @@ mod tests {
             has_pk: true,
             insert_only: false,
         }));
-        view.edit.as_mut().unwrap().state.set_value(&view.rs, editing::RowRef::Existing(0), 0, Some("2".into()));
+        view.edit.as_mut().unwrap().state.set_value(
+            &view.rs,
+            editing::RowRef::Existing(0),
+            0,
+            Some("2".into()),
+        );
         app.consoles[index].results.push(view);
         app.open_table_grants(table);
         assert!(app.table_grants.dialog.is_none());
@@ -481,17 +588,24 @@ mod tests {
             dialog.pending = pending;
             app.table_grants.dialog = Some(dialog);
             // Exercise the real global routing before dialog rendering, as in the app frame.
-            let mut harness = egui_kittest::Harness::builder().build_ui_state(|ui, app: &mut DataCraftApp| app.shortcuts(ui.ctx()), app);
+            let mut harness = egui_kittest::Harness::builder()
+                .build_ui_state(|ui, app: &mut DataCraftApp| app.shortcuts(ui.ctx()), app);
             harness.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
             harness.run_steps(2);
-            assert!(!harness.state().consoles[active].running, "hidden SQL ran with pending={pending}");
+            assert!(
+                !harness.state().consoles[active].running,
+                "hidden SQL ran with pending={pending}"
+            );
             assert!(harness.state().consoles[active].last_statements.is_empty());
             harness.state_mut().table_grants.dialog = None;
             assert!(!harness.state().modal_open());
             harness.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
             harness.run_steps(2);
             assert!(harness.state().consoles[active].running);
-            assert_eq!(harness.state().consoles[active].last_statements, ["SELECT 1"]);
+            assert_eq!(
+                harness.state().consoles[active].last_statements,
+                ["SELECT 1"]
+            );
         }
     }
 }

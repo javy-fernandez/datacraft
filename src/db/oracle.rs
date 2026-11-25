@@ -40,17 +40,36 @@ pub struct OraSession {
 
 impl OraSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
-        let host = if cfg.host.trim().is_empty() { "localhost".to_string() } else { cfg.host.trim().to_string() };
-        let port = if cfg.port == 0 { DEFAULT_PORT } else { cfg.port };
+        let host = if cfg.host.trim().is_empty() {
+            "localhost".to_string()
+        } else {
+            cfg.host.trim().to_string()
+        };
+        let port = if cfg.port == 0 {
+            DEFAULT_PORT
+        } else {
+            cfg.port
+        };
         let connect_string = connect_string(&host, port, &cfg.database);
         let (user, password) = (cfg.user.clone(), cfg.password.clone());
 
         let task = tokio::task::spawn_blocking(move || open(&user, &password, &connect_string));
         let conn = tokio::time::timeout(CONNECT_TIMEOUT, task)
             .await
-            .map_err(|_| anyhow!(trf("Timed out connecting to {host}:{port}", &[("host", &host), ("port", &port)])))??
+            .map_err(|_| {
+                anyhow!(trf(
+                    "Timed out connecting to {host}:{port}",
+                    &[("host", &host), ("port", &port)]
+                ))
+            })??
             .map_err(ora_error)?;
-        Ok(Self { conn: Arc::new(conn), gate: Arc::new(Mutex::new(())), broken: false, db_name: None, autocommit: true })
+        Ok(Self {
+            conn: Arc::new(conn),
+            gate: Arc::new(Mutex::new(())),
+            broken: false,
+            db_name: None,
+            autocommit: true,
+        })
     }
 
     /// Connection handle to cancel the running statement (`break_execution`).
@@ -92,12 +111,23 @@ impl OraSession {
             return Ok(Vec::new());
         }
         let commit = self.autocommit;
-        self.with_conn(move |conn| run(conn, &sql, display, &[], max_rows, commit).map(|rs| vec![rs])).await
+        self.with_conn(move |conn| {
+            run(conn, &sql, display, &[], max_rows, commit).map(|rs| vec![rs])
+        })
+        .await
     }
 
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let (sql, parameters) = (sql.to_string(), parameters.to_vec());
-        self.with_conn(move |conn| run(conn, &sql, sql.clone(), &parameters, max_rows, false).map(|rs| vec![rs])).await
+        self.with_conn(move |conn| {
+            run(conn, &sql, sql.clone(), &parameters, max_rows, false).map(|rs| vec![rs])
+        })
+        .await
     }
 
     /// Manual transactions: statements stop committing themselves (Oracle has no BEGIN; the
@@ -113,10 +143,16 @@ impl OraSession {
         let name = self
             .with_conn(|conn| {
                 // CON_NAME exists from 12c (multitenant); older servers only know DB_NAME.
-                match conn.query_row_as::<Option<String>>("SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual", &[]) {
+                match conn.query_row_as::<Option<String>>(
+                    "SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual",
+                    &[],
+                ) {
                     Ok(Some(name)) => Ok(Some(name)),
                     Err(e) if is_connection_lost(&e.to_string()) => Err(e),
-                    _ => conn.query_row_as::<Option<String>>("SELECT SYS_CONTEXT('USERENV','DB_NAME') FROM dual", &[]),
+                    _ => conn.query_row_as::<Option<String>>(
+                        "SELECT SYS_CONTEXT('USERENV','DB_NAME') FROM dual",
+                        &[],
+                    ),
                 }
             })
             .await?
@@ -138,7 +174,11 @@ impl OraSession {
         self.transaction(statements, false).await
     }
 
-    async fn transaction(&mut self, statements: &[String], single_row: bool) -> anyhow::Result<u64> {
+    async fn transaction(
+        &mut self,
+        statements: &[String],
+        single_row: bool,
+    ) -> anyhow::Result<u64> {
         let statements = statements.to_vec();
         let (conn, gate) = (Arc::clone(&self.conn), Arc::clone(&self.gate));
         let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
@@ -193,9 +233,14 @@ fn open(user: &str, password: &str, connect_string: &str) -> Result<Connection, 
         Ok(conn)
     };
     match connect() {
-        Err(e) if client_load_error_code(&e.to_string()).is_some() && !InitParams::is_initialized() => {
+        Err(e)
+            if client_load_error_code(&e.to_string()).is_some()
+                && !InitParams::is_initialized() =>
+        {
             for dir in client_dir_candidates() {
-                let loaded = InitParams::new().oracle_client_lib_dir(dir.as_os_str()).and_then(|p| p.init());
+                let loaded = InitParams::new()
+                    .oracle_client_lib_dir(dir.as_os_str())
+                    .and_then(|p| p.init());
                 if loaded.is_ok() {
                     return connect();
                 }
@@ -209,9 +254,17 @@ fn open(user: &str, password: &str, connect_string: &str) -> Result<Connection, 
 /// EZConnect string `//host:port/service`. IPv6 addresses go in brackets.
 fn connect_string(host: &str, port: u16, service: &str) -> String {
     let host = host.trim();
-    let host = if host.contains(':') && !host.starts_with('[') { format!("[{host}]") } else { host.to_string() };
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
     let service = service.trim();
-    let service = if service.is_empty() { DEFAULT_SERVICE } else { service };
+    let service = if service.is_empty() {
+        DEFAULT_SERVICE
+    } else {
+        service
+    };
     format!("//{host}:{port}/{service}")
 }
 
@@ -230,16 +283,24 @@ fn ora_error(e: oracle::Error) -> anyhow::Error {
 
 /// ODPI-C codes for "the Oracle Client library could not be loaded / is not usable".
 fn client_load_error_code(message: &str) -> Option<&'static str> {
-    ["DPI-1047", "DPI-1072", "DPI-1050"].into_iter().find(|code| message.contains(code))
+    ["DPI-1047", "DPI-1072", "DPI-1050"]
+        .into_iter()
+        .find(|code| message.contains(code))
 }
 
 fn client_missing_message(code: &str, detail: &str) -> String {
     let hint = if cfg!(target_os = "macos") {
-        tr("Download the Instant Client Basic package for macOS from oracle.com, unpack it and link libclntsh.dylib into ~/lib (or /usr/local/lib), or leave the instantclient folder in your home or Downloads folder.")
+        tr(
+            "Download the Instant Client Basic package for macOS from oracle.com, unpack it and link libclntsh.dylib into ~/lib (or /usr/local/lib), or leave the instantclient folder in your home or Downloads folder.",
+        )
     } else if cfg!(windows) {
-        tr("Download the Instant Client Basic package for Windows (64-bit) from oracle.com, unpack it and add its folder to PATH (or copy its DLLs next to DataCraft.exe). It also needs the Visual C++ Redistributable.")
+        tr(
+            "Download the Instant Client Basic package for Windows (64-bit) from oracle.com, unpack it and add its folder to PATH (or copy its DLLs next to DataCraft.exe). It also needs the Visual C++ Redistributable.",
+        )
     } else {
-        tr("Install the Oracle Instant Client Basic package and make libclntsh.so findable (ldconfig or LD_LIBRARY_PATH).")
+        tr(
+            "Install the Oracle Instant Client Basic package and make libclntsh.so findable (ldconfig or LD_LIBRARY_PATH).",
+        )
     };
     let mut msg = trf(
         "Oracle connections need the Oracle Instant Client, which could not be loaded ({code}).\n{hint}",
@@ -258,7 +319,12 @@ fn is_connection_lost(message: &str) -> bool {
         "ORA-03113", // end-of-file on communication channel
         "ORA-03114", // not connected
         "ORA-03135", // connection lost contact
-        "ORA-12152", "ORA-12537", "ORA-12547", "ORA-12570", "ORA-12571", "ORA-12583",
+        "ORA-12152",
+        "ORA-12537",
+        "ORA-12547",
+        "ORA-12570",
+        "ORA-12571",
+        "ORA-12583",
         "DPI-1010", // not connected
         "DPI-1080", // connection was closed by ORA-%d
         "DPI-1067", // call timeout
@@ -292,7 +358,9 @@ fn client_dir_candidates() -> Vec<PathBuf> {
         found.push(home.join("lib"));
         found.push(home);
     }
-    if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from) {
+    if let Some(home) =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+    {
         roots.push(home.join("Downloads"));
         roots.push(home.join("lib"));
         roots.push(home);
@@ -300,15 +368,21 @@ fn client_dir_candidates() -> Vec<PathBuf> {
     if cfg!(windows) {
         roots.extend(["C:\\oracle", "C:\\", "C:\\Program Files\\Oracle"].map(PathBuf::from));
     } else {
-        roots.extend(["/opt/oracle", "/usr/local/oracle", "/usr/local/lib", "/opt"].map(PathBuf::from));
+        roots.extend(
+            ["/opt/oracle", "/usr/local/oracle", "/usr/local/lib", "/opt"].map(PathBuf::from),
+        );
     }
     for root in roots {
-        let Ok(entries) = std::fs::read_dir(&root) else { continue };
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
         let mut dirs: Vec<PathBuf> = entries
             .flatten()
             .map(|e| e.path())
             .filter(|p| {
-                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.to_ascii_lowercase().starts_with("instantclient"))
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.to_ascii_lowercase().starts_with("instantclient"))
             })
             .collect();
         // Newest version first (instantclient_23_x before instantclient_19_x).
@@ -361,10 +435,16 @@ fn is_plsql(sql: &str) -> bool {
                     return false;
                 }
             }
-            if matches!(it.peek(), Some(&("EDITIONABLE" | "NONEDITIONABLE" | "EDITIONING"))) {
+            if matches!(
+                it.peek(),
+                Some(&("EDITIONABLE" | "NONEDITIONABLE" | "EDITIONING"))
+            ) {
                 it.next();
             }
-            matches!(it.next(), Some("PROCEDURE" | "FUNCTION" | "PACKAGE" | "TRIGGER" | "TYPE" | "LIBRARY"))
+            matches!(
+                it.next(),
+                Some("PROCEDURE" | "FUNCTION" | "PACKAGE" | "TRIGGER" | "TYPE" | "LIBRARY")
+            )
         }
         _ => false,
     }
@@ -374,10 +454,16 @@ fn is_plsql(sql: &str) -> bool {
 /// the trailing `;` of SQL statements and makes sure PL/SQL blocks keep (or get) theirs.
 fn normalize_statement(sql: &str) -> String {
     let mut lines: Vec<&str> = sql.lines().collect();
-    while lines.first().is_some_and(|l| l.trim().is_empty() || l.trim() == "/") {
+    while lines
+        .first()
+        .is_some_and(|l| l.trim().is_empty() || l.trim() == "/")
+    {
         lines.remove(0);
     }
-    while lines.last().is_some_and(|l| matches!(l.trim(), "" | "/" | "/;")) {
+    while lines
+        .last()
+        .is_some_and(|l| matches!(l.trim(), "" | "/" | "/;"))
+    {
         lines.pop();
     }
     let text = lines.join("\n");
@@ -386,9 +472,14 @@ fn normalize_statement(sql: &str) -> String {
         return String::new();
     }
     if is_plsql(text) {
-        if text.ends_with(';') { text.to_string() } else { format!("{text};") }
+        if text.ends_with(';') {
+            text.to_string()
+        } else {
+            format!("{text};")
+        }
     } else {
-        text.trim_end_matches(|c: char| c == ';' || c.is_whitespace()).to_string()
+        text.trim_end_matches(|c: char| c == ';' || c.is_whitespace())
+            .to_string()
     }
 }
 
@@ -412,7 +503,9 @@ fn cell_kind(t: &OracleType) -> CellKind {
 
 fn cell(row: &Row, i: usize, kind: &CellKind) -> Cell {
     let value = match kind {
-        CellKind::Binary => row.get::<_, Option<Vec<u8>>>(i).map(|v| v.map(|b| hex_preview(&b))),
+        CellKind::Binary => row
+            .get::<_, Option<Vec<u8>>>(i)
+            .map(|v| v.map(|b| hex_preview(&b))),
         CellKind::Placeholder(label) => match row.sql_values()[i].is_null() {
             Ok(true) => Ok(None),
             _ => Ok(Some((*label).to_string())),
@@ -423,7 +516,14 @@ fn cell(row: &Row, i: usize, kind: &CellKind) -> Cell {
     value.unwrap_or_else(|e| Some(format!("<{e}>")))
 }
 
-fn run(conn: &Connection, sql: &str, display: String, parameters: &[String], max_rows: usize, commit: bool) -> Result<ResultSet, oracle::Error> {
+fn run(
+    conn: &Connection,
+    sql: &str,
+    display: String,
+    parameters: &[String],
+    max_rows: usize,
+    commit: bool,
+) -> Result<ResultSet, oracle::Error> {
     let start = Instant::now();
     let fetch = if max_rows == 0 {
         1000
@@ -431,12 +531,26 @@ fn run(conn: &Connection, sql: &str, display: String, parameters: &[String], max
         max_rows.saturating_add(1).min(1000) as u32
     };
     let mut stmt = conn.statement(sql).fetch_array_size(fetch).build()?;
-    let mut rs = ResultSet { statement: display, ..Default::default() };
+    let mut rs = ResultSet {
+        statement: display,
+        ..Default::default()
+    };
     if stmt.is_query() {
-        let params: Vec<&dyn oracle::sql_type::ToSql> = parameters.iter().map(|v| v as &dyn oracle::sql_type::ToSql).collect();
+        let params: Vec<&dyn oracle::sql_type::ToSql> = parameters
+            .iter()
+            .map(|v| v as &dyn oracle::sql_type::ToSql)
+            .collect();
         let rows = stmt.query(&params)?;
-        let kinds: Vec<CellKind> = rows.column_info().iter().map(|c| cell_kind(c.oracle_type())).collect();
-        rs.columns = rows.column_info().iter().map(|c| c.name().to_string()).collect();
+        let kinds: Vec<CellKind> = rows
+            .column_info()
+            .iter()
+            .map(|c| cell_kind(c.oracle_type()))
+            .collect();
+        rs.columns = rows
+            .column_info()
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
         for row in rows {
             if rs.rows.len() >= max_rows {
                 rs.truncated = true;
@@ -447,7 +561,13 @@ fn run(conn: &Connection, sql: &str, display: String, parameters: &[String], max
                 continue;
             }
             let row = row?;
-            rs.rows.push(kinds.iter().enumerate().map(|(i, k)| cell(&row, i, k)).collect());
+            rs.rows.push(
+                kinds
+                    .iter()
+                    .enumerate()
+                    .map(|(i, k)| cell(&row, i, k))
+                    .collect(),
+            );
         }
     } else {
         stmt.execute(&[])?;
@@ -458,7 +578,10 @@ fn run(conn: &Connection, sql: &str, display: String, parameters: &[String], max
         if commit {
             conn.commit()?;
         }
-        if matches!(leading_words(sql, 1).first().map(String::as_str), Some("BEGIN" | "DECLARE")) {
+        if matches!(
+            leading_words(sql, 1).first().map(String::as_str),
+            Some("BEGIN" | "DECLARE")
+        ) {
             let lines = dbms_output(conn, max_rows)?;
             if !lines.is_empty() {
                 rs.columns = vec!["DBMS_OUTPUT".into()];
@@ -474,7 +597,9 @@ fn run(conn: &Connection, sql: &str, display: String, parameters: &[String], max
 /// Lines an anonymous block wrote with `DBMS_OUTPUT` (if the session enabled it), at most
 /// `max_rows`.
 fn dbms_output(conn: &Connection, max_rows: usize) -> Result<Vec<Option<String>>, oracle::Error> {
-    let mut stmt = conn.statement("BEGIN DBMS_OUTPUT.GET_LINE(:1, :2); END;").build()?;
+    let mut stmt = conn
+        .statement("BEGIN DBMS_OUTPUT.GET_LINE(:1, :2); END;")
+        .build()?;
     let mut lines = Vec::new();
     while lines.len() < max_rows {
         stmt.execute(&[&OracleType::Varchar2(32767), &OracleType::Int64])?;
@@ -488,11 +613,19 @@ fn dbms_output(conn: &Connection, max_rows: usize) -> Result<Vec<Option<String>>
 
 /// Runs the statements without committing in between; with `single_row`, each must affect
 /// exactly one row. Commits at the end (the caller rolls back on error).
-fn run_in_transaction(conn: &Connection, statements: &[String], single_row: bool) -> anyhow::Result<u64> {
+fn run_in_transaction(
+    conn: &Connection,
+    statements: &[String],
+    single_row: bool,
+) -> anyhow::Result<u64> {
     let mut total = 0;
     for stmt in statements {
         let sql = normalize_statement(stmt);
-        let n = conn.execute(&sql, &[]).map_err(ora_error)?.row_count().map_err(ora_error)?;
+        let n = conn
+            .execute(&sql, &[])
+            .map_err(ora_error)?
+            .row_count()
+            .map_err(ora_error)?;
         if single_row && n != 1 {
             return Err(super::not_single_row(n, stmt));
         }
@@ -505,11 +638,48 @@ fn run_in_transaction(conn: &Connection, statements: &[String], single_row: bool
 /// Schemas Oracle installs and maintains itself, for servers older than 12c
 /// (no `ALL_USERS.ORACLE_MAINTAINED`).
 pub(super) const SYSTEM_SCHEMAS: &[&str] = &[
-    "ANONYMOUS", "APPQOSSYS", "AUDSYS", "CTXSYS", "DBSFWUSER", "DBSNMP", "DIP", "DVF", "DVSYS", "EXFSYS",
-    "GGSYS", "GSMADMIN_INTERNAL", "GSMCATUSER", "GSMUSER", "LBACSYS", "MDDATA", "MDSYS", "MGMT_VIEW", "OJVMSYS",
-    "OLAPSYS", "ORACLE_OCM", "ORDDATA", "ORDPLUGINS", "ORDSYS", "OUTLN", "OWBSYS", "OWBSYS_AUDIT",
-    "REMOTE_SCHEDULER_AGENT", "SI_INFORMTN_SCHEMA", "SPATIAL_CSW_ADMIN_USR", "SPATIAL_WFS_ADMIN_USR", "SYS",
-    "SYSBACKUP", "SYSDG", "SYSKM", "SYSMAN", "SYSRAC", "SYSTEM", "TSMSYS", "WMSYS", "XDB", "XS$NULL",
+    "ANONYMOUS",
+    "APPQOSSYS",
+    "AUDSYS",
+    "CTXSYS",
+    "DBSFWUSER",
+    "DBSNMP",
+    "DIP",
+    "DVF",
+    "DVSYS",
+    "EXFSYS",
+    "GGSYS",
+    "GSMADMIN_INTERNAL",
+    "GSMCATUSER",
+    "GSMUSER",
+    "LBACSYS",
+    "MDDATA",
+    "MDSYS",
+    "MGMT_VIEW",
+    "OJVMSYS",
+    "OLAPSYS",
+    "ORACLE_OCM",
+    "ORDDATA",
+    "ORDPLUGINS",
+    "ORDSYS",
+    "OUTLN",
+    "OWBSYS",
+    "OWBSYS_AUDIT",
+    "REMOTE_SCHEDULER_AGENT",
+    "SI_INFORMTN_SCHEMA",
+    "SPATIAL_CSW_ADMIN_USR",
+    "SPATIAL_WFS_ADMIN_USR",
+    "SYS",
+    "SYSBACKUP",
+    "SYSDG",
+    "SYSKM",
+    "SYSMAN",
+    "SYSRAC",
+    "SYSTEM",
+    "TSMSYS",
+    "WMSYS",
+    "XDB",
+    "XS$NULL",
 ];
 
 /// Owners of visible tables/views, without Oracle's own schemas.
@@ -517,14 +687,23 @@ fn owners_sql(oracle_maintained_column: bool) -> String {
     let filter = if oracle_maintained_column {
         "owner NOT IN (SELECT username FROM all_users WHERE oracle_maintained = 'Y')".to_string()
     } else {
-        format!("owner NOT IN ({}) AND owner NOT LIKE 'APEX\\_%' ESCAPE '\\' AND owner NOT LIKE 'FLOWS\\_%' ESCAPE '\\'", in_list(SYSTEM_SCHEMAS))
+        format!(
+            "owner NOT IN ({}) AND owner NOT LIKE 'APEX\\_%' ESCAPE '\\' AND owner NOT LIKE 'FLOWS\\_%' ESCAPE '\\'",
+            in_list(SYSTEM_SCHEMAS)
+        )
     };
-    format!("SELECT owner FROM (SELECT owner FROM all_tables UNION SELECT owner FROM all_views) WHERE {filter} ORDER BY owner")
+    format!(
+        "SELECT owner FROM (SELECT owner FROM all_tables UNION SELECT owner FROM all_views) WHERE {filter} ORDER BY owner"
+    )
 }
 
 /// `'A', 'B'` with the quotes escaped.
 fn in_list<S: AsRef<str>>(names: &[S]) -> String {
-    names.iter().map(|n| format!("'{}'", n.as_ref().replace('\'', "''"))).collect::<Vec<_>>().join(", ")
+    names
+        .iter()
+        .map(|n| format!("'{}'", n.as_ref().replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn objects_sql(owners: &[String]) -> String {
@@ -596,9 +775,9 @@ fn load_schemas(conn: &Connection) -> Result<Vec<SchemaInfo>, oracle::Error> {
     let mut owners: Vec<String> = match conn.query_as::<String>(&owners_sql(true), &[]) {
         Ok(rows) => rows.collect::<Result<_, _>>()?,
         // ORA-00904: invalid identifier (ORACLE_MAINTAINED doesn't exist before 12c).
-        Err(e) if e.to_string().contains("ORA-00904") => {
-            conn.query_as::<String>(&owners_sql(false), &[])?.collect::<Result<_, _>>()?
-        }
+        Err(e) if e.to_string().contains("ORA-00904") => conn
+            .query_as::<String>(&owners_sql(false), &[])?
+            .collect::<Result<_, _>>()?,
         Err(e) => return Err(e),
     };
     owners.retain(|o| *o != user);
@@ -612,12 +791,18 @@ fn load_schemas(conn: &Connection) -> Result<Vec<SchemaInfo>, oracle::Error> {
             let row = row?;
             let text = |i: usize| row.get::<_, Option<String>>(i).ok().flatten();
             let int = |i: usize| row.get::<_, Option<i64>>(i).ok().flatten();
-            let (Some(owner), Some(name)) = (text(0), text(1)) else { continue };
+            let (Some(owner), Some(name)) = (text(0), text(1)) else {
+                continue;
+            };
             let list = tables.entry(owner).or_default();
             if list.last().is_none_or(|t| t.name != name) {
                 list.push(TableInfo {
                     name,
-                    kind: if text(2).as_deref() == Some("V") { ObjectKind::View } else { ObjectKind::Table },
+                    kind: if text(2).as_deref() == Some("V") {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
                     columns: Vec::new(),
                 });
             }
@@ -642,7 +827,10 @@ fn load_schemas(conn: &Connection) -> Result<Vec<SchemaInfo>, oracle::Error> {
 
     Ok(owners
         .into_iter()
-        .map(|name| SchemaInfo { tables: tables.remove(&name).unwrap_or_default(), name })
+        .map(|name| SchemaInfo {
+            tables: tables.remove(&name).unwrap_or_default(),
+            name,
+        })
         .collect())
 }
 
@@ -659,35 +847,78 @@ mod tests {
 
     #[test]
     fn strips_trailing_semicolon_from_sql() {
-        assert_eq!(normalize_statement("SELECT 1 FROM dual;"), "SELECT 1 FROM dual");
-        assert_eq!(normalize_statement("  insert into t values (1) ;  \n"), "insert into t values (1)");
-        assert_eq!(normalize_statement("SELECT ';' FROM dual"), "SELECT ';' FROM dual");
-        assert_eq!(normalize_statement("CREATE TABLE t (id NUMBER);;"), "CREATE TABLE t (id NUMBER)");
-        assert_eq!(normalize_statement("CREATE OR REPLACE VIEW v AS SELECT 1 x FROM dual;"), "CREATE OR REPLACE VIEW v AS SELECT 1 x FROM dual");
-        assert_eq!(normalize_statement("-- comment\nSELECT 1 FROM dual;"), "-- comment\nSELECT 1 FROM dual");
+        assert_eq!(
+            normalize_statement("SELECT 1 FROM dual;"),
+            "SELECT 1 FROM dual"
+        );
+        assert_eq!(
+            normalize_statement("  insert into t values (1) ;  \n"),
+            "insert into t values (1)"
+        );
+        assert_eq!(
+            normalize_statement("SELECT ';' FROM dual"),
+            "SELECT ';' FROM dual"
+        );
+        assert_eq!(
+            normalize_statement("CREATE TABLE t (id NUMBER);;"),
+            "CREATE TABLE t (id NUMBER)"
+        );
+        assert_eq!(
+            normalize_statement("CREATE OR REPLACE VIEW v AS SELECT 1 x FROM dual;"),
+            "CREATE OR REPLACE VIEW v AS SELECT 1 x FROM dual"
+        );
+        assert_eq!(
+            normalize_statement("-- comment\nSELECT 1 FROM dual;"),
+            "-- comment\nSELECT 1 FROM dual"
+        );
     }
 
     #[test]
     fn keeps_semicolon_on_plsql() {
         assert_eq!(normalize_statement("BEGIN NULL; END;"), "BEGIN NULL; END;");
         assert_eq!(normalize_statement("begin null; end"), "begin null; end;");
-        assert_eq!(normalize_statement("DECLARE x NUMBER; BEGIN x := 1; END;\n/\n"), "DECLARE x NUMBER; BEGIN x := 1; END;");
+        assert_eq!(
+            normalize_statement("DECLARE x NUMBER; BEGIN x := 1; END;\n/\n"),
+            "DECLARE x NUMBER; BEGIN x := 1; END;"
+        );
         assert_eq!(
             normalize_statement("CREATE OR REPLACE PROCEDURE p AS BEGIN NULL; END;\n/"),
             "CREATE OR REPLACE PROCEDURE p AS BEGIN NULL; END;"
         );
-        assert_eq!(normalize_statement("create or replace editionable function f return number is begin return 1; end;"), "create or replace editionable function f return number is begin return 1; end;");
-        assert_eq!(normalize_statement("/* c */ CREATE PACKAGE BODY pk AS END pk;"), "/* c */ CREATE PACKAGE BODY pk AS END pk;");
-        assert_eq!(normalize_statement("CREATE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW BEGIN NULL; END;"), "CREATE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW BEGIN NULL; END;");
-        assert_eq!(normalize_statement("CREATE TYPE pt AS OBJECT (x NUMBER);"), "CREATE TYPE pt AS OBJECT (x NUMBER);");
+        assert_eq!(
+            normalize_statement(
+                "create or replace editionable function f return number is begin return 1; end;"
+            ),
+            "create or replace editionable function f return number is begin return 1; end;"
+        );
+        assert_eq!(
+            normalize_statement("/* c */ CREATE PACKAGE BODY pk AS END pk;"),
+            "/* c */ CREATE PACKAGE BODY pk AS END pk;"
+        );
+        assert_eq!(
+            normalize_statement(
+                "CREATE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW BEGIN NULL; END;"
+            ),
+            "CREATE TRIGGER trg BEFORE INSERT ON t FOR EACH ROW BEGIN NULL; END;"
+        );
+        assert_eq!(
+            normalize_statement("CREATE TYPE pt AS OBJECT (x NUMBER);"),
+            "CREATE TYPE pt AS OBJECT (x NUMBER);"
+        );
     }
 
     #[test]
     fn slash_lines() {
         assert_eq!(normalize_statement("/"), "");
         assert_eq!(normalize_statement("\n/\n"), "");
-        assert_eq!(normalize_statement("\n/\nSELECT 1 FROM dual;"), "SELECT 1 FROM dual");
-        assert_eq!(normalize_statement("SELECT 4/2 FROM dual\n/"), "SELECT 4/2 FROM dual");
+        assert_eq!(
+            normalize_statement("\n/\nSELECT 1 FROM dual;"),
+            "SELECT 1 FROM dual"
+        );
+        assert_eq!(
+            normalize_statement("SELECT 4/2 FROM dual\n/"),
+            "SELECT 4/2 FROM dual"
+        );
         assert_eq!(normalize_statement("   "), "");
     }
 
@@ -695,39 +926,67 @@ mod tests {
     fn plsql_detection() {
         assert!(is_plsql("  -- x\n  BEGIN NULL; END;"));
         assert!(is_plsql("DECLARE\n  n NUMBER;\nBEGIN NULL; END;"));
-        assert!(is_plsql("CREATE OR REPLACE NONEDITIONABLE PACKAGE p AS END;"));
+        assert!(is_plsql(
+            "CREATE OR REPLACE NONEDITIONABLE PACKAGE p AS END;"
+        ));
         assert!(is_plsql("CREATE OR REPLACE TYPE BODY t AS END;"));
         assert!(!is_plsql("CREATE TABLE begin_t (id NUMBER)"));
         assert!(!is_plsql("CREATE OR REPLACE VIEW v AS SELECT 1 FROM dual"));
         assert!(!is_plsql("CREATE OR FOO PROCEDURE p"));
         assert!(!is_plsql("SELECT 'BEGIN' FROM dual"));
         assert!(!is_plsql("beginning"));
-        assert_eq!(leading_words("/* a */ -- b\n create  or replace(", 4), ["CREATE", "OR", "REPLACE"]);
+        assert_eq!(
+            leading_words("/* a */ -- b\n create  or replace(", 4),
+            ["CREATE", "OR", "REPLACE"]
+        );
     }
 
     #[test]
     fn connect_strings() {
-        assert_eq!(connect_string("db.local", 1521, "FREEPDB1"), "//db.local:1521/FREEPDB1");
-        assert_eq!(connect_string(" 10.0.0.5 ", 1522, " orcl.example.com "), "//10.0.0.5:1522/orcl.example.com");
-        assert_eq!(connect_string("localhost", 1521, ""), "//localhost:1521/FREEPDB1");
+        assert_eq!(
+            connect_string("db.local", 1521, "FREEPDB1"),
+            "//db.local:1521/FREEPDB1"
+        );
+        assert_eq!(
+            connect_string(" 10.0.0.5 ", 1522, " orcl.example.com "),
+            "//10.0.0.5:1522/orcl.example.com"
+        );
+        assert_eq!(
+            connect_string("localhost", 1521, ""),
+            "//localhost:1521/FREEPDB1"
+        );
         assert_eq!(connect_string("::1", 1521, "XE"), "//[::1]:1521/XE");
         assert_eq!(connect_string("[::1]", 1521, "XE"), "//[::1]:1521/XE");
     }
 
     #[test]
     fn error_classification() {
-        assert!(is_connection_lost("ORA-03113: end-of-file on communication channel"));
+        assert!(is_connection_lost(
+            "ORA-03113: end-of-file on communication channel"
+        ));
         assert!(is_connection_lost("DPI-1010: not connected"));
-        assert!(is_connection_lost("DPI-1080: connection was closed by ORA-3113"));
+        assert!(is_connection_lost(
+            "DPI-1080: connection was closed by ORA-3113"
+        ));
         assert!(is_connection_lost("ORA-03135: connection lost contact"));
-        assert!(!is_connection_lost("ORA-00942: table or view does not exist"));
-        assert!(!is_connection_lost("ORA-00001: unique constraint (X.PK) violated"));
+        assert!(!is_connection_lost(
+            "ORA-00942: table or view does not exist"
+        ));
+        assert!(!is_connection_lost(
+            "ORA-00001: unique constraint (X.PK) violated"
+        ));
 
         let missing = "DPI-1047: Cannot locate a 64-bit Oracle Client library: \"dlopen(libclntsh.dylib, 0x0001): tried: ...\"";
         assert_eq!(client_load_error_code(missing), Some("DPI-1047"));
-        assert_eq!(client_load_error_code("ORA-01017: invalid username/password"), None);
+        assert_eq!(
+            client_load_error_code("ORA-01017: invalid username/password"),
+            None
+        );
         let msg = client_missing_message("DPI-1047", missing);
-        assert!(msg.contains("Instant Client") && msg.contains("DPI-1047") && msg.contains("dlopen"), "{msg}");
+        assert!(
+            msg.contains("Instant Client") && msg.contains("DPI-1047") && msg.contains("dlopen"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -738,29 +997,82 @@ mod tests {
         assert_eq!(cell_kind(&OracleType::CLOB), CellKind::Text);
         assert_eq!(cell_kind(&OracleType::Date), CellKind::Text);
         assert_eq!(cell_kind(&OracleType::Number(10, 2)), CellKind::Text);
-        assert_eq!(cell_kind(&OracleType::BFILE), CellKind::Placeholder("(BFILE)"));
+        assert_eq!(
+            cell_kind(&OracleType::BFILE),
+            CellKind::Placeholder("(BFILE)")
+        );
         assert_eq!(hex_preview(&[0xCA, 0xFE]), "0xCAFE");
         // DATE and TIMESTAMP values are shown with the crate's ISO-like format.
         let ts = Timestamp::new(2026, 10, 16, 10, 20, 30, 500_000_000).unwrap();
         assert_eq!(ts.and_prec(0).unwrap().to_string(), "2026-10-16 10:20:30");
-        assert_eq!(ts.and_prec(3).unwrap().to_string(), "2026-10-16 10:20:30.500");
-        assert_eq!(ts.and_prec(0).unwrap().and_tz_hm_offset(2, 0).unwrap().to_string(), "2026-10-16 10:20:30 +02:00");
+        assert_eq!(
+            ts.and_prec(3).unwrap().to_string(),
+            "2026-10-16 10:20:30.500"
+        );
+        assert_eq!(
+            ts.and_prec(0)
+                .unwrap()
+                .and_tz_hm_offset(2, 0)
+                .unwrap()
+                .to_string(),
+            "2026-10-16 10:20:30 +02:00"
+        );
     }
 
     #[test]
     fn type_labels() {
-        assert_eq!(type_label("VARCHAR2", Some(255), Some(255), Some("B"), None, None), "varchar2(255)");
-        assert_eq!(type_label("VARCHAR2", Some(400), Some(100), Some("C"), None, None), "varchar2(100 char)");
-        assert_eq!(type_label("NVARCHAR2", Some(100), Some(50), Some("C"), None, None), "nvarchar2(50)");
-        assert_eq!(type_label("NUMBER", Some(22), None, None, Some(10), Some(2)), "number(10,2)");
-        assert_eq!(type_label("NUMBER", Some(22), None, None, Some(10), Some(0)), "number(10)");
-        assert_eq!(type_label("NUMBER", Some(22), None, None, None, Some(0)), "integer");
-        assert_eq!(type_label("NUMBER", Some(22), None, None, None, None), "number");
-        assert_eq!(type_label("RAW", Some(16), None, None, None, None), "raw(16)");
-        assert_eq!(type_label("FLOAT", Some(22), None, None, Some(126), None), "float(126)");
+        assert_eq!(
+            type_label("VARCHAR2", Some(255), Some(255), Some("B"), None, None),
+            "varchar2(255)"
+        );
+        assert_eq!(
+            type_label("VARCHAR2", Some(400), Some(100), Some("C"), None, None),
+            "varchar2(100 char)"
+        );
+        assert_eq!(
+            type_label("NVARCHAR2", Some(100), Some(50), Some("C"), None, None),
+            "nvarchar2(50)"
+        );
+        assert_eq!(
+            type_label("NUMBER", Some(22), None, None, Some(10), Some(2)),
+            "number(10,2)"
+        );
+        assert_eq!(
+            type_label("NUMBER", Some(22), None, None, Some(10), Some(0)),
+            "number(10)"
+        );
+        assert_eq!(
+            type_label("NUMBER", Some(22), None, None, None, Some(0)),
+            "integer"
+        );
+        assert_eq!(
+            type_label("NUMBER", Some(22), None, None, None, None),
+            "number"
+        );
+        assert_eq!(
+            type_label("RAW", Some(16), None, None, None, None),
+            "raw(16)"
+        );
+        assert_eq!(
+            type_label("FLOAT", Some(22), None, None, Some(126), None),
+            "float(126)"
+        );
         assert_eq!(type_label("DATE", Some(7), None, None, None, None), "date");
-        assert_eq!(type_label("TIMESTAMP(6) WITH TIME ZONE", Some(13), None, None, None, Some(6)), "timestamp(6) with time zone");
-        assert_eq!(type_label("CLOB", Some(4000), None, None, None, None), "clob");
+        assert_eq!(
+            type_label(
+                "TIMESTAMP(6) WITH TIME ZONE",
+                Some(13),
+                None,
+                None,
+                None,
+                Some(6)
+            ),
+            "timestamp(6) with time zone"
+        );
+        assert_eq!(
+            type_label("CLOB", Some(4000), None, None, None, None),
+            "clob"
+        );
     }
 
     #[test]
@@ -768,7 +1080,11 @@ mod tests {
         assert_eq!(in_list(&["A", "O'B"]), "'A', 'O''B'");
         assert!(owners_sql(true).contains("oracle_maintained = 'Y'"));
         let legacy = owners_sql(false);
-        assert!(legacy.contains("'SYS'") && legacy.contains("'XDB'") && !legacy.contains("oracle_maintained"));
+        assert!(
+            legacy.contains("'SYS'")
+                && legacy.contains("'XDB'")
+                && !legacy.contains("oracle_maintained")
+        );
         let sql = objects_sql(&["HR".into(), "SCOTT".into()]);
         assert!(sql.contains("owner IN ('HR', 'SCOTT')") && sql.contains("constraint_type = 'P'"));
     }
@@ -783,7 +1099,9 @@ mod tests {
         let mut cfg = ConnectionConfig::new(1, Driver::Oracle);
         cfg.host = "127.0.0.1".into();
         cfg.port = 1;
-        let Err(err) = OraSession::connect(&cfg).await else { panic!("connected without a server") };
+        let Err(err) = OraSession::connect(&cfg).await else {
+            panic!("connected without a server")
+        };
         let msg = err.to_string();
         if client_load_error_code(&msg).is_none() {
             // The library loaded after all (found on the default search path): the error is a network one.
@@ -810,7 +1128,8 @@ mod tests {
             eprintln!("DATACRAFT_ORA_HOST not set: skipping the Oracle test");
             return None;
         };
-        let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
+        let env =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
         let mut cfg = ConnectionConfig::new(1, Driver::Oracle);
         cfg.host = host;
         cfg.port = env("DATACRAFT_ORA_PORT", "1521").parse().expect("port");
@@ -821,7 +1140,10 @@ mod tests {
     }
 
     async fn one(s: &mut OraSession, sql: &str, max_rows: usize) -> ResultSet {
-        let mut rs = s.execute(sql, max_rows).await.unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let mut rs = s
+            .execute(sql, max_rows)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
         assert_eq!(rs.len(), 1);
         rs.remove(0)
     }
@@ -875,18 +1197,41 @@ mod tests {
         let rs = one(&mut s, "SELECT * FROM dc_items WHERE 1 = 0", 10).await;
         assert_eq!(rs.columns.len(), 3);
         assert!(rs.rows.is_empty() && !rs.truncated);
-        assert_eq!(one(&mut s, "UPDATE dc_items SET price = 1", 0).await.affected, Some(3));
+        assert_eq!(
+            one(&mut s, "UPDATE dc_items SET price = 1", 0)
+                .await
+                .affected,
+            Some(3)
+        );
 
         // PL/SQL keeps its semicolon and runs in auto-commit.
-        let rs = one(&mut s, "BEGIN UPDATE dc_items SET price = 2 WHERE id = 1; END;\n/", 0).await;
+        let rs = one(
+            &mut s,
+            "BEGIN UPDATE dc_items SET price = 2 WHERE id = 1; END;\n/",
+            0,
+        )
+        .await;
         assert!(rs.is_command());
-        let rs = one(&mut s, "SELECT price FROM dc_items WHERE id = 1 FETCH FIRST 1 ROWS ONLY", 10).await;
+        let rs = one(
+            &mut s,
+            "SELECT price FROM dc_items WHERE id = 1 FETCH FIRST 1 ROWS ONLY",
+            10,
+        )
+        .await;
         assert_eq!(rs.rows[0][0].as_deref(), Some("2"));
 
         // apply_changes: commit, then rollback when a statement doesn't touch exactly one row.
-        assert_eq!(s.apply_changes(&["UPDATE dc_items SET name = 'x' WHERE id = 1".into()]).await.unwrap(), 1);
+        assert_eq!(
+            s.apply_changes(&["UPDATE dc_items SET name = 'x' WHERE id = 1".into()])
+                .await
+                .unwrap(),
+            1
+        );
         let err = s
-            .apply_changes(&["UPDATE dc_items SET name = 'y' WHERE id = 1".into(), "DELETE FROM dc_items WHERE id = 9".into()])
+            .apply_changes(&[
+                "UPDATE dc_items SET name = 'y' WHERE id = 1".into(),
+                "DELETE FROM dc_items WHERE id = 9".into(),
+            ])
             .await
             .unwrap_err();
         assert!(err.to_string().contains('0'), "{err}");
@@ -894,22 +1239,61 @@ mod tests {
         assert_eq!(rs.rows[0][0].as_deref(), Some("x"));
 
         // Errors don't break the session.
-        let err = s.execute("SELECT * FROM dc_missing_xyz", 10).await.unwrap_err();
+        let err = s
+            .execute("SELECT * FROM dc_missing_xyz", 10)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("ORA-00942"), "{err}");
         assert!(!s.is_closed());
 
-        one(&mut s, "CREATE VIEW dc_items_v AS SELECT id FROM dc_items", 0).await;
+        one(
+            &mut s,
+            "CREATE VIEW dc_items_v AS SELECT id FROM dc_items",
+            0,
+        )
+        .await;
         let schemas = s.introspect().await.unwrap();
         let me = &schemas[0];
-        let items = me.tables.iter().find(|t| t.name == "DC_ITEMS").expect("table");
+        let items = me
+            .tables
+            .iter()
+            .find(|t| t.name == "DC_ITEMS")
+            .expect("table");
         assert_eq!(items.kind, ObjectKind::Table);
-        let cols: Vec<_> = items.columns.iter().map(|c| (c.name.as_str(), c.data_type.as_str(), c.nullable, c.primary_key)).collect();
+        let cols: Vec<_> = items
+            .columns
+            .iter()
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    c.data_type.as_str(),
+                    c.nullable,
+                    c.primary_key,
+                )
+            })
+            .collect();
         assert_eq!(
             cols,
-            [("ID", "number(10)", false, true), ("NAME", "varchar2(20)", false, false), ("PRICE", "number(10,2)", true, false)]
+            [
+                ("ID", "number(10)", false, true),
+                ("NAME", "varchar2(20)", false, false),
+                ("PRICE", "number(10,2)", true, false)
+            ]
         );
-        assert_eq!(me.tables.iter().find(|t| t.name == "DC_ITEMS_V").expect("view").kind, ObjectKind::View);
-        assert!(!schemas.iter().skip(1).any(|s| s.name == "SYS" || s.name == "XDB"));
+        assert_eq!(
+            me.tables
+                .iter()
+                .find(|t| t.name == "DC_ITEMS_V")
+                .expect("view")
+                .kind,
+            ObjectKind::View
+        );
+        assert!(
+            !schemas
+                .iter()
+                .skip(1)
+                .any(|s| s.name == "SYS" || s.name == "XDB")
+        );
 
         one(&mut s, "DROP VIEW dc_items_v", 0).await;
         one(&mut s, "DROP TABLE dc_items PURGE", 0).await;

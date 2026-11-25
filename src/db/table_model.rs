@@ -35,13 +35,30 @@ pub struct Relation {
     pub ref_columns: Vec<String>,
 }
 
-pub fn from_catalog(catalog: &[SchemaInfo], selected: &[(String, String)], keys: &[ForeignKey]) -> anyhow::Result<Model> {
+pub fn from_catalog(
+    catalog: &[SchemaInfo],
+    selected: &[(String, String)],
+    keys: &[ForeignKey],
+) -> anyhow::Result<Model> {
     use std::collections::BTreeSet;
-    anyhow::ensure!(!selected.is_empty(), crate::i18n::tr("Select tables to model"));
-    let available: BTreeSet<_> =
-        catalog.iter().flat_map(|s| s.tables.iter().filter(|t| t.kind == super::ObjectKind::Table).map(|t| (s.name.clone(), t.name.clone()))).collect();
+    anyhow::ensure!(
+        !selected.is_empty(),
+        crate::i18n::tr("Select tables to model")
+    );
+    let available: BTreeSet<_> = catalog
+        .iter()
+        .flat_map(|s| {
+            s.tables
+                .iter()
+                .filter(|t| t.kind == super::ObjectKind::Table)
+                .map(|t| (s.name.clone(), t.name.clone()))
+        })
+        .collect();
     let selected: BTreeSet<_> = selected.iter().cloned().collect();
-    anyhow::ensure!(selected.is_subset(&available), crate::i18n::tr("A selected table was not found in the catalog"));
+    anyhow::ensure!(
+        selected.is_subset(&available),
+        crate::i18n::tr("A selected table was not found in the catalog")
+    );
     let mut included = selected.clone();
     for key in keys {
         let child = (key.schema.clone(), key.table.clone());
@@ -54,21 +71,35 @@ pub fn from_catalog(catalog: &[SchemaInfo], selected: &[(String, String)], keys:
     let tables: Vec<_> = catalog
         .iter()
         .flat_map(|s| {
-            s.tables.iter().filter(|t| included.contains(&(s.name.clone(), t.name.clone()))).map(|t| ModelTable {
-                schema: s.name.clone(),
-                name: t.name.clone(),
-                columns: t
-                    .columns
-                    .iter()
-                    .map(|c| ModelColumn { name: c.name.clone(), data_type: c.data_type.clone(), primary_key: c.primary_key, nullable: c.nullable })
-                    .collect(),
-            })
+            s.tables
+                .iter()
+                .filter(|t| included.contains(&(s.name.clone(), t.name.clone())))
+                .map(|t| ModelTable {
+                    schema: s.name.clone(),
+                    name: t.name.clone(),
+                    columns: t
+                        .columns
+                        .iter()
+                        .map(|c| ModelColumn {
+                            name: c.name.clone(),
+                            data_type: c.data_type.clone(),
+                            primary_key: c.primary_key,
+                            nullable: c.nullable,
+                        })
+                        .collect(),
+                })
         })
         .collect();
-    let visible: BTreeSet<_> = tables.iter().map(|t| (t.schema.clone(), t.name.clone())).collect();
+    let visible: BTreeSet<_> = tables
+        .iter()
+        .map(|t| (t.schema.clone(), t.name.clone()))
+        .collect();
     let relations = keys
         .iter()
-        .filter(|k| visible.contains(&(k.schema.clone(), k.table.clone())) && visible.contains(&(k.ref_schema.clone(), k.ref_table.clone())))
+        .filter(|k| {
+            visible.contains(&(k.schema.clone(), k.table.clone()))
+                && visible.contains(&(k.ref_schema.clone(), k.ref_table.clone()))
+        })
         .map(|k| Relation {
             schema: k.schema.clone(),
             table: k.table.clone(),
@@ -108,45 +139,96 @@ fn column_sql(driver: super::Driver, schema: &str, table: &str) -> String {
     }
 }
 
-async fn table_columns(session: &mut super::Session, driver: super::Driver, schema: &str, table: &str) -> anyhow::Result<Option<super::TableInfo>> {
+async fn table_columns(
+    session: &mut super::Session,
+    driver: super::Driver,
+    schema: &str,
+    table: &str,
+) -> anyhow::Result<Option<super::TableInfo>> {
     use super::{ColumnInfo, Driver, ObjectKind, TableInfo};
-    let sets = session.execute(&column_sql(driver, schema, table), 100_000).await?;
+    let sets = session
+        .execute(&column_sql(driver, schema, table), 100_000)
+        .await?;
     let mut found = false;
     let mut columns = Vec::new();
     for rs in sets {
-        anyhow::ensure!(!rs.truncated, crate::i18n::tr("The table catalog is too large to model completely"));
+        anyhow::ensure!(
+            !rs.truncated,
+            crate::i18n::tr("The table catalog is too large to model completely")
+        );
         for row in rs.rows {
             found = true;
             let text = |i| row.get(i).and_then(Option::as_deref);
             let Some(name) = text(1) else { continue };
-            let ty = text(2).ok_or_else(|| anyhow::anyhow!(crate::i18n::tr("Incomplete table column metadata")))?;
+            let ty = text(2).ok_or_else(|| {
+                anyhow::anyhow!(crate::i18n::tr("Incomplete table column metadata"))
+            })?;
             let int = |i| text(i).and_then(|s| s.parse::<i64>().ok());
             let data_type = match driver {
                 Driver::MsSql => super::mssql::type_label(ty, int(5), int(6), int(7)),
-                Driver::Oracle => super::oracle::type_label(ty, int(5), int(6), text(9), int(7), int(8)),
-                Driver::Snowflake => super::snowflake::type_label(ty, int(5), int(6), int(7), int(8)),
+                Driver::Oracle => {
+                    super::oracle::type_label(ty, int(5), int(6), text(9), int(7), int(8))
+                }
+                Driver::Snowflake => {
+                    super::snowflake::type_label(ty, int(5), int(6), int(7), int(8))
+                }
                 _ => ty.to_string(),
             };
-            columns.push(ColumnInfo { name: name.into(), data_type, nullable: text(3) == Some("1"), primary_key: text(4) == Some("1") });
+            columns.push(ColumnInfo {
+                name: name.into(),
+                data_type,
+                nullable: text(3) == Some("1"),
+                primary_key: text(4) == Some("1"),
+            });
         }
     }
     if found && driver == Driver::Snowflake {
-        for rs in session.execute(&format!("SHOW PRIMARY KEYS IN TABLE {}", super::Session::quote_table(driver, schema, table)), 100_000).await? {
-            anyhow::ensure!(!rs.truncated, crate::i18n::tr("The table catalog is too large to model completely"));
-            if let Some(index) = rs.columns.iter().position(|c| c.eq_ignore_ascii_case("column_name")) {
+        for rs in session
+            .execute(
+                &format!(
+                    "SHOW PRIMARY KEYS IN TABLE {}",
+                    super::Session::quote_table(driver, schema, table)
+                ),
+                100_000,
+            )
+            .await?
+        {
+            anyhow::ensure!(
+                !rs.truncated,
+                crate::i18n::tr("The table catalog is too large to model completely")
+            );
+            if let Some(index) = rs
+                .columns
+                .iter()
+                .position(|c| c.eq_ignore_ascii_case("column_name"))
+            {
                 for column in &mut columns {
-                    column.primary_key = rs.rows.iter().any(|row| row.get(index).and_then(Option::as_deref) == Some(&column.name));
+                    column.primary_key = rs
+                        .rows
+                        .iter()
+                        .any(|row| row.get(index).and_then(Option::as_deref) == Some(&column.name));
                 }
             }
         }
     }
-    Ok(found.then(|| TableInfo { name: table.into(), kind: ObjectKind::Table, columns }))
+    Ok(found.then(|| TableInfo {
+        name: table.into(),
+        kind: ObjectKind::Table,
+        columns,
+    }))
 }
 
 fn sqlite_fk_sql(tables: &std::collections::BTreeSet<(String, String)>, direct: bool) -> String {
-    let names =
-        tables.iter().filter(|(schema, _)| schema == "main").map(|(_, table)| super::table_definition::lit(super::Driver::Sqlite, table)).collect::<Vec<_>>();
-    let names = if names.is_empty() { "NULL".into() } else { names.join(",") };
+    let names = tables
+        .iter()
+        .filter(|(schema, _)| schema == "main")
+        .map(|(_, table)| super::table_definition::lit(super::Driver::Sqlite, table))
+        .collect::<Vec<_>>();
+    let names = if names.is_empty() {
+        "NULL".into()
+    } else {
+        names.join(",")
+    };
     let join = if direct { "OR" } else { "AND" };
     // Resolve omitted parent PK columns only in the projection of visible edges.
     format!(
@@ -154,20 +236,38 @@ fn sqlite_fk_sql(tables: &std::collections::BTreeSet<(String, String)>, direct: 
     )
 }
 
-pub async fn load(session: &mut super::Session, driver: super::Driver, db: &str, selected: &[(String, String)]) -> anyhow::Result<Model> {
+pub async fn load(
+    session: &mut super::Session,
+    driver: super::Driver,
+    db: &str,
+    selected: &[(String, String)],
+) -> anyhow::Result<Model> {
     use std::collections::{BTreeMap, BTreeSet};
-    anyhow::ensure!(supported(driver), crate::i18n::tr("Not available for this engine"));
-    anyhow::ensure!(!selected.is_empty(), crate::i18n::tr("Select tables to model"));
+    anyhow::ensure!(
+        supported(driver),
+        crate::i18n::tr("Not available for this engine")
+    );
+    anyhow::ensure!(
+        !selected.is_empty(),
+        crate::i18n::tr("Select tables to model")
+    );
     let selected: BTreeSet<_> = selected.iter().cloned().collect();
     let mut keys = Vec::new();
     let schemas: BTreeSet<_> = selected.iter().map(|(s, _)| s.as_str()).collect();
     for schema in schemas {
-        let sql = if driver == super::Driver::Sqlite { sqlite_fk_sql(&selected, true) } else { super::subset::fk_sql(driver, db, schema) };
+        let sql = if driver == super::Driver::Sqlite {
+            sqlite_fk_sql(&selected, true)
+        } else {
+            super::subset::fk_sql(driver, db, schema)
+        };
         if sql.is_empty() {
             break;
         }
         for rs in session.execute(&sql, 100_000).await? {
-            anyhow::ensure!(!rs.truncated, crate::i18n::tr("The foreign key catalog is too large to model completely"));
+            anyhow::ensure!(
+                !rs.truncated,
+                crate::i18n::tr("The foreign key catalog is too large to model completely")
+            );
             for key in super::subset::parse_fks(driver, &rs, &[]) {
                 if !keys.contains(&key) {
                     keys.push(key);
@@ -194,11 +294,20 @@ pub async fn load(session: &mut super::Session, driver: super::Driver, db: &str,
             catalog.entry(schema.clone()).or_default().push(info);
         }
     }
-    let catalog: Vec<_> = catalog.into_iter().map(|(name, tables)| SchemaInfo { name, tables }).collect();
+    let catalog: Vec<_> = catalog
+        .into_iter()
+        .map(|(name, tables)| SchemaInfo { name, tables })
+        .collect();
     if driver == super::Driver::Sqlite {
         keys.clear();
-        for rs in session.execute(&sqlite_fk_sql(&included, false), 100_000).await? {
-            anyhow::ensure!(!rs.truncated, crate::i18n::tr("The foreign key catalog is too large to model completely"));
+        for rs in session
+            .execute(&sqlite_fk_sql(&included, false), 100_000)
+            .await?
+        {
+            anyhow::ensure!(
+                !rs.truncated,
+                crate::i18n::tr("The foreign key catalog is too large to model completely")
+            );
             keys.extend(super::subset::parse_fks(driver, &rs, &catalog));
         }
     }
@@ -206,7 +315,12 @@ pub async fn load(session: &mut super::Session, driver: super::Driver, db: &str,
 }
 
 /// Read on a dedicated session; cancellation interrupts a native query before releasing it.
-pub async fn read(mut cfg: super::ConnectionConfig, db: &str, tables: &[(String, String)], cancel: &std::sync::atomic::AtomicBool) -> anyhow::Result<Model> {
+pub async fn read(
+    mut cfg: super::ConnectionConfig,
+    db: &str,
+    tables: &[(String, String)],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<Model> {
     use crate::i18n::tr;
     use std::{sync::atomic::Ordering, time::Duration};
     anyhow::ensure!(supported(cfg.driver), tr("Not available for this engine"));
@@ -215,7 +329,8 @@ pub async fn read(mut cfg: super::ConnectionConfig, db: &str, tables: &[(String,
     if !matches!(driver, super::Driver::Sqlite | super::Driver::Oracle) {
         cfg.database = db.into();
     }
-    let mut session = tokio::time::timeout(Duration::from_secs(30), super::Session::connect(&cfg)).await??;
+    let mut session =
+        tokio::time::timeout(Duration::from_secs(30), super::Session::connect(&cfg)).await??;
     tokio::time::timeout(Duration::from_secs(30), session.use_database(db)).await??;
     let handle = session.cancel_handle();
     let query = load(&mut session, driver, db, tables);
@@ -245,7 +360,12 @@ mod tests {
     #[test]
     fn targeted_postgres_nullability_keeps_domain_not_null_constraints() {
         let sql = column_sql(super::super::Driver::Postgres, "s", "t");
-        let select = sql.strip_prefix("SELECT ").unwrap().split(" FROM pg_class ").next().unwrap();
+        let select = sql
+            .strip_prefix("SELECT ")
+            .unwrap()
+            .split(" FROM pg_class ")
+            .next()
+            .unwrap();
         let (mut depth, mut start) = (0, 0);
         let mut fields = Vec::new();
         for (i, ch) in select.char_indices() {
@@ -263,13 +383,20 @@ mod tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE pg_attribute(attnum INTEGER,attnotnull INTEGER,atttypid INTEGER); CREATE TABLE pg_type(oid INTEGER,typtype TEXT,typnotnull INTEGER); INSERT INTO pg_type VALUES(1,'b',0),(2,'d',1),(3,'d',0); INSERT INTO pg_attribute VALUES(1,0,1),(2,1,1),(3,0,2),(4,0,3);").unwrap();
         let mut query = db.prepare(&format!("SELECT {} FROM pg_attribute a JOIN pg_type ty ON ty.oid=a.atttypid ORDER BY a.attnum", fields[3])).unwrap();
-        let nullable = query.query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        let nullable = query
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         assert_eq!(nullable, ["1", "0", "0", "1"]);
     }
 
     #[tokio::test]
     async fn targeted_oracle_catalog_keeps_character_semantics_and_unbounded_number_scale() {
-        let path = std::env::temp_dir().join(format!("datacraft-model-oracle-catalog-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-model-oracle-catalog-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::File::create(&path).unwrap();
         let mut cfg = super::super::ConnectionConfig::new(1, super::super::Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
@@ -279,35 +406,84 @@ mod tests {
         drop(session);
         std::fs::remove_file(path).unwrap();
         let columns = result.unwrap().unwrap().columns;
-        assert_eq!(columns.iter().map(|c| c.data_type.as_str()).collect::<Vec<_>>(), ["varchar2(10 char)", "number(*,2)"]);
+        assert_eq!(
+            columns
+                .iter()
+                .map(|c| c.data_type.as_str())
+                .collect::<Vec<_>>(),
+            ["varchar2(10 char)", "number(*,2)"]
+        );
         assert!(columns[0].nullable && !columns[1].nullable);
     }
 
     #[tokio::test]
     async fn targeted_columns_keep_quoted_names_and_edges_between_visible_neighbors() {
-        let path = std::env::temp_dir().join(format!("datacraft-model-quotes-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-model-quotes-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::File::create(&path).unwrap();
         let mut cfg = super::super::ConnectionConfig::new(1, super::super::Driver::Sqlite);
         cfg.file_path = path.to_string_lossy().into_owned();
         let mut session = super::super::Session::connect(&cfg).await.unwrap();
         session.execute("CREATE TABLE far(id INTEGER PRIMARY KEY); CREATE TABLE c(id INTEGER PRIMARY KEY, next INTEGER REFERENCES far); CREATE TABLE b(id INTEGER PRIMARY KEY, next INTEGER REFERENCES c); CREATE TABLE \"chosen'--\"(id INTEGER PRIMARY KEY, b INTEGER REFERENCES b, c INTEGER REFERENCES c, generated TEXT GENERATED ALWAYS AS ('visible') VIRTUAL);", 0).await.unwrap();
-        let model = load(&mut session, super::super::Driver::Sqlite, "main", &[("main".into(), "chosen'--".into())]).await.unwrap();
-        assert_eq!(model.tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["b", "c", "chosen'--"]);
+        let model = load(
+            &mut session,
+            super::super::Driver::Sqlite,
+            "main",
+            &[("main".into(), "chosen'--".into())],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            model
+                .tables
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "c", "chosen'--"]
+        );
         assert_eq!(model.relations.len(), 3);
-        assert!(model.relations.iter().any(|r| r.table == "b" && r.ref_table == "c"));
-        assert!(model.tables.last().unwrap().columns.iter().any(|c| c.name == "generated"));
-        assert!(load(&mut session, super::super::Driver::Sqlite, "main", &[("main".into(), "missing".into())]).await.is_err());
+        assert!(
+            model
+                .relations
+                .iter()
+                .any(|r| r.table == "b" && r.ref_table == "c")
+        );
+        assert!(
+            model
+                .tables
+                .last()
+                .unwrap()
+                .columns
+                .iter()
+                .any(|c| c.name == "generated")
+        );
+        assert!(
+            load(
+                &mut session,
+                super::super::Driver::Sqlite,
+                "main",
+                &[("main".into(), "missing".into())]
+            )
+            .await
+            .is_err()
+        );
         drop(session);
         std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
     async fn a_small_model_does_not_read_unrelated_column_catalogs() {
-        let path = std::env::temp_dir().join(format!("datacraft-model-large-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("datacraft-model-large-{}.db", uuid::Uuid::new_v4()));
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE chosen(id INTEGER PRIMARY KEY, parent INTEGER REFERENCES parent); CREATE TABLE parent(id INTEGER PRIMARY KEY);")
             .unwrap();
-        let columns = (0..1600).map(|i| format!("c{i} INTEGER")).collect::<Vec<_>>().join(",");
+        let columns = (0..1600)
+            .map(|i| format!("c{i} INTEGER"))
+            .collect::<Vec<_>>()
+            .join(",");
         for index in 0..64 {
             db.execute_batch(&format!("CREATE TABLE unrelated_{index}({columns},FOREIGN KEY(c0) REFERENCES unrelated_0(c0))")).unwrap();
         }
@@ -316,19 +492,36 @@ mod tests {
         cfg.file_path = path.to_string_lossy().into_owned();
         let mut session = super::super::Session::connect(&cfg).await.unwrap();
         let selected = [("main".into(), "chosen".into())].into_iter().collect();
-        let edges = session.execute(&sqlite_fk_sql(&selected, true), 100_000).await.unwrap();
+        let edges = session
+            .execute(&sqlite_fk_sql(&selected, true), 100_000)
+            .await
+            .unwrap();
         assert_eq!(edges.iter().map(|rs| rs.rows.len()).sum::<usize>(), 1);
-        let result = load(&mut session, super::super::Driver::Sqlite, "main", &[("main".into(), "chosen".into())]).await;
+        let result = load(
+            &mut session,
+            super::super::Driver::Sqlite,
+            "main",
+            &[("main".into(), "chosen".into())],
+        )
+        .await;
         drop(session);
         std::fs::remove_file(path).unwrap();
         let model = result.unwrap();
-        assert_eq!(model.tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["chosen", "parent"]);
+        assert_eq!(
+            model
+                .tables
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            ["chosen", "parent"]
+        );
         assert_eq!(model.relations.len(), 1);
     }
 
     #[tokio::test]
     async fn sqlite_model_keeps_generated_columns_and_resolves_composite_keys_in_declared_order() {
-        let path = std::env::temp_dir().join(format!("datacraft-model-{}.db", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("datacraft-model-{}.db", uuid::Uuid::new_v4()));
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE parent(a INTEGER,b INTEGER,computed TEXT GENERATED ALWAYS AS (a||':'||b) VIRTUAL,PRIMARY KEY(b,a)); CREATE TABLE child(x INTEGER,y INTEGER,FOREIGN KEY(x,y) REFERENCES parent); INSERT INTO parent(a,b) VALUES(1,2); INSERT INTO child VALUES(2,1);").unwrap();
         drop(db);
@@ -336,7 +529,14 @@ mod tests {
         cfg.file_path = path.to_string_lossy().into_owned();
         cfg.read_only = true;
         let mut session = crate::db::Session::connect(&cfg).await.unwrap();
-        let model = load(&mut session, crate::db::Driver::Sqlite, "main", &[("main".into(), "child".into())]).await.unwrap();
+        let model = load(
+            &mut session,
+            crate::db::Driver::Sqlite,
+            "main",
+            &[("main".into(), "child".into())],
+        )
+        .await
+        .unwrap();
         assert_eq!(model.relations[0].ref_columns, ["b", "a"]);
         let parent = model.tables.iter().find(|t| t.name == "parent").unwrap();
         assert!(parent.columns.iter().any(|c| c.name == "computed"));
@@ -353,7 +553,12 @@ mod tests {
                 .map(|name| TableInfo {
                     name: name.into(),
                     kind: ObjectKind::Table,
-                    columns: vec![ColumnInfo { name: "id".into(), data_type: "integer".into(), primary_key: true, nullable: false }],
+                    columns: vec![ColumnInfo {
+                        name: "id".into(),
+                        data_type: "integer".into(),
+                        primary_key: true,
+                        nullable: false,
+                    }],
                 })
                 .collect(),
         }];

@@ -28,7 +28,16 @@ pub enum Lang {
 }
 
 impl Lang {
-    pub const ALL: [Lang; 8] = [Lang::En, Lang::Es, Lang::Fr, Lang::Pt, Lang::De, Lang::Pl, Lang::Zh, Lang::Ja];
+    pub const ALL: [Lang; 8] = [
+        Lang::En,
+        Lang::Es,
+        Lang::Fr,
+        Lang::Pt,
+        Lang::De,
+        Lang::Pl,
+        Lang::Zh,
+        Lang::Ja,
+    ];
 
     /// Name of the language written in that language (for the selector).
     pub fn native_name(self) -> &'static str {
@@ -65,7 +74,11 @@ impl Lang {
 
     /// `es-ES`, `pt_BR`, `zh-Hans-CN`… → its language. Chinese is always Simplified.
     pub fn from_locale(locale: &str) -> Lang {
-        let primary = locale.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+        let primary = locale
+            .split(['-', '_'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         match primary.as_str() {
             "es" => Lang::Es,
             "fr" => Lang::Fr,
@@ -90,7 +103,10 @@ pub fn set_lang(lang: Lang) {
 }
 
 pub fn lang() -> Lang {
-    Lang::ALL.get(LANG.load(Ordering::Relaxed) as usize).copied().unwrap_or_default()
+    Lang::ALL
+        .get(LANG.load(Ordering::Relaxed) as usize)
+        .copied()
+        .unwrap_or_default()
 }
 
 type Table = HashMap<&'static str, &'static str>;
@@ -105,9 +121,10 @@ fn parse(source: &str) -> serde_json::Result<Vec<Area>> {
         .into_iter()
         .map(|(area, entries)| {
             let entries = match entries {
-                serde_json::Value::Object(m) => {
-                    m.into_iter().filter_map(|(k, v)| Some((k, v.as_str()?.to_string()))).collect()
-                }
+                serde_json::Value::Object(m) => m
+                    .into_iter()
+                    .filter_map(|(k, v)| Some((k, v.as_str()?.to_string())))
+                    .collect(),
                 _ => Vec::new(),
             };
             (area, entries)
@@ -117,15 +134,22 @@ fn parse(source: &str) -> serde_json::Result<Vec<Area>> {
 
 /// The translations of `lang`, parsed once (the strings live for the whole run).
 fn table(lang: Lang) -> &'static Table {
-    static TABLES: [OnceLock<Table>; Lang::ALL.len()] = [const { OnceLock::new() }; Lang::ALL.len()];
+    static TABLES: [OnceLock<Table>; Lang::ALL.len()] =
+        [const { OnceLock::new() }; Lang::ALL.len()];
     TABLES[lang.index()].get_or_init(|| {
-        let Some(source) = lang.source() else { return Table::new() };
+        let Some(source) = lang.source() else {
+            return Table::new();
+        };
         let areas = parse(source).unwrap_or_else(|e| {
             eprintln!("invalid locale {lang:?}: {e}");
             Vec::new()
         });
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
-        areas.into_iter().flat_map(|(_, entries)| entries).map(|(k, v)| (leak(k), leak(v))).collect()
+        areas
+            .into_iter()
+            .flat_map(|(_, entries)| entries)
+            .map(|(k, v)| (leak(k), leak(v)))
+            .collect()
     })
 }
 
@@ -145,7 +169,10 @@ pub fn tr_ctx(context: &'static str, en: &'static str) -> &'static str {
         Lang::En => en,
         l => {
             let key = format!("{context}|{en}");
-            table(l).get(key.as_str()).copied().unwrap_or_else(|| tr(en))
+            table(l)
+                .get(key.as_str())
+                .copied()
+                .unwrap_or_else(|| tr(en))
         }
     }
 }
@@ -183,7 +210,11 @@ mod tests {
         // One entry per line: a key repeated inside an area (JSON keeps the last) shows up here.
         let lines = source.lines().filter(|l| l.starts_with("    \"")).count();
         let entries: Vec<_> = areas.into_iter().flat_map(|(_, e)| e).collect();
-        assert_eq!(lines, entries.len(), "{lang:?}: a key is repeated inside an area");
+        assert_eq!(
+            lines,
+            entries.len(),
+            "{lang:?}: a key is repeated inside an area"
+        );
         entries
     }
 
@@ -194,12 +225,18 @@ mod tests {
             let mut seen = HashSet::new();
             let entries = entries(lang);
             for (en, _) in &entries {
-                assert!(seen.insert(en.clone()), "{lang:?}: duplicated translation key {en:?}");
+                assert!(
+                    seen.insert(en.clone()),
+                    "{lang:?}: duplicated translation key {en:?}"
+                );
             }
             let keys: BTreeSet<String> = entries.into_iter().map(|(k, _)| k).collect();
             let missing: Vec<_> = reference.difference(&keys).collect();
             let extra: Vec<_> = keys.difference(&reference).collect();
-            assert!(missing.is_empty() && extra.is_empty(), "{lang:?}: missing {missing:?}, extra {extra:?}");
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "{lang:?}: missing {missing:?}, extra {extra:?}"
+            );
         }
     }
 
@@ -208,8 +245,15 @@ mod tests {
         for lang in Lang::ALL.into_iter().filter(|&l| l != Lang::En) {
             for (en, text) in entries(lang) {
                 let en_text = en.split_once('|').map_or(en.as_str(), |(_, t)| t);
-                assert_eq!(placeholders(en_text), placeholders(&text), "{lang:?}: placeholders differ in {en:?}");
-                assert!(!text.trim().is_empty(), "{lang:?}: empty translation for {en:?}");
+                assert_eq!(
+                    placeholders(en_text),
+                    placeholders(&text),
+                    "{lang:?}: placeholders differ in {en:?}"
+                );
+                assert!(
+                    !text.trim().is_empty(),
+                    "{lang:?}: empty translation for {en:?}"
+                );
             }
         }
     }
@@ -226,9 +270,7 @@ mod tests {
                     'n' => out.push('\n'),
                     't' => out.push('\t'),
                     // Line continuation: the newline and the next line's indentation are skipped.
-                    '\n' => {
-                        while chars.next_if(|(_, c)| c.is_whitespace()).is_some() {}
-                    }
+                    '\n' => while chars.next_if(|(_, c)| c.is_whitespace()).is_some() {},
                     other => out.push(other),
                 },
                 c => out.push(c),
@@ -243,7 +285,10 @@ mod tests {
     fn every_text_in_the_code_has_a_translation() {
         let keys: HashSet<String> = entries(Lang::Es).into_iter().map(|(k, _)| k).collect();
         let mut missing = BTreeSet::new();
-        let mut dirs = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        let mut dirs = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src"
+        ))];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(&dir).unwrap().flatten() {
                 let path = entry.path();
@@ -255,7 +300,9 @@ mod tests {
                     continue;
                 }
                 // CRLF checkouts (Git for Windows) split like LF ones.
-                let source = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+                let source = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("\r\n", "\n");
                 let code: String = source
                     .split("#[cfg(test)]\nmod ")
                     .next()
@@ -266,15 +313,35 @@ mod tests {
                     .collect();
                 for call in ["tr(", "trf(", "tr_ctx("] {
                     for (at, _) in code.match_indices(call) {
-                        if code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                        if code[..at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                        {
                             continue;
                         }
-                        let Some(rest) = code[at + call.len()..].trim_start().strip_prefix('"') else { continue };
-                        let Some((first, rest)) = literal(rest) else { continue };
+                        let Some(rest) = code[at + call.len()..].trim_start().strip_prefix('"')
+                        else {
+                            continue;
+                        };
+                        let Some((first, rest)) = literal(rest) else {
+                            continue;
+                        };
                         let key = if call == "tr_ctx(" {
-                            let Some(rest) = rest.trim_start().strip_prefix(',').map(str::trim_start).and_then(|r| r.strip_prefix('"')) else { continue };
-                            let Some((en, _)) = literal(rest) else { continue };
-                            if keys.contains(&format!("{first}|{en}")) { continue }
+                            let Some(rest) = rest
+                                .trim_start()
+                                .strip_prefix(',')
+                                .map(str::trim_start)
+                                .and_then(|r| r.strip_prefix('"'))
+                            else {
+                                continue;
+                            };
+                            let Some((en, _)) = literal(rest) else {
+                                continue;
+                            };
+                            if keys.contains(&format!("{first}|{en}")) {
+                                continue;
+                            }
                             en
                         } else {
                             first
@@ -286,7 +353,11 @@ mod tests {
                 }
             }
         }
-        assert!(missing.is_empty(), "texts without translation:\n{}", missing.into_iter().collect::<Vec<_>>().join("\n"));
+        assert!(
+            missing.is_empty(),
+            "texts without translation:\n{}",
+            missing.into_iter().collect::<Vec<_>>().join("\n")
+        );
     }
 
     #[test]
@@ -313,6 +384,9 @@ mod tests {
     #[test]
     fn falls_back_to_english() {
         // Tests never change the global language, so it is the default (English) here.
-        assert_eq!(trf("{a} of {b} (untranslated)", &[("a", &1), ("b", &"x")]), "1 of x (untranslated)");
+        assert_eq!(
+            trf("{a} of {b} (untranslated)", &[("a", &1), ("b", &"x")]),
+            "1 of x (untranslated)"
+        );
     }
 }

@@ -26,9 +26,22 @@ pub enum MaskExportAction {
 
 impl MaskExportDialog {
     /// Opens with the masks suggested by the column names.
-    pub fn new(console: u64, columns: Vec<String>, format: ExportFormat, insert_target: String, base_name: String) -> Self {
+    pub fn new(
+        console: u64,
+        columns: Vec<String>,
+        format: ExportFormat,
+        insert_target: String,
+        base_name: String,
+    ) -> Self {
         let masks = columns.iter().map(|c| Mask::suggest(c)).collect();
-        Self { console, columns, masks, format, insert_target, base_name }
+        Self {
+            console,
+            columns,
+            masks,
+            format,
+            insert_target,
+            base_name,
+        }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<MaskExportAction> {

@@ -47,7 +47,10 @@ impl PgTls {
             TlsMode::Prefer => SslMode::Prefer,
             TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull => SslMode::Require,
         };
-        let config = (mode != SslMode::Disable).then(|| tls::client_config(&cfg.tls)).transpose()?.map(Arc::new);
+        let config = (mode != SslMode::Disable)
+            .then(|| tls::client_config(&cfg.tls))
+            .transpose()?
+            .map(Arc::new);
         Ok((Self { config, name }, mode))
     }
 }
@@ -58,9 +61,16 @@ impl MakeTlsConnect<Socket> for PgTls {
     type Error = io::Error;
 
     fn make_tls_connect(&mut self, _domain: &str) -> io::Result<PgTlsConnect> {
-        let name = ServerName::try_from(self.name.clone())
-            .map_err(|_| io::Error::other(trf("“{host}” is not a valid server name for TLS", &[("host", &self.name)])))?;
-        Ok(PgTlsConnect { config: self.config.clone(), name })
+        let name = ServerName::try_from(self.name.clone()).map_err(|_| {
+            io::Error::other(trf(
+                "“{host}” is not a valid server name for TLS",
+                &[("host", &self.name)],
+            ))
+        })?;
+        Ok(PgTlsConnect {
+            config: self.config.clone(),
+            name,
+        })
     }
 }
 
@@ -76,8 +86,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TlsConnect<S> for PgTls
 
     fn connect(self, stream: S) -> Self::Future {
         Box::pin(async move {
-            let config = self.config.ok_or_else(|| io::Error::other(tr("TLS is disabled for this data source")))?;
-            Ok(PgTlsStream(TlsConnector::from(config).connect(self.name, stream).await?))
+            let config = self
+                .config
+                .ok_or_else(|| io::Error::other(tr("TLS is disabled for this data source")))?;
+            Ok(PgTlsStream(
+                TlsConnector::from(config)
+                    .connect(self.name, stream)
+                    .await?,
+            ))
         })
     }
 }
@@ -85,13 +101,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TlsConnect<S> for PgTls
 pub struct PgTlsStream<S>(tokio_rustls::client::TlsStream<S>);
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for PgTlsStream<S> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.0).poll_read(cx, buf)
     }
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for PgTlsStream<S> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.0).poll_write(cx, buf)
     }
 
@@ -129,7 +153,11 @@ fn pg_error(e: tokio_postgres::Error) -> anyhow::Error {
 
 impl PgSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
-        let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
+        let host = if cfg.host.trim().is_empty() {
+            "localhost"
+        } else {
+            cfg.host.trim()
+        };
         let (tls, ssl_mode) = PgTls::new(cfg, host)?;
         let mut pg = tokio_postgres::Config::new();
         pg.host(host)
@@ -143,10 +171,13 @@ impl PgSession {
             pg.dbname(cfg.database.trim());
         }
 
-        let (client, connection) = pg.connect(tls.clone()).await.map_err(|e| match tls::explain(&e, &cfg.tls, &tls.name) {
-            Some(reason) => anyhow!(reason),
-            None => pg_error(e),
-        })?;
+        let (client, connection) =
+            pg.connect(tls.clone()).await.map_err(|e| {
+                match tls::explain(&e, &cfg.tls, &tls.name) {
+                    Some(reason) => anyhow!(reason),
+                    None => pg_error(e),
+                }
+            })?;
         // The connection is what actually reads/writes the socket; it must live in its own task.
         tokio::spawn(async move {
             let _ = connection.await;
@@ -155,7 +186,11 @@ impl PgSession {
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
-        let row = self.client.query_one("SELECT current_database()", &[]).await.map_err(pg_error)?;
+        let row = self
+            .client
+            .query_one("SELECT current_database()", &[])
+            .await
+            .map_err(pg_error)?;
         Ok(row.get(0))
     }
 
@@ -198,8 +233,19 @@ impl PgSession {
 
     /// "TLSv1.3 TLS_AES_256_GCM_SHA384", or None for a plain connection.
     pub async fn tls_description(&mut self) -> Option<String> {
-        let row = self.client.query_opt("SELECT version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl", &[]).await.ok()??;
-        Some(format!("{} {}", row.get::<_, String>(0), row.get::<_, String>(1)))
+        let row = self
+            .client
+            .query_opt(
+                "SELECT version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl",
+                &[],
+            )
+            .await
+            .ok()??;
+        Some(format!(
+            "{} {}",
+            row.get::<_, String>(0),
+            row.get::<_, String>(1)
+        ))
     }
 
     /// Stream full native values without exposing the driver connection.
@@ -210,14 +256,21 @@ impl PgSession {
         sender: &tokio::sync::mpsc::Sender<super::table_export::Message>,
         progress: &std::sync::Arc<super::table_export::ExportProgress>,
     ) -> anyhow::Result<()> {
-        use anyhow::Context as _;
         use super::table_export::{Message, cancelled, from_text};
+        use anyhow::Context as _;
         let mut rows = std::pin::pin!(self.client.simple_query_raw(sql).await?);
         while let Some(item) = rows.try_next().await? {
             cancelled(progress)?;
             if let tokio_postgres::SimpleQueryMessage::Row(row) = item {
-                let values = columns.iter().enumerate().map(|(i, c)| from_text(row.try_get(i)?, c, super::Driver::Postgres)).collect::<anyhow::Result<_>>()?;
-                sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+                let values = columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| from_text(row.try_get(i)?, c, super::Driver::Postgres))
+                    .collect::<anyhow::Result<_>>()?;
+                sender
+                    .send(Message::Row(values))
+                    .await
+                    .context(tr("Export writer stopped"))?;
             }
         }
         Ok(())
@@ -276,24 +329,63 @@ impl PgSession {
         Ok(results)
     }
 
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let start = Instant::now();
         // Keep the same text cell representation as simple_query, including custom SQL types.
         let description = self.client.prepare(sql).await.map_err(pg_error)?;
-        let projection = description.columns().iter().map(|c| {
-            let name = super::Driver::Postgres.quote_ident(c.name());
-            // A boolean's text cast says true/false; simple_query (and its output function) t/f.
-            let boolean = c.type_() == &Type::BOOL || matches!(c.type_().kind(), Kind::Domain(t) if *t == Type::BOOL);
-            if boolean { format!("CASE WHEN {name} THEN 't' WHEN NOT {name} THEN 'f' END AS {name}") } else { format!("{name}::text AS {name}") }
-        }).collect::<Vec<_>>().join(", ");
+        let projection = description
+            .columns()
+            .iter()
+            .map(|c| {
+                let name = super::Driver::Postgres.quote_ident(c.name());
+                // A boolean's text cast says true/false; simple_query (and its output function) t/f.
+                let boolean = c.type_() == &Type::BOOL
+                    || matches!(c.type_().kind(), Kind::Domain(t) if *t == Type::BOOL);
+                if boolean {
+                    format!("CASE WHEN {name} THEN 't' WHEN NOT {name} THEN 'f' END AS {name}")
+                } else {
+                    format!("{name}::text AS {name}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         let query = format!("SELECT {projection} FROM ({sql}) AS dc_navigation");
         let values: Vec<TextParameter<'_>> = parameters.iter().map(|v| TextParameter(v)).collect();
-        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = values.iter().map(|v| v as &(dyn tokio_postgres::types::ToSql + Sync)).collect();
-        let mut stream = std::pin::pin!(self.client.query_raw(query.as_str(), params).await.map_err(pg_error)?);
-        let mut rs = ResultSet { statement: sql.into(), columns: description.columns().iter().map(|c| c.name().to_string()).collect(), ..Default::default() };
+        let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = values
+            .iter()
+            .map(|v| v as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
+        let mut stream = std::pin::pin!(
+            self.client
+                .query_raw(query.as_str(), params)
+                .await
+                .map_err(pg_error)?
+        );
+        let mut rs = ResultSet {
+            statement: sql.into(),
+            columns: description
+                .columns()
+                .iter()
+                .map(|c| c.name().to_string())
+                .collect(),
+            ..Default::default()
+        };
         while let Some(row) = stream.try_next().await.map_err(pg_error)? {
-            if rs.rows.len() >= max_rows { rs.truncated = true; continue; }
-            rs.rows.push((0..row.len()).map(|i| row.try_get::<_, Option<String>>(i)).collect::<Result<_, _>>().map_err(pg_error)?);
+            if rs.rows.len() >= max_rows {
+                rs.truncated = true;
+                continue;
+            }
+            rs.rows.push(
+                (0..row.len())
+                    .map(|i| row.try_get::<_, Option<String>>(i))
+                    .collect::<Result<_, _>>()
+                    .map_err(pg_error)?,
+            );
         }
         rs.elapsed = start.elapsed();
         Ok(vec![rs])
@@ -326,25 +418,40 @@ impl PgSession {
         let mut schemas: Vec<SchemaInfo> = Vec::new();
         let messages = self.client.simple_query(SQL).await.map_err(pg_error)?;
         for msg in messages {
-            let SimpleQueryMessage::Row(row) = msg else { continue };
+            let SimpleQueryMessage::Row(row) = msg else {
+                continue;
+            };
             let get = |i: usize| row.try_get(i).ok().flatten().unwrap_or_default();
             let (schema, table, ttype) = (get(0), get(1), get(2));
 
             if schemas.last().is_none_or(|s| s.name != schema) {
-                schemas.push(SchemaInfo { name: schema.to_string(), tables: Vec::new() });
+                schemas.push(SchemaInfo {
+                    name: schema.to_string(),
+                    tables: Vec::new(),
+                });
             }
-            let Some(s) = schemas.last_mut() else { continue };
+            let Some(s) = schemas.last_mut() else {
+                continue;
+            };
             if s.tables.last().is_none_or(|t| t.name != table) {
                 s.tables.push(TableInfo {
                     name: table.to_string(),
-                    kind: if ttype == "VIEW" { ObjectKind::View } else { ObjectKind::Table },
+                    kind: if ttype == "VIEW" {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
                     columns: Vec::new(),
                 });
             }
-            let Some(t) = s.tables.last_mut() else { continue };
+            let Some(t) = s.tables.last_mut() else {
+                continue;
+            };
 
             // Table without visible columns: the LEFT JOIN leaves the column NULL.
-            let Ok(Some(column)) = row.try_get(3) else { continue };
+            let Ok(Some(column)) = row.try_get(3) else {
+                continue;
+            };
             let data_type = match get(4) {
                 // information_schema gives little detail for arrays and user-defined types.
                 "ARRAY" => format!("{}[]", get(5).trim_start_matches('_')),
@@ -422,7 +529,12 @@ mod tests {
     #[ignore]
     async fn ddl_dml_multiple_statements_and_introspection() {
         let Some(mut s) = session().await else { return };
-        s.execute("DROP SCHEMA IF EXISTS dc_test CASCADE; CREATE SCHEMA dc_test", 10).await.unwrap();
+        s.execute(
+            "DROP SCHEMA IF EXISTS dc_test CASCADE; CREATE SCHEMA dc_test",
+            10,
+        )
+        .await
+        .unwrap();
         let rs = s
             .execute(
                 "CREATE TABLE dc_test.items (id int PRIMARY KEY, name text NOT NULL, price numeric);\
@@ -444,21 +556,40 @@ mod tests {
         assert!(rs[3].rows.is_empty());
         assert_eq!(rs[4].affected, Some(3));
 
-        s.execute("CREATE VIEW dc_test.v AS SELECT id FROM dc_test.items", 10).await.unwrap();
+        s.execute("CREATE VIEW dc_test.v AS SELECT id FROM dc_test.items", 10)
+            .await
+            .unwrap();
         let schemas = s.introspect().await.unwrap();
-        let sch = schemas.iter().find(|s| s.name == "dc_test").expect("schema");
+        let sch = schemas
+            .iter()
+            .find(|s| s.name == "dc_test")
+            .expect("schema");
         assert_eq!(sch.tables.len(), 2);
         let items = &sch.tables[0];
         assert_eq!(items.name, "items");
         assert_eq!(items.kind, ObjectKind::Table);
-        assert_eq!(items.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "name", "price"]);
+        assert_eq!(
+            items
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "name", "price"]
+        );
         assert!(items.columns[0].primary_key && !items.columns[0].nullable);
         assert!(!items.columns[1].primary_key && !items.columns[1].nullable);
         assert!(items.columns[2].nullable);
         assert_eq!(sch.tables[1].kind, ObjectKind::View);
-        assert!(!schemas.iter().any(|s| s.name == "pg_catalog" || s.name == "information_schema"));
+        assert!(
+            !schemas
+                .iter()
+                .any(|s| s.name == "pg_catalog" || s.name == "information_schema")
+        );
 
-        let err = s.execute("SELECT * FROM dc_test.missing", 10).await.unwrap_err();
+        let err = s
+            .execute("SELECT * FROM dc_test.missing", 10)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("missing"), "{err}");
         s.execute("DROP SCHEMA dc_test CASCADE", 10).await.unwrap();
     }
@@ -475,11 +606,20 @@ mod tls_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn refuse<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, rest_of_startup: usize, how: &str) {
+    async fn refuse<S: AsyncRead + AsyncWrite + Unpin>(
+        stream: &mut S,
+        rest_of_startup: usize,
+        how: &str,
+    ) {
         let mut startup = vec![0; rest_of_startup];
         stream.read_exact(&mut startup).await.unwrap();
         let mut body = Vec::new();
-        for (field, value) in [(b'S', "FATAL"), (b'V', "FATAL"), (b'C', "28000"), (b'M', how)] {
+        for (field, value) in [
+            (b'S', "FATAL"),
+            (b'V', "FATAL"),
+            (b'C', "28000"),
+            (b'M', how),
+        ] {
             body.push(field);
             body.extend_from_slice(value.as_bytes());
             body.push(0);
@@ -513,13 +653,25 @@ mod tls_tests {
                         tcp.write_all(b"N").await.unwrap();
                         let mut len = [0u8; 4];
                         tcp.read_exact(&mut len).await.unwrap();
-                        return refuse(&mut tcp, u32::from_be_bytes(len) as usize - 4, "plain login after refusing TLS").await;
+                        return refuse(
+                            &mut tcp,
+                            u32::from_be_bytes(len) as usize - 4,
+                            "plain login after refusing TLS",
+                        )
+                        .await;
                     };
                     tcp.write_all(b"S").await.unwrap();
-                    let Ok(mut tls) = acceptor.accept(tcp).await else { return };
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
                     let mut len = [0u8; 4];
                     tls.read_exact(&mut len).await.unwrap();
-                    refuse(&mut tls, u32::from_be_bytes(len) as usize - 4, "login over TLS").await;
+                    refuse(
+                        &mut tls,
+                        u32::from_be_bytes(len) as usize - 4,
+                        "login over TLS",
+                    )
+                    .await;
                 });
             }
         });
@@ -540,18 +692,46 @@ mod tls_tests {
         let pki = pki();
         let with_tls = server(Some(&pki)).await;
         let plain = server(None).await;
-        let s = |mode, ca: &str| tls::TlsSettings { mode, ca_file: ca.into(), ..Default::default() };
+        let s = |mode, ca: &str| tls::TlsSettings {
+            mode,
+            ca_file: ca.into(),
+            ..Default::default()
+        };
 
-        assert!(connect(with_tls, "localhost", s(TlsMode::VerifyFull, &pki.ca_file)).await.contains("login over TLS"));
-        assert!(connect(with_tls, "localhost", s(TlsMode::Require, "")).await.contains("login over TLS"));
-        assert!(connect(with_tls, "localhost", s(TlsMode::Prefer, "")).await.contains("login over TLS"));
-        assert!(connect(with_tls, "localhost", s(TlsMode::Disable, "")).await.contains("plain login"));
+        assert!(
+            connect(with_tls, "localhost", s(TlsMode::VerifyFull, &pki.ca_file))
+                .await
+                .contains("login over TLS")
+        );
+        assert!(
+            connect(with_tls, "localhost", s(TlsMode::Require, ""))
+                .await
+                .contains("login over TLS")
+        );
+        assert!(
+            connect(with_tls, "localhost", s(TlsMode::Prefer, ""))
+                .await
+                .contains("login over TLS")
+        );
+        assert!(
+            connect(with_tls, "localhost", s(TlsMode::Disable, ""))
+                .await
+                .contains("plain login")
+        );
         let err = connect(with_tls, "127.0.0.1", s(TlsMode::VerifyFull, &pki.ca_file)).await;
         assert!(err.contains("isn't issued for 127.0.0.1"), "{err}");
-        assert!(connect(with_tls, "127.0.0.1", s(TlsMode::VerifyCa, &pki.ca_file)).await.contains("login over TLS"));
+        assert!(
+            connect(with_tls, "127.0.0.1", s(TlsMode::VerifyCa, &pki.ca_file))
+                .await
+                .contains("login over TLS")
+        );
 
         // Prefer falls back to plain text; the stricter modes refuse.
-        assert!(connect(plain, "localhost", s(TlsMode::Prefer, "")).await.contains("plain login after refusing TLS"));
+        assert!(
+            connect(plain, "localhost", s(TlsMode::Prefer, ""))
+                .await
+                .contains("plain login after refusing TLS")
+        );
         let err = connect(plain, "localhost", s(TlsMode::Require, "")).await;
         assert!(!err.contains("login"), "{err}");
     }
@@ -562,11 +742,19 @@ mod tls_tests {
 #[derive(Debug)]
 struct TextParameter<'a>(&'a str);
 impl tokio_postgres::types::ToSql for TextParameter<'_> {
-    fn to_sql(&self, _: &tokio_postgres::types::Type, out: &mut bytes::BytesMut) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+    fn to_sql(
+        &self,
+        _: &tokio_postgres::types::Type,
+        out: &mut bytes::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
         out.extend_from_slice(self.0.as_bytes());
         Ok(tokio_postgres::types::IsNull::No)
     }
-    fn accepts(_: &tokio_postgres::types::Type) -> bool { true }
-    fn encode_format(&self, _: &tokio_postgres::types::Type) -> tokio_postgres::types::Format { tokio_postgres::types::Format::Text }
+    fn accepts(_: &tokio_postgres::types::Type) -> bool {
+        true
+    }
+    fn encode_format(&self, _: &tokio_postgres::types::Type) -> tokio_postgres::types::Format {
+        tokio_postgres::types::Format::Text
+    }
     tokio_postgres::types::to_sql_checked!();
 }

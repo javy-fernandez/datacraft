@@ -1,7 +1,9 @@
 //! Reads a routine's `CREATE` statement back into the dialog's fields. Anything it doesn't
 //! understand returns `None`, and the dialog falls back to editing the statement as text.
 
-use super::{Column, Param, ParamMode, ReturnKind, Returns, RoutineKind, RoutineOptions, RoutineSpec};
+use super::{
+    Column, Param, ParamMode, ReturnKind, Returns, RoutineKind, RoutineOptions, RoutineSpec,
+};
 use crate::db::Driver;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,7 +47,9 @@ fn tokenize(text: &str, driver: Driver) -> Vec<Token> {
             i += 1;
             continue;
         }
-        if c == b'-' && b.get(i + 1) == Some(&b'-') || (c == b'#' && matches!(driver, Driver::MySql | Driver::MariaDb)) {
+        if c == b'-' && b.get(i + 1) == Some(&b'-')
+            || (c == b'#' && matches!(driver, Driver::MySql | Driver::MariaDb))
+        {
             while i < b.len() && b[i] != b'\n' {
                 i += 1;
             }
@@ -80,7 +84,11 @@ fn tokenize(text: &str, driver: Driver) -> Vec<Token> {
                 }
                 i += 1;
             }
-            out.push(Token { kind: Tok::Str, start, end: i.min(b.len()) });
+            out.push(Token {
+                kind: Tok::Str,
+                start,
+                end: i.min(b.len()),
+            });
             continue;
         }
         if dollar && c == b'$' {
@@ -92,7 +100,11 @@ fn tokenize(text: &str, driver: Driver) -> Vec<Token> {
                 let tag = &text[i..=j];
                 if let Some(close) = text[j + 1..].find(tag) {
                     i = j + 1 + close + tag.len();
-                    out.push(Token { kind: Tok::Dollar, start, end: i });
+                    out.push(Token {
+                        kind: Tok::Dollar,
+                        start,
+                        end: i,
+                    });
                     continue;
                 }
             }
@@ -116,7 +128,11 @@ fn tokenize(text: &str, driver: Driver) -> Vec<Token> {
                 }
                 i += 1;
             }
-            out.push(Token { kind: Tok::Quoted, start, end: i.min(b.len()) });
+            out.push(Token {
+                kind: Tok::Quoted,
+                start,
+                end: i.min(b.len()),
+            });
             continue;
         }
         if is_word_start(c) && (c != b'@' || b.get(i + 1).is_some_and(|&n| is_word_char(n))) {
@@ -124,19 +140,31 @@ fn tokenize(text: &str, driver: Driver) -> Vec<Token> {
             while i < b.len() && is_word_char(b[i]) {
                 i += 1;
             }
-            out.push(Token { kind: Tok::Word, start, end: i });
+            out.push(Token {
+                kind: Tok::Word,
+                start,
+                end: i,
+            });
             continue;
         }
         if c.is_ascii_digit() {
             while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
                 i += 1;
             }
-            out.push(Token { kind: Tok::Num, start, end: i });
+            out.push(Token {
+                kind: Tok::Num,
+                start,
+                end: i,
+            });
             continue;
         }
         // Multi-byte characters outside words are skipped whole.
         let len = text[i..].chars().next().map_or(1, char::len_utf8);
-        out.push(Token { kind: Tok::Punct(c), start, end: i + len });
+        out.push(Token {
+            kind: Tok::Punct(c),
+            start,
+            end: i + len,
+        });
         i += len;
     }
     out
@@ -176,7 +204,9 @@ pub(crate) fn split_top_level(text: &str) -> Vec<String> {
 
 /// Text of a string literal without its quotes (and prefix), with escapes undone.
 fn unquote_string(raw: &str, backslash: bool) -> String {
-    let inner = raw.strip_prefix(|c: char| c.is_ascii_alphabetic()).unwrap_or(raw);
+    let inner = raw
+        .strip_prefix(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(raw);
     let inner = inner.strip_prefix('\'').unwrap_or(inner);
     let inner = inner.strip_suffix('\'').unwrap_or(inner);
     let mut out = String::with_capacity(inner.len());
@@ -227,8 +257,14 @@ fn body_text(text: &str, tok: Token, backslash: bool) -> String {
 
 /// The body without the blank line the generator (and most servers) put around it.
 fn trim_body(body: &str) -> String {
-    let body = body.strip_prefix("\r\n").or_else(|| body.strip_prefix('\n')).unwrap_or(body);
-    let body = body.strip_suffix("\r\n").or_else(|| body.strip_suffix('\n')).unwrap_or(body);
+    let body = body
+        .strip_prefix("\r\n")
+        .or_else(|| body.strip_prefix('\n'))
+        .unwrap_or(body);
+    let body = body
+        .strip_suffix("\r\n")
+        .or_else(|| body.strip_suffix('\n'))
+        .unwrap_or(body);
     body.to_string()
 }
 
@@ -241,7 +277,12 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(text: &'a str, driver: Driver) -> Self {
-        Self { text, toks: tokenize(text, driver), i: 0, driver }
+        Self {
+            text,
+            toks: tokenize(text, driver),
+            i: 0,
+            driver,
+        }
     }
 
     fn tok(&self, i: usize) -> Option<Token> {
@@ -249,7 +290,9 @@ impl<'a> Parser<'a> {
     }
 
     fn word_at(&self, i: usize) -> Option<String> {
-        self.tok(i).filter(|t| t.kind == Tok::Word).map(|t| self.text[t.start..t.end].to_ascii_uppercase())
+        self.tok(i)
+            .filter(|t| t.kind == Tok::Word)
+            .map(|t| self.text[t.start..t.end].to_ascii_uppercase())
     }
 
     fn is(&self, kw: &str) -> bool {
@@ -257,7 +300,9 @@ impl<'a> Parser<'a> {
     }
 
     fn is_seq(&self, kws: &[&str]) -> bool {
-        kws.iter().enumerate().all(|(k, kw)| self.word_at(self.i + k).as_deref() == Some(*kw))
+        kws.iter()
+            .enumerate()
+            .all(|(k, kw)| self.word_at(self.i + k).as_deref() == Some(*kw))
     }
 
     fn eat(&mut self, kw: &str) -> bool {
@@ -355,7 +400,13 @@ impl<'a> Parser<'a> {
             match t.kind {
                 Tok::Punct(b'(') => depth += 1,
                 Tok::Punct(b')') => depth -= 1,
-                Tok::Word if depth == 0 && stops.contains(&self.text[t.start..t.end].to_ascii_uppercase().as_str()) => break,
+                Tok::Word
+                    if depth == 0
+                        && stops
+                            .contains(&self.text[t.start..t.end].to_ascii_uppercase().as_str()) =>
+                {
+                    break;
+                }
                 Tok::Str | Tok::Dollar if depth == 0 && stops.contains(&"<STRING>") => break,
                 _ => {}
             }
@@ -389,7 +440,13 @@ impl<'a> Parser<'a> {
     fn string(&mut self) -> Option<String> {
         let t = self.tok(self.i).filter(|t| t.kind == Tok::Str)?;
         self.i += 1;
-        Some(unquote_string(&self.text[t.start..t.end], matches!(self.driver, Driver::MySql | Driver::MariaDb | Driver::Snowflake)))
+        Some(unquote_string(
+            &self.text[t.start..t.end],
+            matches!(
+                self.driver,
+                Driver::MySql | Driver::MariaDb | Driver::Snowflake
+            ),
+        ))
     }
 
     /// The rest of the text from the cursor.
@@ -418,7 +475,11 @@ impl<'a> Parser<'a> {
                 spec.options.secure = true;
                 continue;
             }
-            if self.eat("EDITIONABLE") || self.eat("NONEDITIONABLE") || self.eat("TEMPORARY") || self.eat("TEMP") {
+            if self.eat("EDITIONABLE")
+                || self.eat("NONEDITIONABLE")
+                || self.eat("TEMPORARY")
+                || self.eat("TEMP")
+            {
                 continue;
             }
             break;
@@ -457,7 +518,9 @@ impl<'a> Parser<'a> {
                     }
                 };
                 k = k.wrapping_add(1);
-                let default_at = (k..to).find(|&j| word(j).as_deref() == Some("DEFAULT") || self.toks[j].kind == Tok::Punct(b'='));
+                let default_at = (k..to).find(|&j| {
+                    word(j).as_deref() == Some("DEFAULT") || self.toks[j].kind == Tok::Punct(b'=')
+                });
                 let type_end = default_at.unwrap_or(to);
                 if let Some(d) = default_at {
                     p.default = self.span(d + 1, to);
@@ -510,21 +573,26 @@ impl<'a> Parser<'a> {
             Driver::Oracle => {
                 p.name = unquote_ident(&self.text[self.toks.get(k)?.start..self.toks.get(k)?.end]);
                 k += 1;
-                p.mode = if word(k).as_deref() == Some("IN") && word(k + 1).as_deref() == Some("OUT") {
-                    k += 2;
-                    ParamMode::InOut
-                } else if word(k).as_deref() == Some("OUT") {
-                    k += 1;
-                    ParamMode::Out
-                } else {
-                    if word(k).as_deref() == Some("IN") {
+                p.mode =
+                    if word(k).as_deref() == Some("IN") && word(k + 1).as_deref() == Some("OUT") {
+                        k += 2;
+                        ParamMode::InOut
+                    } else if word(k).as_deref() == Some("OUT") {
                         k += 1;
-                    }
-                    ParamMode::In
-                };
+                        ParamMode::Out
+                    } else {
+                        if word(k).as_deref() == Some("IN") {
+                            k += 1;
+                        }
+                        ParamMode::In
+                    };
                 let assign = (k..to).find(|&j| {
                     word(j).as_deref() == Some("DEFAULT")
-                        || (self.toks[j].kind == Tok::Punct(b':') && self.toks.get(j + 1).is_some_and(|t| t.kind == Tok::Punct(b'=')))
+                        || (self.toks[j].kind == Tok::Punct(b':')
+                            && self
+                                .toks
+                                .get(j + 1)
+                                .is_some_and(|t| t.kind == Tok::Punct(b'=')))
                 });
                 if let Some(a) = assign {
                     let skip = if word(a).is_some() { 1 } else { 2 };
@@ -571,15 +639,50 @@ fn pg_named(p: &Parser<'_>, k: usize) -> bool {
     }
     let first = p.word_at(k).unwrap_or_default();
     let second = p.word_at(k + 1).unwrap_or_default();
-    let multi_word = matches!(first.as_str(), "DOUBLE" | "CHARACTER" | "CHAR" | "BIT" | "TIME" | "TIMESTAMP" | "INTERVAL" | "NATIONAL")
-        && (matches!(second.as_str(), "PRECISION" | "VARYING" | "WITH" | "WITHOUT" | "CHARACTER" | "YEAR" | "MONTH" | "DAY" | "HOUR" | "MINUTE" | "SECOND")
-            || p.toks.get(k + 1).is_some_and(|t| t.kind == Tok::Punct(b'(')));
+    let multi_word = matches!(
+        first.as_str(),
+        "DOUBLE" | "CHARACTER" | "CHAR" | "BIT" | "TIME" | "TIMESTAMP" | "INTERVAL" | "NATIONAL"
+    ) && (matches!(
+        second.as_str(),
+        "PRECISION"
+            | "VARYING"
+            | "WITH"
+            | "WITHOUT"
+            | "CHARACTER"
+            | "YEAR"
+            | "MONTH"
+            | "DAY"
+            | "HOUR"
+            | "MINUTE"
+            | "SECOND"
+    ) || p
+        .toks
+        .get(k + 1)
+        .is_some_and(|t| t.kind == Tok::Punct(b'(')));
     !multi_word
 }
 
 const PG_CLAUSES: &[&str] = &[
-    "RETURNS", "LANGUAGE", "IMMUTABLE", "STABLE", "VOLATILE", "STRICT", "CALLED", "SECURITY", "EXTERNAL", "PARALLEL",
-    "LEAKPROOF", "NOT", "COST", "ROWS", "SUPPORT", "SET", "WINDOW", "TRANSFORM", "AS", "BEGIN",
+    "RETURNS",
+    "LANGUAGE",
+    "IMMUTABLE",
+    "STABLE",
+    "VOLATILE",
+    "STRICT",
+    "CALLED",
+    "SECURITY",
+    "EXTERNAL",
+    "PARALLEL",
+    "LEAKPROOF",
+    "NOT",
+    "COST",
+    "ROWS",
+    "SUPPORT",
+    "SET",
+    "WINDOW",
+    "TRANSFORM",
+    "AS",
+    "BEGIN",
 ];
 
 fn parse_postgres(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
@@ -615,7 +718,9 @@ fn parse_postgres(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
             spec.options.parallel = p.word_at(p.i)?;
             p.i += 1;
         } else if p.eat("AS") {
-            let t = p.tok(p.i).filter(|t| matches!(t.kind, Tok::Str | Tok::Dollar))?;
+            let t = p
+                .tok(p.i)
+                .filter(|t| matches!(t.kind, Tok::Str | Tok::Dollar))?;
             spec.body = body_text(p.text, t, false);
             p.i += 1;
             // `AS 'file', 'symbol'` (C functions) has no editable body.
@@ -664,7 +769,13 @@ fn mysql_type(p: &mut Parser<'_>) -> Option<String> {
         p.i = p.matching(p.i)? + 1;
     }
     loop {
-        if p.eat("UNSIGNED") || p.eat("SIGNED") || p.eat("ZEROFILL") || p.eat("BINARY") || p.eat("ASCII") || p.eat("UNICODE") {
+        if p.eat("UNSIGNED")
+            || p.eat("SIGNED")
+            || p.eat("ZEROFILL")
+            || p.eat("BINARY")
+            || p.eat("ASCII")
+            || p.eat("UNICODE")
+        {
             continue;
         }
         if p.eat("CHARSET") || p.eat("COLLATE") || p.eat_seq(&["CHARACTER", "SET"]) {
@@ -716,7 +827,8 @@ fn parse_mssql(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
         let mut depth = 0;
         loop {
             let t = p.tok(p.i)?;
-            let at_end = depth == 0 && matches!(p.word_at(p.i).as_deref(), Some("WITH" | "AS" | "FOR"));
+            let at_end =
+                depth == 0 && matches!(p.word_at(p.i).as_deref(), Some("WITH" | "AS" | "FOR"));
             match t.kind {
                 Tok::Punct(b'(') => depth += 1,
                 Tok::Punct(b')') => depth -= 1,
@@ -739,7 +851,9 @@ fn parse_mssql(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
         if !p.eat("RETURNS") {
             return None;
         }
-        let var = p.tok(p.i).filter(|t| t.kind == Tok::Word && p.text[t.start..t.end].starts_with('@'));
+        let var = p
+            .tok(p.i)
+            .filter(|t| t.kind == Tok::Word && p.text[t.start..t.end].starts_with('@'));
         if let Some(var) = var {
             p.i += 1;
             if !p.eat("TABLE") {
@@ -786,8 +900,18 @@ fn parse_mssql(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
 }
 
 const ORACLE_CLAUSES: &[&str] = &[
-    "AUTHID", "DETERMINISTIC", "PARALLEL_ENABLE", "PIPELINED", "RESULT_CACHE", "ACCESSIBLE", "SHARING", "DEFAULT", "IS", "AS",
-    "AGGREGATE", "USING",
+    "AUTHID",
+    "DETERMINISTIC",
+    "PARALLEL_ENABLE",
+    "PIPELINED",
+    "RESULT_CACHE",
+    "ACCESSIBLE",
+    "SHARING",
+    "DEFAULT",
+    "IS",
+    "AS",
+    "AGGREGATE",
+    "USING",
 ];
 
 fn parse_oracle(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
@@ -806,7 +930,9 @@ fn parse_oracle(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
             spec.options.security = p.until(ORACLE_CLAUSES);
         } else if p.eat("DETERMINISTIC") {
             spec.options.deterministic = true;
-        } else if p.is("PARALLEL_ENABLE") && !p.tok(p.i + 1).is_some_and(|t| t.kind == Tok::Punct(b'(')) {
+        } else if p.is("PARALLEL_ENABLE")
+            && !p.tok(p.i + 1).is_some_and(|t| t.kind == Tok::Punct(b'('))
+        {
             p.i += 1;
             spec.options.parallel_enable = true;
         } else if p.eat("PIPELINED") {
@@ -830,8 +956,25 @@ fn parse_oracle(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
 }
 
 const SNOWFLAKE_CLAUSES: &[&str] = &[
-    "RETURNS", "LANGUAGE", "RUNTIME_VERSION", "PACKAGES", "HANDLER", "IMPORTS", "CALLED", "STRICT", "VOLATILE", "IMMUTABLE",
-    "COMMENT", "EXECUTE", "AS", "EXTERNAL_ACCESS_INTEGRATIONS", "SECRETS", "TARGET_PATH", "MEMOIZABLE", "COPY", "ARTIFACT_REPOSITORY",
+    "RETURNS",
+    "LANGUAGE",
+    "RUNTIME_VERSION",
+    "PACKAGES",
+    "HANDLER",
+    "IMPORTS",
+    "CALLED",
+    "STRICT",
+    "VOLATILE",
+    "IMMUTABLE",
+    "COMMENT",
+    "EXECUTE",
+    "AS",
+    "EXTERNAL_ACCESS_INTEGRATIONS",
+    "SECRETS",
+    "TARGET_PATH",
+    "MEMOIZABLE",
+    "COPY",
+    "ARTIFACT_REPOSITORY",
 ];
 
 fn parse_snowflake(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
@@ -873,9 +1016,15 @@ fn parse_snowflake(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
             p.eat_punct(b'=');
             spec.options.comment = p.string()?;
         } else if p.eat_seq(&["EXECUTE", "AS"]) {
-            spec.options.security = if p.eat_seq(&["RESTRICTED", "CALLER"]) { "RESTRICTED CALLER".into() } else { p.ident()?.to_uppercase() };
+            spec.options.security = if p.eat_seq(&["RESTRICTED", "CALLER"]) {
+                "RESTRICTED CALLER".into()
+            } else {
+                p.ident()?.to_uppercase()
+            };
         } else if p.eat("AS") {
-            let t = p.tok(p.i).filter(|t| matches!(t.kind, Tok::Str | Tok::Dollar))?;
+            let t = p
+                .tok(p.i)
+                .filter(|t| matches!(t.kind, Tok::Str | Tok::Dollar))?;
             spec.body = body_text(p.text, t, true);
             p.i += 1;
         } else if p.is_punct(b';') {
@@ -897,7 +1046,10 @@ fn parse_snowflake(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
 /// The fields of a `CREATE PROCEDURE|FUNCTION` statement, or `None` if it isn't understood.
 pub fn parse_definition(driver: Driver, text: &str) -> Option<RoutineSpec> {
     let mut p = Parser::new(text, driver);
-    let mut spec = RoutineSpec { options: RoutineOptions::default(), ..Default::default() };
+    let mut spec = RoutineSpec {
+        options: RoutineOptions::default(),
+        ..Default::default()
+    };
     p.header(&mut spec)?;
     match driver {
         Driver::Postgres => parse_postgres(&mut p, &mut spec)?,

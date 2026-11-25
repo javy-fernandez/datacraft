@@ -124,7 +124,10 @@ impl MenuCommand {
 
     /// Edit commands that `poll` forwards to egui instead of returning them.
     fn is_text_edit(self) -> bool {
-        matches!(self, Self::Undo | Self::Redo | Self::Cut | Self::Copy | Self::Paste | Self::SelectAll)
+        matches!(
+            self,
+            Self::Undo | Self::Redo | Self::Cut | Self::Copy | Self::Paste | Self::SelectAll
+        )
     }
 }
 
@@ -257,7 +260,13 @@ impl NativeMenu {
 fn forward_edit(ctx: &egui::Context, cmd: MenuCommand) {
     use egui::{Event, Key, Modifiers as M};
     let cmd_mods = M::MAC_CMD | M::COMMAND;
-    let key = |key: Key, modifiers: M| Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers };
+    let key = |key: Key, modifiers: M| Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
     let event = match cmd {
         MenuCommand::Copy => Event::Copy,
         MenuCommand::Cut => Event::Cut,
@@ -302,7 +311,8 @@ fn build() -> muda::Result<Built> {
         keep(Entry::Item(i.clone()), text);
         i
     };
-    let check = |c: MenuCommand, text: &str| CheckMenuItem::with_id(c.id(), text, true, false, None);
+    let check =
+        |c: MenuCommand, text: &str| CheckMenuItem::with_id(c.id(), text, true, false, None);
     let predefined = |p: PredefinedMenuItem, text: Label| {
         keep(Entry::Predefined(p.clone()), text);
         p
@@ -321,15 +331,32 @@ fn build() -> muda::Result<Built> {
             &item(MenuCommand::About, || tr("About DataCraft"), None),
             &item(MenuCommand::CheckUpdates, || tr("Check for Updates…"), None),
             &sep(),
-            &item(MenuCommand::Settings, || tr("Settings…"), acc(cmd, Code::Comma)),
+            &item(
+                MenuCommand::Settings,
+                || tr("Settings…"),
+                acc(cmd, Code::Comma),
+            ),
             &sep(),
-            &predefined(PredefinedMenuItem::services(Some(tr("Services"))), || tr("Services")),
+            &predefined(PredefinedMenuItem::services(Some(tr("Services"))), || {
+                tr("Services")
+            }),
             &sep(),
-            &predefined(PredefinedMenuItem::hide(Some(tr("Hide DataCraft"))), || tr("Hide DataCraft")),
-            &predefined(PredefinedMenuItem::hide_others(Some(tr("Hide Others"))), || tr("Hide Others")),
-            &predefined(PredefinedMenuItem::show_all(Some(tr("Show All"))), || tr("Show All")),
+            &predefined(PredefinedMenuItem::hide(Some(tr("Hide DataCraft"))), || {
+                tr("Hide DataCraft")
+            }),
+            &predefined(
+                PredefinedMenuItem::hide_others(Some(tr("Hide Others"))),
+                || tr("Hide Others"),
+            ),
+            &predefined(PredefinedMenuItem::show_all(Some(tr("Show All"))), || {
+                tr("Show All")
+            }),
             &sep(),
-            &item(MenuCommand::Quit, || tr("Quit DataCraft"), acc(cmd, Code::KeyQ)),
+            &item(
+                MenuCommand::Quit,
+                || tr("Quit DataCraft"),
+                acc(cmd, Code::KeyQ),
+            ),
         ],
     )?;
 
@@ -337,11 +364,27 @@ fn build() -> muda::Result<Built> {
         || tr("File"),
         &[
             &item(MenuCommand::NewConnection, || tr("New connection…"), None),
-            &item(MenuCommand::NewConsole, || tr("New console"), acc(cmd | Modifiers::SHIFT, Code::KeyN)),
-            &item(MenuCommand::OpenSql, || tr("Open SQL script…"), acc(cmd, Code::KeyO)),
-            &item(MenuCommand::SaveSqlAs, || tr("Save console as…"), acc(cmd | Modifiers::SHIFT, Code::KeyS)),
+            &item(
+                MenuCommand::NewConsole,
+                || tr("New console"),
+                acc(cmd | Modifiers::SHIFT, Code::KeyN),
+            ),
+            &item(
+                MenuCommand::OpenSql,
+                || tr("Open SQL script…"),
+                acc(cmd, Code::KeyO),
+            ),
+            &item(
+                MenuCommand::SaveSqlAs,
+                || tr("Save console as…"),
+                acc(cmd | Modifiers::SHIFT, Code::KeyS),
+            ),
             &sep(),
-            &item(MenuCommand::CloseTab, || tr("Close tab"), acc(cmd, Code::KeyW)),
+            &item(
+                MenuCommand::CloseTab,
+                || tr("Close tab"),
+                acc(cmd, Code::KeyW),
+            ),
         ],
     )?;
 
@@ -349,12 +392,20 @@ fn build() -> muda::Result<Built> {
         || tr_ctx("menu", "Edit"),
         &[
             &item(MenuCommand::Undo, || tr("Undo"), acc(cmd, Code::KeyZ)),
-            &item(MenuCommand::Redo, || tr("Redo"), acc(cmd | Modifiers::SHIFT, Code::KeyZ)),
+            &item(
+                MenuCommand::Redo,
+                || tr("Redo"),
+                acc(cmd | Modifiers::SHIFT, Code::KeyZ),
+            ),
             &sep(),
             &item(MenuCommand::Cut, || tr("Cut"), acc(cmd, Code::KeyX)),
             &item(MenuCommand::Copy, || tr("Copy"), acc(cmd, Code::KeyC)),
             &item(MenuCommand::Paste, || tr("Paste"), acc(cmd, Code::KeyV)),
-            &item(MenuCommand::SelectAll, || tr("Select all"), acc(cmd, Code::KeyA)),
+            &item(
+                MenuCommand::SelectAll,
+                || tr("Select all"),
+                acc(cmd, Code::KeyA),
+            ),
             &sep(),
             &item(MenuCommand::Find, || tr("Find…"), acc(cmd, Code::KeyF)),
         ],
@@ -371,46 +422,97 @@ fn build() -> muda::Result<Built> {
         || tr("IDE zoom"),
         &[
             &item(MenuCommand::ZoomIn, || tr("Zoom In"), acc(cmd, Code::Equal)),
-            &item(MenuCommand::ZoomOut, || tr("Zoom Out"), acc(cmd, Code::Minus)),
-            &item(MenuCommand::ZoomReset, || tr("Reset"), acc(cmd, Code::Digit0)),
+            &item(
+                MenuCommand::ZoomOut,
+                || tr("Zoom Out"),
+                acc(cmd, Code::Minus),
+            ),
+            &item(
+                MenuCommand::ZoomReset,
+                || tr("Reset"),
+                acc(cmd, Code::Digit0),
+            ),
         ],
     )?;
     let font_menu = submenu(
         || tr("Editor font"),
         &[
-            &item(MenuCommand::FontBigger, || tr("Increase"), acc(cmd | Modifiers::ALT, Code::Equal)),
-            &item(MenuCommand::FontSmaller, || tr("Decrease"), acc(cmd | Modifiers::ALT, Code::Minus)),
+            &item(
+                MenuCommand::FontBigger,
+                || tr("Increase"),
+                acc(cmd | Modifiers::ALT, Code::Equal),
+            ),
+            &item(
+                MenuCommand::FontSmaller,
+                || tr("Decrease"),
+                acc(cmd | Modifiers::ALT, Code::Minus),
+            ),
             &item(MenuCommand::FontReset, || tr("Reset"), None),
         ],
     )?;
-    let view_menu = submenu(|| tr("View"), &[&explorer, &results, &sep(), &theme_menu, &zoom_menu, &font_menu])?;
+    let view_menu = submenu(
+        || tr("View"),
+        &[
+            &explorer,
+            &results,
+            &sep(),
+            &theme_menu,
+            &zoom_menu,
+            &font_menu,
+        ],
+    )?;
 
     let run_menu = submenu(
         || tr("Run"),
         &[
-            &item(MenuCommand::Run, || tr("Run statement"), acc(cmd, Code::Enter)),
-            &item(MenuCommand::RunAll, || tr("Run all"), acc(cmd | Modifiers::SHIFT, Code::Enter)),
+            &item(
+                MenuCommand::Run,
+                || tr("Run statement"),
+                acc(cmd, Code::Enter),
+            ),
+            &item(
+                MenuCommand::RunAll,
+                || tr("Run all"),
+                acc(cmd | Modifiers::SHIFT, Code::Enter),
+            ),
             &sep(),
-            &item(MenuCommand::SaveChanges, || tr("Save grid changes"), acc(cmd, Code::KeyS)),
-            &item(MenuCommand::Reload, || tr("Reload data"), acc(cmd, Code::KeyR)),
+            &item(
+                MenuCommand::SaveChanges,
+                || tr("Save grid changes"),
+                acc(cmd, Code::KeyS),
+            ),
+            &item(
+                MenuCommand::Reload,
+                || tr("Reload data"),
+                acc(cmd, Code::KeyR),
+            ),
         ],
     )?;
 
     let window_menu = submenu(
         || tr("Window"),
         &[
-            &predefined(PredefinedMenuItem::minimize(Some(tr("Minimize"))), || tr("Minimize")),
+            &predefined(PredefinedMenuItem::minimize(Some(tr("Minimize"))), || {
+                tr("Minimize")
+            }),
             &PredefinedMenuItem::maximize(Some(tr("Zoom"))),
             &sep(),
-            &predefined(PredefinedMenuItem::bring_all_to_front(Some(tr("Bring All to Front"))), || {
-                tr("Bring All to Front")
-            }),
+            &predefined(
+                PredefinedMenuItem::bring_all_to_front(Some(tr("Bring All to Front"))),
+                || tr("Bring All to Front"),
+            ),
         ],
     )?;
     #[cfg(target_os = "macos")]
     window_menu.set_as_windows_menu_for_nsapp();
 
-    let help_menu = submenu(|| tr("Help"), &[&item(MenuCommand::Shortcuts, || tr("Keyboard shortcuts…"), None), &item(MenuCommand::Help, || tr("DataCraft Help"), None)])?;
+    let help_menu = submenu(
+        || tr("Help"),
+        &[
+            &item(MenuCommand::Shortcuts, || tr("Keyboard shortcuts…"), None),
+            &item(MenuCommand::Help, || tr("DataCraft Help"), None),
+        ],
+    )?;
     #[cfg(target_os = "macos")]
     help_menu.set_as_help_menu_for_nsapp();
 

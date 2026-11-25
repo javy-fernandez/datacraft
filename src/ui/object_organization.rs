@@ -47,7 +47,12 @@ impl Organization {
 
     /// Nothing to remember (not persisted).
     pub fn is_empty(&self) -> bool {
-        self.groups.is_empty() && self.group_colors.is_empty() && self.objects.iter().all(|o| o.group.is_none() && o.color.is_none())
+        self.groups.is_empty()
+            && self.group_colors.is_empty()
+            && self
+                .objects
+                .iter()
+                .all(|o| o.group.is_none() && o.color.is_none())
     }
 
     /// The table was dropped (`new_name` None) or renamed: its folder and color go with it, so a
@@ -55,12 +60,19 @@ impl Organization {
     pub fn table_changed(&mut self, schema: &str, table: &str, new_name: Option<&str>) {
         match new_name {
             Some(new_name) => {
-                self.objects.retain(|o| !(o.schema == schema && o.table == new_name));
-                if let Some(o) = self.objects.iter_mut().find(|o| o.schema == schema && o.table == table) {
+                self.objects
+                    .retain(|o| !(o.schema == schema && o.table == new_name));
+                if let Some(o) = self
+                    .objects
+                    .iter_mut()
+                    .find(|o| o.schema == schema && o.table == table)
+                {
                     o.table = new_name.into();
                 }
             }
-            None => self.objects.retain(|o| !(o.schema == schema && o.table == table)),
+            None => self
+                .objects
+                .retain(|o| !(o.schema == schema && o.table == table)),
         }
     }
 
@@ -263,7 +275,11 @@ mod tests {
         org.style_mut("public", "orders").color = Some([1, 2, 3]);
         org.style_mut("public", "items").group = Some("Sales".into());
         org.table_changed("public", "orders", None);
-        assert_eq!(org.color("public", "orders"), None, "a new table with the old name starts clean");
+        assert_eq!(
+            org.color("public", "orders"),
+            None,
+            "a new table with the old name starts clean"
+        );
         org.table_changed("public", "items", Some("order_items"));
         assert_eq!(org.group("public", "order_items"), Some("Sales"));
         assert_eq!(org.group("public", "items"), None);

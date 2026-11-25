@@ -24,7 +24,12 @@ fn ms_error(e: tiberius::error::Error) -> anyhow::Error {
     match e {
         tiberius::error::Error::Server(t) => anyhow!(trf(
             "Error {code} (level {level}, line {line}): {message}",
-            &[("code", &t.code()), ("level", &t.class()), ("line", &t.line()), ("message", &t.message())]
+            &[
+                ("code", &t.code()),
+                ("level", &t.class()),
+                ("line", &t.line()),
+                ("message", &t.message())
+            ]
         )),
         other => anyhow!(other.to_string()),
     }
@@ -32,7 +37,11 @@ fn ms_error(e: tiberius::error::Error) -> anyhow::Error {
 
 impl MsSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
-        let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
+        let host = if cfg.host.trim().is_empty() {
+            "localhost"
+        } else {
+            cfg.host.trim()
+        };
         let port = if cfg.port == 0 { 1433 } else { cfg.port };
 
         let mut config = Config::new();
@@ -53,12 +62,27 @@ impl MsSession {
 
         let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((host, port)))
             .await
-            .map_err(|_| anyhow!(trf("Timed out connecting to {host}:{port}", &[("host", &host), ("port", &port)])))?
-            .with_context(|| trf("Could not connect to {host}:{port}", &[("host", &host), ("port", &port)]))?;
+            .map_err(|_| {
+                anyhow!(trf(
+                    "Timed out connecting to {host}:{port}",
+                    &[("host", &host), ("port", &port)]
+                ))
+            })?
+            .with_context(|| {
+                trf(
+                    "Could not connect to {host}:{port}",
+                    &[("host", &host), ("port", &port)],
+                )
+            })?;
         tcp.set_nodelay(true)?;
 
-        let client = Client::connect(config, tcp.compat_write()).await.map_err(ms_error)?;
-        Ok(Self { client, broken: false })
+        let client = Client::connect(config, tcp.compat_write())
+            .await
+            .map_err(ms_error)?;
+        Ok(Self {
+            client,
+            broken: false,
+        })
     }
 
     /// Stream full native values without exposing the driver connection.
@@ -73,8 +97,14 @@ impl MsSession {
         while let Some(item) = rows.try_next().await? {
             cancelled(progress)?;
             if let tiberius::QueryItem::Row(row) = item {
-                let values = row.cells().map(|(_, d)| mssql_value(d)).collect::<anyhow::Result<_>>()?;
-                sender.send(Message::Row(values)).await.context(tr("Export writer stopped"))?;
+                let values = row
+                    .cells()
+                    .map(|(_, d)| mssql_value(d))
+                    .collect::<anyhow::Result<_>>()?;
+                sender
+                    .send(Message::Row(values))
+                    .await
+                    .context(tr("Export writer stopped"))?;
             }
         }
         Ok(())
@@ -93,16 +123,27 @@ impl MsSession {
         }
     }
 
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
-        run(&mut self.client, sql, parameters, max_rows).await.map_err(|e| {
-            if !matches!(e, tiberius::error::Error::Server(_)) { self.broken = true; }
-            ms_error(e)
-        })
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
+        run(&mut self.client, sql, parameters, max_rows)
+            .await
+            .map_err(|e| {
+                if !matches!(e, tiberius::error::Error::Server(_)) {
+                    self.broken = true;
+                }
+                ms_error(e)
+            })
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
         let rows = self.scalar_strings("SELECT DB_NAME()").await?;
-        rows.into_iter().next().ok_or_else(|| anyhow!(tr("The server did not return the current database")))
+        rows.into_iter()
+            .next()
+            .ok_or_else(|| anyhow!(tr("The server did not return the current database")))
     }
 
     /// ONLINE databases the user has access to, as in DataGrip's explorer.
@@ -121,11 +162,16 @@ impl MsSession {
     /// First column of each row as text.
     async fn scalar_strings(&mut self, sql: &str) -> anyhow::Result<Vec<String>> {
         let rs = self.execute(sql, usize::MAX).await?;
-        Ok(rs.into_iter().flat_map(|r| r.rows).filter_map(|row| row.into_iter().next().flatten()).collect())
+        Ok(rs
+            .into_iter()
+            .flat_map(|r| r.rows)
+            .filter_map(|row| row.into_iter().next().flatten())
+            .collect())
     }
 
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        self.execute("SET XACT_ABORT ON; BEGIN TRANSACTION", 0).await?;
+        self.execute("SET XACT_ABORT ON; BEGIN TRANSACTION", 0)
+            .await?;
         let mut outcome: anyhow::Result<u64> = Ok(0);
         for stmt in statements {
             let n = match self.client.execute(stmt.as_str(), &[]).await {
@@ -153,7 +199,9 @@ impl MsSession {
             }
             Err(e) => {
                 if !self.broken {
-                    let _ = self.execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", 0).await;
+                    let _ = self
+                        .execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION", 0)
+                        .await;
                 }
                 Err(e)
             }
@@ -209,19 +257,32 @@ impl MsSession {
             let (schema, table) = (text(0), text(1));
 
             if schemas.last().is_none_or(|s| s.name != schema) {
-                schemas.push(SchemaInfo { name: schema.to_string(), tables: Vec::new() });
+                schemas.push(SchemaInfo {
+                    name: schema.to_string(),
+                    tables: Vec::new(),
+                });
             }
-            let Some(s) = schemas.last_mut() else { continue };
+            let Some(s) = schemas.last_mut() else {
+                continue;
+            };
             if s.tables.last().is_none_or(|t| t.name != table) {
                 s.tables.push(TableInfo {
                     name: table.to_string(),
-                    kind: if text(2) == "VIEW" { ObjectKind::View } else { ObjectKind::Table },
+                    kind: if text(2) == "VIEW" {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
                     columns: Vec::new(),
                 });
             }
-            let Some(t) = s.tables.last_mut() else { continue };
+            let Some(t) = s.tables.last_mut() else {
+                continue;
+            };
 
-            let Ok(Some(column)) = row.try_get::<&str, _>(3) else { continue };
+            let Ok(Some(column)) = row.try_get::<&str, _>(3) else {
+                continue;
+            };
             t.columns.push(ColumnInfo {
                 name: column.to_string(),
                 data_type: type_label(text(4), int(5), int(6), int(7)),
@@ -234,7 +295,12 @@ impl MsSession {
 }
 
 /// Type with length/precision in SSMS style: `nvarchar(50)`, `varchar(max)`, `decimal(10,2)`.
-pub(super) fn type_label(data_type: &str, max_len: Option<i64>, precision: Option<i64>, scale: Option<i64>) -> String {
+pub(super) fn type_label(
+    data_type: &str,
+    max_len: Option<i64>,
+    precision: Option<i64>,
+    scale: Option<i64>,
+) -> String {
     match data_type {
         "char" | "varchar" | "nchar" | "nvarchar" | "binary" | "varbinary" => match max_len {
             Some(-1) => format!("{data_type}(max)"),
@@ -257,8 +323,15 @@ async fn run(
 ) -> Result<Vec<ResultSet>, tiberius::error::Error> {
     let statement = sql.trim().to_string();
     let mut start = Instant::now();
-    let params: Vec<&dyn tiberius::ToSql> = parameters.iter().map(|v| v as &dyn tiberius::ToSql).collect();
-    let mut stream = if params.is_empty() { client.simple_query(sql).await? } else { client.query(sql, &params).await? };
+    let params: Vec<&dyn tiberius::ToSql> = parameters
+        .iter()
+        .map(|v| v as &dyn tiberius::ToSql)
+        .collect();
+    let mut stream = if params.is_empty() {
+        client.simple_query(sql).await?
+    } else {
+        client.query(sql, &params).await?
+    };
 
     let mut results: Vec<ResultSet> = Vec::new();
     // The whole stream must be consumed even when truncating; otherwise the connection is left half-read.
@@ -271,17 +344,24 @@ async fn run(
                 }
                 results.push(ResultSet {
                     statement: statement.clone(),
-                    columns: meta.columns().iter().map(|c| c.name().to_string()).collect(),
+                    columns: meta
+                        .columns()
+                        .iter()
+                        .map(|c| c.name().to_string())
+                        .collect(),
                     ..Default::default()
                 });
             }
             QueryItem::Row(row) => {
-                let Some(rs) = results.last_mut() else { continue };
+                let Some(rs) = results.last_mut() else {
+                    continue;
+                };
                 if rs.rows.len() >= max_rows {
                     rs.truncated = true;
                     continue;
                 }
-                rs.rows.push(row.cells().map(|(_, data)| cell(data)).collect());
+                rs.rows
+                    .push(row.cells().map(|(_, data)| cell(data)).collect());
             }
         }
     }
@@ -289,7 +369,11 @@ async fn run(
     match results.last_mut() {
         Some(rs) => rs.elapsed = start.elapsed(),
         // DML/DDL: simple_query doesn't report affected rows.
-        None => results.push(ResultSet { statement, elapsed: start.elapsed(), ..Default::default() }),
+        None => results.push(ResultSet {
+            statement,
+            elapsed: start.elapsed(),
+            ..Default::default()
+        }),
     }
     Ok(results)
 }
@@ -313,10 +397,12 @@ fn cell(data: &ColumnData<'static>) -> Cell {
             date_cell::<NaiveDateTime>(data, |d| d.format("%Y-%m-%d %H:%M:%S%.f").to_string())
         }
         ColumnData::Date(_) => date_cell::<NaiveDate>(data, |d| d.format("%Y-%m-%d").to_string()),
-        ColumnData::Time(_) => date_cell::<NaiveTime>(data, |d| d.format("%H:%M:%S%.f").to_string()),
-        ColumnData::DateTimeOffset(_) => {
-            date_cell::<DateTime<FixedOffset>>(data, |d| d.format("%Y-%m-%d %H:%M:%S%.f %:z").to_string())
+        ColumnData::Time(_) => {
+            date_cell::<NaiveTime>(data, |d| d.format("%H:%M:%S%.f").to_string())
         }
+        ColumnData::DateTimeOffset(_) => date_cell::<DateTime<FixedOffset>>(data, |d| {
+            d.format("%Y-%m-%d %H:%M:%S%.f %:z").to_string()
+        }),
     }
 }
 
@@ -329,7 +415,12 @@ pub(super) fn numeric_text(n: tiberius::numeric::Numeric) -> String {
         return format!("{sign}{abs}");
     }
     let div = 10u128.pow(scale);
-    format!("{sign}{}.{:0width$}", abs / div, abs % div, width = scale as usize)
+    format!(
+        "{sign}{}.{:0width$}",
+        abs / div,
+        abs % div,
+        width = scale as usize
+    )
 }
 
 fn date_cell<'a, T: FromSql<'a>>(data: &'a ColumnData<'static>, fmt: impl Fn(T) -> String) -> Cell {
@@ -356,7 +447,6 @@ mod tests {
         assert_eq!(numeric_text(Numeric::new_with_scale(7, 3)), "0.007");
     }
 
-
     use super::*;
     use crate::db::Driver;
 
@@ -365,7 +455,8 @@ mod tests {
             eprintln!("DATACRAFT_MSSQL_HOST not set: skipping the SQL Server test");
             return None;
         };
-        let env = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
+        let env =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
         let mut cfg = ConnectionConfig::new(1, Driver::MsSql);
         cfg.host = host;
         cfg.port = env("DATACRAFT_MSSQL_PORT", "1433").parse().expect("port");
@@ -381,7 +472,10 @@ mod tests {
         let Some(mut s) = session().await else { return };
         let current = s.current_database().await.unwrap();
         let dbs = s.list_databases().await.unwrap();
-        assert!(dbs.iter().any(|d| d.eq_ignore_ascii_case("master")), "{dbs:?}");
+        assert!(
+            dbs.iter().any(|d| d.eq_ignore_ascii_case("master")),
+            "{dbs:?}"
+        );
         s.use_database("master").await.unwrap();
         assert_eq!(s.current_database().await.unwrap(), "master");
         s.use_database(&current).await.unwrap();
@@ -390,9 +484,27 @@ mod tests {
         s.execute("CREATE TABLE #dc_edit(id int PRIMARY KEY, v nvarchar(10)); INSERT INTO #dc_edit VALUES (1, N'a'), (2, N'b');", 10)
             .await
             .unwrap();
-        assert_eq!(s.apply_changes(&["UPDATE #dc_edit SET v = N'x' WHERE id = N'1'".into()]).await.unwrap(), 1);
-        assert!(s.apply_changes(&["UPDATE #dc_edit SET v = N'y' WHERE id = N'1'".into(), "DELETE FROM #dc_edit WHERE id = N'9'".into()]).await.is_err());
-        let rs = s.execute("SELECT v FROM #dc_edit WHERE id = 1; SELECT @@TRANCOUNT;", 10).await.unwrap();
+        assert_eq!(
+            s.apply_changes(&["UPDATE #dc_edit SET v = N'x' WHERE id = N'1'".into()])
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            s.apply_changes(&[
+                "UPDATE #dc_edit SET v = N'y' WHERE id = N'1'".into(),
+                "DELETE FROM #dc_edit WHERE id = N'9'".into()
+            ])
+            .await
+            .is_err()
+        );
+        let rs = s
+            .execute(
+                "SELECT v FROM #dc_edit WHERE id = 1; SELECT @@TRANCOUNT;",
+                10,
+            )
+            .await
+            .unwrap();
         assert_eq!(rs[0].rows[0][0].as_deref(), Some("x"));
         assert_eq!(rs[1].rows[0][0].as_deref(), Some("0"));
         s.execute("DROP TABLE #dc_edit", 0).await.unwrap();
@@ -444,7 +556,10 @@ mod tests {
     async fn temp_table_multiple_results_and_introspection() {
         let Some(mut s) = session().await else { return };
         let rs = s
-            .execute("CREATE TABLE #dc_tmp (id int PRIMARY KEY, name nvarchar(20) NULL)", 10)
+            .execute(
+                "CREATE TABLE #dc_tmp (id int PRIMARY KEY, name nvarchar(20) NULL)",
+                10,
+            )
             .await
             .unwrap();
         assert!(rs[0].is_command());
@@ -468,12 +583,19 @@ mod tests {
         assert_eq!(rs[2].rows[0][0].as_deref(), Some("3"));
 
         // The connection stays usable after truncating and after an error.
-        let err = s.execute("SELECT * FROM dbo.datacraft_missing_xyz", 10).await.unwrap_err();
+        let err = s
+            .execute("SELECT * FROM dbo.datacraft_missing_xyz", 10)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("datacraft_missing_xyz"), "{err}");
         s.execute("DROP TABLE #dc_tmp", 10).await.unwrap();
 
         let schemas = s.introspect().await.unwrap();
-        assert!(!schemas.iter().any(|s| s.name == "sys" || s.name == "INFORMATION_SCHEMA"));
+        assert!(
+            !schemas
+                .iter()
+                .any(|s| s.name == "sys" || s.name == "INFORMATION_SCHEMA")
+        );
         for t in schemas.iter().flat_map(|s| &s.tables) {
             assert!(!t.name.is_empty());
         }

@@ -56,9 +56,19 @@ enum Target<'a> {
 }
 
 impl CopyDialog {
-    pub fn new(source: &ConnState, db: String, schema: String, table: String, columns: Vec<ColumnInfo>, conns: &[ConnState]) -> Self {
+    pub fn new(
+        source: &ConnState,
+        db: String,
+        schema: String,
+        table: String,
+        columns: Vec<ColumnInfo>,
+        conns: &[ConnState],
+    ) -> Self {
         let driver = source.cfg.driver;
-        let selected = columns.iter().map(|c| !copy::is_binary(driver, &c.data_type)).collect();
+        let selected = columns
+            .iter()
+            .map(|c| !copy::is_binary(driver, &c.data_type))
+            .collect();
         let n_columns = columns.len();
         // prod → dev: another writable connection first, the same one otherwise.
         let target = conns
@@ -101,9 +111,15 @@ impl CopyDialog {
     /// Selects a target connection and its default database.
     fn pick_target(&mut self, conns: &[ConnState], id: ConnId) {
         self.target = id;
-        let Some(c) = conns.iter().find(|c| c.cfg.id == id) else { return };
+        let Some(c) = conns.iter().find(|c| c.cfg.id == id) else {
+            return;
+        };
         let same_db = c.databases.iter().any(|d| d.name == self.db);
-        self.target_db = if same_db { self.db.clone() } else { c.default_db().unwrap_or_default().to_string() };
+        self.target_db = if same_db {
+            self.db.clone()
+        } else {
+            c.default_db().unwrap_or_default().to_string()
+        };
         self.target_schema.clear();
     }
 
@@ -113,8 +129,12 @@ impl CopyDialog {
         if !self.target_schema.is_empty() {
             return;
         }
-        let Some(c) = conns.iter().find(|c| c.cfg.id == self.target) else { return };
-        let Some(schemas) = c.schemas(Some(&self.target_db)) else { return };
+        let Some(c) = conns.iter().find(|c| c.cfg.id == self.target) else {
+            return;
+        };
+        let Some(schemas) = c.schemas(Some(&self.target_db)) else {
+            return;
+        };
         let default = default_schema(c.cfg.driver);
         let pick = schemas
             .iter()
@@ -127,12 +147,20 @@ impl CopyDialog {
     }
 
     fn target_state<'a>(&self, conns: &'a [ConnState]) -> Target<'a> {
-        let Some(c) = conns.iter().find(|c| c.cfg.id == self.target) else { return Target::Loading };
-        let Some(schemas) = c.schemas(Some(&self.target_db)) else { return Target::Loading };
+        let Some(c) = conns.iter().find(|c| c.cfg.id == self.target) else {
+            return Target::Loading;
+        };
+        let Some(schemas) = c.schemas(Some(&self.target_db)) else {
+            return Target::Loading;
+        };
         let table = schemas
             .iter()
             .find(|s| s.name == self.target_schema)
-            .and_then(|s| s.tables.iter().find(|t| t.name.eq_ignore_ascii_case(self.target_table.trim())));
+            .and_then(|s| {
+                s.tables
+                    .iter()
+                    .find(|t| t.name.eq_ignore_ascii_case(self.target_table.trim()))
+            });
         match table {
             Some(t) => Target::Existing(&t.columns),
             None => Target::New,
@@ -148,11 +176,13 @@ impl CopyDialog {
         for ((c, on), mask) in self.columns.iter().zip(&self.selected).zip(&self.masks) {
             let name = match target {
                 _ if !on => None,
-                Target::Existing(cols) => match cols.iter().find(|t| t.name.eq_ignore_ascii_case(&c.name)) {
-                    Some(t) => Some(t.name.clone()),
-                    None if to == Driver::MongoDb => Some(c.name.clone()),
-                    None => None,
-                },
+                Target::Existing(cols) => {
+                    match cols.iter().find(|t| t.name.eq_ignore_ascii_case(&c.name)) {
+                        Some(t) => Some(t.name.clone()),
+                        None if to == Driver::MongoDb => Some(c.name.clone()),
+                        None => None,
+                    }
+                }
                 _ => Some(c.name.clone()),
             };
             if let Some(name) = name {
@@ -168,12 +198,19 @@ impl CopyDialog {
     pub fn suggest_masks(&mut self) {
         for (c, mask) in self.columns.iter().zip(&mut self.masks) {
             let s = Mask::suggest(&c.name);
-            *mask = if s.allowed(self.source_driver, c) { s } else { Mask::Keep };
+            *mask = if s.allowed(self.source_driver, c) {
+                s
+            } else {
+                Mask::Keep
+            };
         }
     }
 
     fn target_driver(&self, conns: &[ConnState]) -> Option<Driver> {
-        conns.iter().find(|c| c.cfg.id == self.target).map(|c| c.cfg.driver)
+        conns
+            .iter()
+            .find(|c| c.cfg.id == self.target)
+            .map(|c| c.cfg.driver)
     }
 
     /// The copy was sent: remember how to cancel it.
@@ -219,7 +256,11 @@ impl CopyDialog {
             .corner_radius(12)
             .inner_margin(Margin::same(20))
             .stroke(egui::Stroke::new(1.0, p.popup_border));
-        let source_name = conns.iter().find(|c| c.cfg.id == self.source).map(|c| c.cfg.name.clone()).unwrap_or_default();
+        let source_name = conns
+            .iter()
+            .find(|c| c.cfg.id == self.source)
+            .map(|c| c.cfg.name.clone())
+            .unwrap_or_default();
         let mut new_target = None;
         egui::Modal::new(egui::Id::new("copy_dialog")).frame(frame).show(ctx, |ui| {
             ui.set_width(640.0_f32.min(ctx.content_rect().width() - 60.0).max(300.0));

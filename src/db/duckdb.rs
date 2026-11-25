@@ -34,14 +34,24 @@ static LIB: OnceLock<Mutex<Option<Arc<Lib>>>> = OnceLock::new();
 
 /// The library, loaded once (after the driver is downloaded, without restarting the app).
 fn lib() -> anyhow::Result<Arc<Lib>> {
-    let mut slot = LIB.get_or_init(Default::default).lock().map_err(|_| anyhow!("DuckDB"))?;
+    let mut slot = LIB
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| anyhow!("DuckDB"))?;
     if let Some(lib) = &*slot {
         return Ok(Arc::clone(lib));
     }
     let Some(path) = install::installed_library() else {
-        anyhow::bail!(tr("The DuckDB driver is not installed. Download it from the connection dialog."));
+        anyhow::bail!(tr(
+            "The DuckDB driver is not installed. Download it from the connection dialog."
+        ));
     };
-    let api = Api::load(&path).map_err(|e| anyhow!(trf("Could not load the DuckDB driver {path}: {error}", &[("path", &path.display()), ("error", &e)])))?;
+    let api = Api::load(&path).map_err(|e| {
+        anyhow!(trf(
+            "Could not load the DuckDB driver {path}: {error}",
+            &[("path", &path.display()), ("error", &e)]
+        ))
+    })?;
     // SAFETY: a fresh cache, kept for the life of the process.
     let cache = unsafe { (api.duckdb_create_instance_cache)() };
     let lib = Arc::new(Lib { api, cache });
@@ -90,7 +100,10 @@ impl DuckSession {
         let read_only = cfg.read_only;
         let id = cfg.id;
         let handle = tokio::task::spawn_blocking(move || open(&path, read_only, id)).await??;
-        Ok(Self { handle: Arc::new(handle), lock: Arc::new(Mutex::new(())) })
+        Ok(Self {
+            handle: Arc::new(handle),
+            lock: Arc::new(Mutex::new(())),
+        })
     }
 
     pub fn interrupt_handle(&self) -> Arc<Handle> {
@@ -104,7 +117,9 @@ impl DuckSession {
     {
         let (handle, lock) = (Arc::clone(&self.handle), Arc::clone(&self.lock));
         tokio::task::spawn_blocking(move || {
-            let _guard = lock.lock().map_err(|_| anyhow!(tr("The DuckDB connection became unusable")))?;
+            let _guard = lock
+                .lock()
+                .map_err(|_| anyhow!(tr("The DuckDB connection became unusable")))?;
             f(&handle)
         })
         .await?
@@ -112,16 +127,24 @@ impl DuckSession {
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let sql = sql.to_string();
-        self.with_conn(move |h| run_batch(h, &sql, &[], max_rows)).await
+        self.with_conn(move |h| run_batch(h, &sql, &[], max_rows))
+            .await
     }
 
-    pub async fn execute_bound(&mut self, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute_bound(
+        &mut self,
+        sql: &str,
+        parameters: &[String],
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let (sql, parameters) = (sql.to_string(), parameters.to_vec());
-        self.with_conn(move |h| run_batch(h, &sql, &parameters, max_rows)).await
+        self.with_conn(move |h| run_batch(h, &sql, &parameters, max_rows))
+            .await
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
-        self.with_conn(|h| scalar(h, "SELECT current_database()")).await
+        self.with_conn(|h| scalar(h, "SELECT current_database()"))
+            .await
     }
 
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {
@@ -168,7 +191,11 @@ fn open(path: &str, read_only: bool, id: u64) -> anyhow::Result<Handle> {
             Ok(_) => {}
         }
     }
-    let target = if memory { format!(":memory:datacraft{id}") } else { path.to_string() };
+    let target = if memory {
+        format!(":memory:datacraft{id}")
+    } else {
+        path.to_string()
+    };
     let c_path = CString::new(target)?;
     // SAFETY: standard DuckDB open sequence; the config is destroyed whatever happens, and the
     // database only kept when the connection opens too.
@@ -182,29 +209,53 @@ fn open(path: &str, read_only: bool, id: u64) -> anyhow::Result<Handle> {
         }
         let mut db: ffi::duckdb_database = std::ptr::null_mut();
         let mut error: *mut std::ffi::c_char = std::ptr::null_mut();
-        let state = (api.duckdb_get_or_create_from_cache)(lib.cache, c_path.as_ptr(), &mut db, config, &mut error);
+        let state = (api.duckdb_get_or_create_from_cache)(
+            lib.cache,
+            c_path.as_ptr(),
+            &mut db,
+            config,
+            &mut error,
+        );
         (api.duckdb_destroy_config)(&mut config);
         if state != SUCCESS {
             let message = api.owned_text(error);
-            anyhow::bail!(trf("Could not open {path}: {error}", &[("path", &if memory { ":memory:" } else { path }), ("error", &message)]));
+            anyhow::bail!(trf(
+                "Could not open {path}: {error}",
+                &[
+                    ("path", &if memory { ":memory:" } else { path }),
+                    ("error", &message)
+                ]
+            ));
         }
         let mut conn: ffi::duckdb_connection = std::ptr::null_mut();
         if (api.duckdb_connect)(db, &mut conn) != SUCCESS {
             (api.duckdb_close)(&mut db);
             anyhow::bail!(tr("Could not connect to the DuckDB database"));
         }
-        Ok(Handle { lib: Arc::clone(&lib), db, conn })
+        Ok(Handle {
+            lib: Arc::clone(&lib),
+            db,
+            conn,
+        })
     }
 }
 
 /// Runs one or more statements; each SELECT keeps at most `max_rows` rows (0 discards them).
-fn run_batch(h: &Handle, sql: &str, parameters: &[String], max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+fn run_batch(
+    h: &Handle,
+    sql: &str,
+    parameters: &[String],
+    max_rows: usize,
+) -> anyhow::Result<Vec<ResultSet>> {
     let mut results = Vec::new();
     let texts = statement_texts(sql);
     let mut index = 0;
     stream_statements(h, sql, parameters, |info| {
         let mut rs = ResultSet {
-            statement: texts.get(index).cloned().unwrap_or_else(|| sql.trim().to_string()),
+            statement: texts
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| sql.trim().to_string()),
             columns: info.columns.clone(),
             ..Default::default()
         };
@@ -237,13 +288,22 @@ fn run_batch(h: &Handle, sql: &str, parameters: &[String], max_rows: usize) -> a
 
 /// The text of each statement of a script, for the results' titles.
 fn statement_texts(sql: &str) -> Vec<String> {
-    crate::sql::split_statements(sql, super::Driver::DuckDb).into_iter().map(|s| s.text.trim().to_string()).collect()
+    crate::sql::split_statements(sql, super::Driver::DuckDb)
+        .into_iter()
+        .map(|s| s.text.trim().to_string())
+        .collect()
 }
 
 /// The first value of a query's first row.
 fn scalar(h: &Handle, sql: &str) -> anyhow::Result<String> {
     let rs = run_batch(h, sql, &[], 1)?;
-    Ok(rs.into_iter().next().and_then(|r| r.rows.into_iter().next()).and_then(|r| r.into_iter().next()).flatten().unwrap_or_default())
+    Ok(rs
+        .into_iter()
+        .next()
+        .and_then(|r| r.rows.into_iter().next())
+        .and_then(|r| r.into_iter().next())
+        .flatten()
+        .unwrap_or_default())
 }
 
 /// A statement being read.
@@ -260,7 +320,10 @@ struct Running<'a> {
 
 impl Running<'_> {
     /// Reads its chunks while `f` returns true; returns the changed rows of a DML.
-    fn consume(&self, mut f: impl FnMut(&[values::Ty], Vec<Vec<Cell>>) -> anyhow::Result<bool>) -> anyhow::Result<Option<u64>> {
+    fn consume(
+        &self,
+        mut f: impl FnMut(&[values::Ty], Vec<Vec<Cell>>) -> anyhow::Result<bool>,
+    ) -> anyhow::Result<Option<u64>> {
         let api = self.api;
         let mut changed: Option<u64> = None;
         loop {
@@ -276,14 +339,25 @@ impl Running<'_> {
                     .types
                     .iter()
                     .enumerate()
-                    .map(|(i, ty)| values::column(api, (api.duckdb_data_chunk_get_vector)(chunk, i as u64), ty, n))
+                    .map(|(i, ty)| {
+                        values::column(
+                            api,
+                            (api.duckdb_data_chunk_get_vector)(chunk, i as u64),
+                            ty,
+                            n,
+                        )
+                    })
                     .collect();
                 (api.duckdb_destroy_data_chunk)(&mut chunk);
                 transpose(columns, n as usize)
             };
             if self.changes {
                 // The single "Count" column.
-                let count = rows.iter().filter_map(|r| r.first().cloned().flatten()).filter_map(|v| v.parse::<u64>().ok()).sum::<u64>();
+                let count = rows
+                    .iter()
+                    .filter_map(|r| r.first().cloned().flatten())
+                    .filter_map(|v| v.parse::<u64>().ok())
+                    .sum::<u64>();
                 changed = Some(changed.unwrap_or(0) + count);
                 continue;
             }
@@ -312,9 +386,15 @@ fn transpose(columns: Vec<Vec<Cell>>, n: usize) -> Vec<Vec<Cell>> {
 }
 
 /// Prepares and starts each statement of `sql` in turn, handing it to `f` to read.
-fn stream_statements(h: &Handle, sql: &str, parameters: &[String], mut f: impl FnMut(&Running) -> anyhow::Result<()>) -> anyhow::Result<()> {
+fn stream_statements(
+    h: &Handle,
+    sql: &str,
+    parameters: &[String],
+    mut f: impl FnMut(&Running) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     let api = &h.lib.api;
-    let c_sql = CString::new(sql).map_err(|_| anyhow!(tr("The statement contains a NUL character")))?;
+    let c_sql =
+        CString::new(sql).map_err(|_| anyhow!(tr("The statement contains a NUL character")))?;
     // SAFETY: the DuckDB call sequence extract → prepare → pending → execute → fetch, each
     // object destroyed in reverse order on every path.
     unsafe {
@@ -330,15 +410,22 @@ fn stream_statements(h: &Handle, sql: &str, parameters: &[String], mut f: impl F
             }
             for i in 0..n {
                 let mut prepared: ffi::duckdb_prepared_statement = std::ptr::null_mut();
-                let state = (api.duckdb_prepare_extracted_statement)(h.conn, extracted, i, &mut prepared);
+                let state =
+                    (api.duckdb_prepare_extracted_statement)(h.conn, extracted, i, &mut prepared);
                 let run = (|| {
                     if state != SUCCESS {
                         anyhow::bail!(ffi::text((api.duckdb_prepare_error)(prepared)));
                     }
                     if !parameters.is_empty() {
-                        for (j, value) in parameters.iter().enumerate().take((api.duckdb_nparams)(prepared) as usize) {
+                        for (j, value) in parameters
+                            .iter()
+                            .enumerate()
+                            .take((api.duckdb_nparams)(prepared) as usize)
+                        {
                             let v = CString::new(value.as_str())?;
-                            if (api.duckdb_bind_varchar)(prepared, j as u64 + 1, v.as_ptr()) != SUCCESS {
+                            if (api.duckdb_bind_varchar)(prepared, j as u64 + 1, v.as_ptr())
+                                != SUCCESS
+                            {
                                 anyhow::bail!(tr("Could not bind a parameter"));
                             }
                         }
@@ -357,7 +444,9 @@ fn stream_statements(h: &Handle, sql: &str, parameters: &[String], mut f: impl F
                             anyhow::bail!(error);
                         }
                         let ncols = (api.duckdb_column_count)(&mut result);
-                        let columns = (0..ncols).map(|c| ffi::text((api.duckdb_column_name)(&mut result, c))).collect();
+                        let columns = (0..ncols)
+                            .map(|c| ffi::text((api.duckdb_column_name)(&mut result, c)))
+                            .collect();
                         let types = (0..ncols)
                             .map(|c| {
                                 let mut ty = (api.duckdb_column_logical_type)(&mut result, c);
@@ -368,9 +457,22 @@ fn stream_statements(h: &Handle, sql: &str, parameters: &[String], mut f: impl F
                             .collect();
                         let returns = (api.duckdb_result_return_type)(result);
                         let changes = returns == ffi::RESULT_CHANGED_ROWS
-                            || matches!(kind, ffi::STATEMENT_INSERT | ffi::STATEMENT_UPDATE | ffi::STATEMENT_DELETE) && ncols == 1;
+                            || matches!(
+                                kind,
+                                ffi::STATEMENT_INSERT
+                                    | ffi::STATEMENT_UPDATE
+                                    | ffi::STATEMENT_DELETE
+                            ) && ncols == 1;
                         let nothing = returns == ffi::RESULT_NOTHING;
-                        let running = Running { api, result, columns, types, select: kind == ffi::STATEMENT_SELECT, changes, nothing };
+                        let running = Running {
+                            api,
+                            result,
+                            columns,
+                            types,
+                            select: kind == ffi::STATEMENT_SELECT,
+                            changes,
+                            nothing,
+                        };
                         let out = f(&running);
                         (api.duckdb_destroy_result)(&mut result);
                         out
@@ -399,7 +501,10 @@ fn load_schema(h: &Handle) -> anyhow::Result<Vec<SchemaInfo>> {
     )?;
     for row in names.into_iter().flat_map(|r| r.rows) {
         if let Some(Some(name)) = row.into_iter().next() {
-            schemas.push(SchemaInfo { name, tables: Vec::new() });
+            schemas.push(SchemaInfo {
+                name,
+                tables: Vec::new(),
+            });
         }
     }
     let columns = run_batch(
@@ -419,20 +524,32 @@ fn load_schema(h: &Handle) -> anyhow::Result<Vec<SchemaInfo>> {
     )?;
     let text = |c: &Cell| c.clone().unwrap_or_default();
     for row in columns.into_iter().flat_map(|r| r.rows) {
-        let [schema, table, view, column, data_type, nullable, pk] = <[Cell; 7]>::try_from(row).map_err(|_| anyhow!("duckdb_columns()"))?;
+        let [schema, table, view, column, data_type, nullable, pk] =
+            <[Cell; 7]>::try_from(row).map_err(|_| anyhow!("duckdb_columns()"))?;
         let schema_name = text(&schema);
         let idx = match schemas.iter().position(|s| s.name == schema_name) {
             Some(i) => i,
             None => {
-                schemas.push(SchemaInfo { name: schema_name, tables: Vec::new() });
+                schemas.push(SchemaInfo {
+                    name: schema_name,
+                    tables: Vec::new(),
+                });
                 schemas.len() - 1
             }
         };
         let tables = &mut schemas[idx].tables;
         let table_name = text(&table);
         if tables.last().is_none_or(|t| t.name != table_name) {
-            let kind = if text(&view) == "true" { ObjectKind::View } else { ObjectKind::Table };
-            tables.push(TableInfo { name: table_name, kind, columns: Vec::new() });
+            let kind = if text(&view) == "true" {
+                ObjectKind::View
+            } else {
+                ObjectKind::Table
+            };
+            tables.push(TableInfo {
+                name: table_name,
+                kind,
+                columns: Vec::new(),
+            });
         }
         if let Some(t) = tables.last_mut() {
             t.columns.push(ColumnInfo {
@@ -488,11 +605,21 @@ mod tests {
         assert_eq!(rs[2].columns.len(), 13);
         let row = &rs[2].rows[0];
         let c = |v: &str| Some(v.to_string());
-        assert_eq!(row[..4], [c("1"), c("one"), c("12.50"), c("2024-01-02 03:04:05.5")]);
+        assert_eq!(
+            row[..4],
+            [c("1"), c("one"), c("12.50"), c("2024-01-02 03:04:05.5")]
+        );
         assert_eq!(row[4], c("['a', 'b']"));
         assert_eq!(row[5], c("{'a': 1, 'b': 'z'}"));
         assert_eq!(row[6], c("550e8400-e29b-41d4-a716-446655440000"));
-        assert_eq!(row[7..10], [c("2024-02-29"), c("true"), c("170141183460469231731687303715884105727")]);
+        assert_eq!(
+            row[7..10],
+            [
+                c("2024-02-29"),
+                c("true"),
+                c("170141183460469231731687303715884105727")
+            ]
+        );
         assert_eq!(row[10], c("{'k'=1}"));
         assert_eq!(row[11..], [c("1 day"), c("y")]);
         let row2 = &rs[2].rows[1];
@@ -519,13 +646,31 @@ mod tests {
         s.execute("CREATE SCHEMA sales; CREATE TABLE sales.orders (id INTEGER PRIMARY KEY, note VARCHAR NOT NULL); CREATE VIEW v AS SELECT 1 AS one; INSERT INTO sales.orders VALUES (1, 'a'), (2, 'b')", 0)
             .await
             .unwrap();
-        let rs = s.execute_bound("SELECT note FROM sales.orders WHERE id = ?", &["2".into()], 10).await.unwrap();
+        let rs = s
+            .execute_bound(
+                "SELECT note FROM sales.orders WHERE id = ?",
+                &["2".into()],
+                10,
+            )
+            .await
+            .unwrap();
         assert_eq!(rs[0].rows, vec![vec![Some("b".to_string())]]);
-        assert_eq!(s.apply_changes(&["UPDATE sales.orders SET note = 'x' WHERE id = 1".into()]).await.unwrap(), 1);
+        assert_eq!(
+            s.apply_changes(&["UPDATE sales.orders SET note = 'x' WHERE id = 1".into()])
+                .await
+                .unwrap(),
+            1
+        );
         // A change that matches no row rolls everything back.
-        let bad = ["UPDATE sales.orders SET note = 'y' WHERE id = 1".to_string(), "UPDATE sales.orders SET note = 'z' WHERE id = 99".to_string()];
+        let bad = [
+            "UPDATE sales.orders SET note = 'y' WHERE id = 1".to_string(),
+            "UPDATE sales.orders SET note = 'z' WHERE id = 99".to_string(),
+        ];
         assert!(s.apply_changes(&bad).await.is_err());
-        let rs = s.execute("SELECT note FROM sales.orders ORDER BY id", 10).await.unwrap();
+        let rs = s
+            .execute("SELECT note FROM sales.orders ORDER BY id", 10)
+            .await
+            .unwrap();
         assert_eq!(rs[0].rows[0], vec![Some("x".to_string())]);
 
         let schemas = s.introspect().await.unwrap();
@@ -546,8 +691,13 @@ mod tests {
         let mut cfg = ConnectionConfig::new(rand_id(), Driver::DuckDb);
         let mut a = DuckSession::connect(&cfg).await.unwrap();
         let mut b = DuckSession::connect(&cfg).await.unwrap();
-        a.execute("CREATE TABLE shared AS SELECT 42 AS v", 0).await.unwrap();
-        assert_eq!(b.execute("SELECT v FROM shared", 1).await.unwrap()[0].rows[0][0].as_deref(), Some("42"));
+        a.execute("CREATE TABLE shared AS SELECT 42 AS v", 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            b.execute("SELECT v FROM shared", 1).await.unwrap()[0].rows[0][0].as_deref(),
+            Some("42")
+        );
 
         // A file database: created by the dialog's New… (an empty file), opened twice.
         let path = std::env::temp_dir().join(format!("datacraft-{}.duckdb", rand_id()));
@@ -555,8 +705,13 @@ mod tests {
         cfg.file_path = path.display().to_string();
         let mut f1 = DuckSession::connect(&cfg).await.unwrap();
         let mut f2 = DuckSession::connect(&cfg).await.unwrap();
-        f1.execute("CREATE TABLE x AS SELECT 1 AS v", 0).await.unwrap();
-        assert_eq!(f2.execute("SELECT count(*) FROM x", 1).await.unwrap()[0].rows[0][0].as_deref(), Some("1"));
+        f1.execute("CREATE TABLE x AS SELECT 1 AS v", 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            f2.execute("SELECT count(*) FROM x", 1).await.unwrap()[0].rows[0][0].as_deref(),
+            Some("1")
+        );
 
         // A cancel interrupts a long query.
         let handle = a.interrupt_handle();
@@ -565,7 +720,12 @@ mod tests {
             handle.interrupt();
         });
         let started = Instant::now();
-        let r = a.execute("SELECT count(*) FROM range(10000000000) r1, range(10) r2", 1).await;
+        let r = a
+            .execute(
+                "SELECT count(*) FROM range(10000000000) r1, range(10) r2",
+                1,
+            )
+            .await;
         canceller.await.unwrap();
         assert!(r.is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(30));
@@ -589,18 +749,57 @@ mod tests {
         )
         .await
         .unwrap();
-        let view = s.view_definition(Driver::DuckDb, "", "main", "names").await.unwrap();
+        let view = s
+            .view_definition(Driver::DuckDb, "", "main", "names")
+            .await
+            .unwrap();
         // DuckDB keeps the view normalized: `SELECT "name" FROM parent WHERE (id > 0)`.
-        assert!(view.body.starts_with("SELECT") && view.body.contains("FROM parent") && !view.body.ends_with(';'), "{}", view.body);
-        let info = s.object_info(Driver::DuckDb, "main", "parent", true).await.unwrap();
+        assert!(
+            view.body.starts_with("SELECT")
+                && view.body.contains("FROM parent")
+                && !view.body.ends_with(';'),
+            "{}",
+            view.body
+        );
+        let info = s
+            .object_info(Driver::DuckDb, "main", "parent", true)
+            .await
+            .unwrap();
         assert_eq!(info.rows, Some(2));
-        assert_eq!(s.object_list_info(Driver::DuckDb, Some("main")).await.unwrap().len(), 3);
-        assert_eq!(s.table_row_count(Driver::DuckDb, "main", "parent", "id > 1").await.unwrap(), 1);
-        let rs = s.execute(&crate::db::subset::fk_sql(Driver::DuckDb, "", "main"), 100).await.unwrap();
+        assert_eq!(
+            s.object_list_info(Driver::DuckDb, Some("main"))
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            s.table_row_count(Driver::DuckDb, "main", "parent", "id > 1")
+                .await
+                .unwrap(),
+            1
+        );
+        let rs = s
+            .execute(&crate::db::subset::fk_sql(Driver::DuckDb, "", "main"), 100)
+            .await
+            .unwrap();
         let catalog = s.introspect().await.unwrap();
         let fks = crate::db::subset::parse_fks(Driver::DuckDb, &rs[0], &catalog);
         assert_eq!(fks.len(), 1);
-        assert_eq!((fks[0].table.as_str(), fks[0].columns.clone(), fks[0].ref_table.as_str(), fks[0].ref_columns.clone()), ("child", vec!["parent_id".to_string()], "parent", vec!["id".to_string()]));
+        assert_eq!(
+            (
+                fks[0].table.as_str(),
+                fks[0].columns.clone(),
+                fks[0].ref_table.as_str(),
+                fks[0].ref_columns.clone()
+            ),
+            (
+                "child",
+                vec!["parent_id".to_string()],
+                "parent",
+                vec!["id".to_string()]
+            )
+        );
     }
 
     #[tokio::test]
@@ -609,9 +808,15 @@ mod tests {
         let path = std::env::temp_dir().join(format!("datacraft-{}.parquet", rand_id()));
         let p = path.display().to_string().replace('\'', "''");
         s.execute(&format!("COPY (SELECT range AS id, 'n' || range AS name FROM range(3)) TO '{p}' (FORMAT parquet)"), 0).await.unwrap();
-        let rs = s.execute(&format!("SELECT * FROM '{p}' ORDER BY id"), 10).await.unwrap();
+        let rs = s
+            .execute(&format!("SELECT * FROM '{p}' ORDER BY id"), 10)
+            .await
+            .unwrap();
         assert_eq!(rs[0].columns, ["id", "name"]);
-        assert_eq!(rs[0].rows[2], vec![Some("2".to_string()), Some("n2".to_string())]);
+        assert_eq!(
+            rs[0].rows[2],
+            vec![Some("2".to_string()), Some("n2".to_string())]
+        );
         let _ = std::fs::remove_file(path);
     }
 }

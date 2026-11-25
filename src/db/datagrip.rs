@@ -22,18 +22,33 @@ pub struct Found {
 /// sources.
 pub fn default_files() -> Vec<PathBuf> {
     let subdirs = |dir: PathBuf| -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
         dirs.sort();
         dirs
     };
     let mut files = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        files.extend(subdirs(home.join("DataGripProjects")).into_iter().map(|p| p.join(".idea").join("dataSources.xml")));
+        files.extend(
+            subdirs(home.join("DataGripProjects"))
+                .into_iter()
+                .map(|p| p.join(".idea").join("dataSources.xml")),
+        );
     }
     if let Some(config) = dirs::config_dir() {
-        let versions = subdirs(config.join("JetBrains")).into_iter().filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with("DataGrip")));
+        let versions = subdirs(config.join("JetBrains")).into_iter().filter(|d| {
+            d.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("DataGrip"))
+        });
         // Newest version first.
-        let mut global: Vec<PathBuf> = versions.map(|d| d.join("options").join("dataSources.xml")).collect();
+        let mut global: Vec<PathBuf> = versions
+            .map(|d| d.join("options").join("dataSources.xml"))
+            .collect();
         global.reverse();
         files.extend(global);
     }
@@ -43,32 +58,57 @@ pub fn default_files() -> Vec<PathBuf> {
 
 pub fn read(path: &Path) -> anyhow::Result<Vec<Found>> {
     let xml = std::fs::read_to_string(path)?;
-    let local = std::fs::read_to_string(path.with_file_name("dataSources.local.xml")).unwrap_or_default();
-    let project = path.parent().filter(|d| d.file_name().is_some_and(|n| n == ".idea")).and_then(Path::parent);
+    let local =
+        std::fs::read_to_string(path.with_file_name("dataSources.local.xml")).unwrap_or_default();
+    let project = path
+        .parent()
+        .filter(|d| d.file_name().is_some_and(|n| n == ".idea"))
+        .and_then(Path::parent);
     Ok(parse(&xml, &local, project))
 }
 
 pub fn parse(xml: &str, local: &str, project: Option<&Path>) -> Vec<Found> {
-    let users: HashMap<String, String> =
-        elements(local, "data-source").into_iter().filter_map(|(attrs, inner)| Some((attr(attrs, "uuid")?, child(inner, "user-name")?))).collect();
+    let users: HashMap<String, String> = elements(local, "data-source")
+        .into_iter()
+        .filter_map(|(attrs, inner)| Some((attr(attrs, "uuid")?, child(inner, "user-name")?)))
+        .collect();
     elements(xml, "data-source")
         .into_iter()
         .map(|(attrs, inner)| {
             let name = attr(attrs, "name").unwrap_or_default();
-            let folder = attr(attrs, "group").or_else(|| child(inner, "group")).unwrap_or_default();
-            let user = attr(attrs, "uuid").and_then(|u| users.get(&u).cloned()).or_else(|| child(inner, "user-name")).unwrap_or_default();
+            let folder = attr(attrs, "group")
+                .or_else(|| child(inner, "group"))
+                .unwrap_or_default();
+            let user = attr(attrs, "uuid")
+                .and_then(|u| users.get(&u).cloned())
+                .or_else(|| child(inner, "user-name"))
+                .unwrap_or_default();
             let driver_ref = child(inner, "driver-ref").unwrap_or_default();
             let url = child(inner, "jdbc-url").unwrap_or_default();
             let config = config(&name, &driver_ref, &url, &user, project);
-            Found { name, folder, config }
+            Found {
+                name,
+                folder,
+                config,
+            }
         })
         .collect()
 }
 
 /// The connection DataGrip's driver and JDBC URL describe.
-fn config(name: &str, driver_ref: &str, url: &str, user: &str, project: Option<&Path>) -> Result<ConnectionConfig, String> {
+fn config(
+    name: &str,
+    driver_ref: &str,
+    url: &str,
+    user: &str,
+    project: Option<&Path>,
+) -> Result<ConnectionConfig, String> {
     let mut url = url.trim().to_string();
-    for (var, dir) in [("$USER_HOME$", dirs::home_dir()), ("$PROJECT_DIR$", project.map(Path::to_path_buf)), ("$ProjectFileDir$", project.map(Path::to_path_buf))] {
+    for (var, dir) in [
+        ("$USER_HOME$", dirs::home_dir()),
+        ("$PROJECT_DIR$", project.map(Path::to_path_buf)),
+        ("$ProjectFileDir$", project.map(Path::to_path_buf)),
+    ] {
         if let Some(dir) = dir {
             url = url.replace(var, &dir.to_string_lossy());
         }
@@ -79,7 +119,11 @@ fn config(name: &str, driver_ref: &str, url: &str, user: &str, project: Option<&
     let (driver, jdbc, url) = if lower.starts_with("jdbc:postgresql:") {
         (Driver::Postgres, true, url)
     } else if lower.starts_with("jdbc:mysql:") && driver_ref.starts_with("mariadb") {
-        (Driver::MariaDb, true, format!("jdbc:mariadb:{}", after("jdbc:mysql:")))
+        (
+            Driver::MariaDb,
+            true,
+            format!("jdbc:mariadb:{}", after("jdbc:mysql:")),
+        )
     } else if lower.starts_with("jdbc:mysql:") {
         (Driver::MySql, true, url)
     } else if lower.starts_with("jdbc:mariadb:") {
@@ -94,14 +138,24 @@ fn config(name: &str, driver_ref: &str, url: &str, user: &str, project: Option<&
             Some((authority, db)) if !db.is_empty() => format!("{authority};database={db}"),
             _ => main.trim_end_matches('/').to_string(),
         };
-        (Driver::MsSql, true, format!("jdbc:sqlserver://{main}{params}"))
+        (
+            Driver::MsSql,
+            true,
+            format!("jdbc:sqlserver://{main}{params}"),
+        )
     } else if lower.starts_with("jdbc:oracle:thin:@//") {
         (Driver::Oracle, true, url)
     } else if lower.starts_with("jdbc:oracle:thin:@") && !lower.contains("(description") {
         // host:port/service or host:port:SID
         let rest = after("jdbc:oracle:thin:@");
         let rest = match rest.matches(':').count() {
-            2 => rest.rsplitn(2, ':').collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/"),
+            2 => rest
+                .rsplitn(2, ':')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("/"),
             _ => rest,
         };
         (Driver::Oracle, true, format!("jdbc:oracle:thin:@//{rest}"))
@@ -110,7 +164,11 @@ fn config(name: &str, driver_ref: &str, url: &str, user: &str, project: Option<&
     } else if lower.starts_with("jdbc:snowflake:") {
         (Driver::Snowflake, true, url)
     } else if lower.starts_with("jdbc:clickhouse://") || lower.starts_with("jdbc:ch://") {
-        (Driver::ClickHouse, false, format!("clickhouse://{}", &url[url.find("//").unwrap_or(0) + 2..]))
+        (
+            Driver::ClickHouse,
+            false,
+            format!("clickhouse://{}", &url[url.find("//").unwrap_or(0) + 2..]),
+        )
     } else if lower.starts_with("jdbc:redis://") {
         (Driver::Redis, false, after("jdbc:"))
     } else if lower.starts_with("mongodb://") || lower.starts_with("mongodb+srv://") {
@@ -118,12 +176,24 @@ fn config(name: &str, driver_ref: &str, url: &str, user: &str, project: Option<&
     } else if lower.starts_with("jdbc:mongodb") {
         (Driver::MongoDb, false, after("jdbc:"))
     } else {
-        let what = if driver_ref.is_empty() { url.split("//").next().unwrap_or(&url).trim_end_matches(':').to_string() } else { driver_ref.to_string() };
+        let what = if driver_ref.is_empty() {
+            url.split("//")
+                .next()
+                .unwrap_or(&url)
+                .trim_end_matches(':')
+                .to_string()
+        } else {
+            driver_ref.to_string()
+        };
         return Err(trf("{driver} isn't supported", &[("driver", &what)]));
     };
     let mut cfg = ConnectionConfig::new(0, driver);
     cfg.name = name.to_string();
-    let ok = if jdbc { apply_jdbc_url(&mut cfg, &url) } else { apply_connection_url(&mut cfg, &url) };
+    let ok = if jdbc {
+        apply_jdbc_url(&mut cfg, &url)
+    } else {
+        apply_connection_url(&mut cfg, &url)
+    };
     if !ok {
         return Err(tr("Unreadable URL").into());
     }
@@ -194,7 +264,10 @@ fn attr(attrs: &str, name: &str) -> Option<String> {
 
 /// The text of the first `<tag>` inside `inner`.
 fn child(inner: &str, tag: &str) -> Option<String> {
-    elements(inner, tag).first().map(|(_, text)| unescape(text.trim())).filter(|t| !t.is_empty())
+    elements(inner, tag)
+        .first()
+        .map(|(_, text)| unescape(text.trim()))
+        .filter(|t| !t.is_empty())
 }
 
 fn unescape(s: &str) -> String {
@@ -301,40 +374,124 @@ mod tests {
         let ok = |i: usize| found[i].config.clone().unwrap();
 
         let pg = ok(0);
-        assert_eq!((found[0].name.as_str(), found[0].folder.as_str()), ("orders@prod", "Production"));
-        assert_eq!((pg.driver, pg.host.as_str(), pg.port, pg.database.as_str(), pg.user.as_str()), (Driver::Postgres, "db.example.com", 5433, "orders", "app_reader"));
-        assert_eq!((pg.tls.mode, pg.url_extra.as_str()), (TlsMode::VerifyFull, "?connectTimeout=5"));
+        assert_eq!(
+            (found[0].name.as_str(), found[0].folder.as_str()),
+            ("orders@prod", "Production")
+        );
+        assert_eq!(
+            (
+                pg.driver,
+                pg.host.as_str(),
+                pg.port,
+                pg.database.as_str(),
+                pg.user.as_str()
+            ),
+            (
+                Driver::Postgres,
+                "db.example.com",
+                5433,
+                "orders",
+                "app_reader"
+            )
+        );
+        assert_eq!(
+            (pg.tls.mode, pg.url_extra.as_str()),
+            (TlsMode::VerifyFull, "?connectTimeout=5")
+        );
         assert!(pg.ask_password && pg.password.is_empty());
 
         let maria = ok(1);
-        assert_eq!((found[1].name.as_str(), maria.driver, maria.host.as_str(), maria.port, maria.user.as_str()), ("shop & stock", Driver::MariaDb, "maria.example.com", 3306, ""));
+        assert_eq!(
+            (
+                found[1].name.as_str(),
+                maria.driver,
+                maria.host.as_str(),
+                maria.port,
+                maria.user.as_str()
+            ),
+            (
+                "shop & stock",
+                Driver::MariaDb,
+                "maria.example.com",
+                3306,
+                ""
+            )
+        );
 
         let ms = ok(2);
-        assert_eq!((ms.driver, ms.host.as_str(), ms.port, ms.database.as_str(), ms.user.as_str()), (Driver::MsSql, "sql.example.com", 1434, "erp", "sa"));
+        assert_eq!(
+            (
+                ms.driver,
+                ms.host.as_str(),
+                ms.port,
+                ms.database.as_str(),
+                ms.user.as_str()
+            ),
+            (Driver::MsSql, "sql.example.com", 1434, "erp", "sa")
+        );
 
         let lite = ok(3);
-        assert_eq!((lite.driver, lite.file_path.as_str(), lite.ask_password), (Driver::Sqlite, "/projects/shop/data/app.db", false));
+        assert_eq!(
+            (lite.driver, lite.file_path.as_str(), lite.ask_password),
+            (Driver::Sqlite, "/projects/shop/data/app.db", false)
+        );
 
         let ora = ok(4);
-        assert_eq!((ora.driver, ora.host.as_str(), ora.port, ora.database.as_str()), (Driver::Oracle, "ora.example.com", 1521, "ORCL"));
+        assert_eq!(
+            (
+                ora.driver,
+                ora.host.as_str(),
+                ora.port,
+                ora.database.as_str()
+            ),
+            (Driver::Oracle, "ora.example.com", 1521, "ORCL")
+        );
 
         // DataGrip's ClickHouse port is the HTTP one.
         let ch = ok(5);
-        assert_eq!((ch.driver, ch.port, ch.database.as_str()), (Driver::ClickHouse, 9000, "logs"));
+        assert_eq!(
+            (ch.driver, ch.port, ch.database.as_str()),
+            (Driver::ClickHouse, 9000, "logs")
+        );
 
         let redis = ok(6);
-        assert_eq!((redis.driver, redis.host.as_str(), redis.port, redis.database.as_str()), (Driver::Redis, "cache.example.com", 6380, "2"));
+        assert_eq!(
+            (
+                redis.driver,
+                redis.host.as_str(),
+                redis.port,
+                redis.database.as_str()
+            ),
+            (Driver::Redis, "cache.example.com", 6380, "2")
+        );
 
         let mongo = ok(7);
-        assert_eq!((mongo.driver, mongo.host.as_str(), mongo.database.as_str(), mongo.property("srv")), (Driver::MongoDb, "cluster0.example.net", "app", Some("true")));
+        assert_eq!(
+            (
+                mongo.driver,
+                mongo.host.as_str(),
+                mongo.database.as_str(),
+                mongo.property("srv")
+            ),
+            (Driver::MongoDb, "cluster0.example.net", "app", Some("true"))
+        );
 
         assert!(found[8].config.as_ref().unwrap_err().contains("redshift"));
     }
 
     #[test]
     fn unescapes_xml() {
-        assert_eq!(unescape("a &amp; b &lt;c&gt; &quot;d&quot; &#233; &#xE9; & x"), "a & b <c> \"d\" é é & x");
-        assert_eq!(attr(r#"source="LOCAL" name="x" uuid="1""#, "name").as_deref(), Some("x"));
-        assert_eq!(attr(r#"dbname="no" name="yes""#, "name").as_deref(), Some("yes"));
+        assert_eq!(
+            unescape("a &amp; b &lt;c&gt; &quot;d&quot; &#233; &#xE9; & x"),
+            "a & b <c> \"d\" é é & x"
+        );
+        assert_eq!(
+            attr(r#"source="LOCAL" name="x" uuid="1""#, "name").as_deref(),
+            Some("x")
+        );
+        assert_eq!(
+            attr(r#"dbname="no" name="yes""#, "name").as_deref(),
+            Some("yes")
+        );
     }
 }

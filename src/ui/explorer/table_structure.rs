@@ -267,14 +267,14 @@ pub(super) fn show(
                                     egui::Button::new(tr("Open Referenced Table")),
                                 )
                                 .clicked()
-                            {
-                                actions.push(ExplorerAction::NavigateColumn {
-                                    table: referenced_table(table, reference),
-                                    columns: reference.columns.clone(),
-                                    open: true,
-                                });
-                                ui.close();
-                            }
+                        {
+                            actions.push(ExplorerAction::NavigateColumn {
+                                table: referenced_table(table, reference),
+                                columns: reference.columns.clone(),
+                                open: true,
+                            });
+                            ui.close();
+                        }
                     });
                 if state.expanded.contains(&key) {
                     for (i, column) in object.columns.iter().enumerate() {
@@ -427,9 +427,10 @@ mod tests {
                     );
                     for action in actions {
                         if let ExplorerAction::LoadTableObjects(t, group, refresh) = action
-                            && state.0.request_table_objects(&t, group, refresh).is_some() {
-                                state.1 += 1;
-                            }
+                            && state.0.request_table_objects(&t, group, refresh).is_some()
+                        {
+                            state.1 += 1;
+                        }
                     }
                 },
                 (state, 0),

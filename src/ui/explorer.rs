@@ -51,7 +51,11 @@ pub struct TableRef {
 pub enum ExplorerAction {
     Backup(ConnId, String),
     /// "Restore database…": into `db` (None: a new database), optionally from a known backup file.
-    Restore { conn: ConnId, db: Option<String>, source: Option<String> },
+    Restore {
+        conn: ConnId,
+        db: Option<String>,
+        source: Option<String>,
+    },
     /// "Run SQL Script…" on the connection, or on one of its databases.
     RunScript(ConnId, Option<String>),
     /// "Session Monitor…": the server's sessions of the connection.
@@ -68,13 +72,26 @@ pub enum ExplorerAction {
     /// "New Database" dialog on the connection.
     NewDatabase(ConnId),
     /// "New Table" dialog in a database (and schema, if one was chosen).
-    NewTable { conn: ConnId, db: String, schema: Option<String> },
+    NewTable {
+        conn: ConnId,
+        db: String,
+        schema: Option<String>,
+    },
     /// "New View" dialog in a database (and schema, if one was chosen).
-    NewView { conn: ConnId, db: String, schema: Option<String> },
+    NewView {
+        conn: ConnId,
+        db: String,
+        schema: Option<String>,
+    },
     /// "Edit View" dialog, with the view's definition read from the server.
     EditView(TableRef),
     /// "New Procedure" / "New Function" dialog in a database (and schema, if one was chosen).
-    NewRoutine { conn: ConnId, db: String, schema: Option<String>, kind: RoutineKind },
+    NewRoutine {
+        conn: ConnId,
+        db: String,
+        schema: Option<String>,
+        kind: RoutineKind,
+    },
     /// Routine dialog with the routine's definition read from the server.
     EditRoutine(RoutineRef),
     /// "Execute…": the parameter form, then a console that runs the call.
@@ -111,13 +128,21 @@ pub enum ExplorerAction {
     InspectObject(TableRef, ObjectKind),
     OpenTable(TableRef),
     /// Focus the first matching column in a table editor; double-click may open it first.
-    NavigateColumn { table: TableRef, columns: Vec<String>, open: bool },
+    NavigateColumn {
+        table: TableRef,
+        columns: Vec<String>,
+        open: bool,
+    },
     GenerateSelect(TableRef),
     GenerateInsert(TableRef),
     GenerateDdl(TableRef),
     TableModel(Vec<TableRef>),
     /// "Compare Schemas…" with the connection (and database and schema) as the source.
-    CompareSchemas { conn: ConnId, db: Option<String>, schema: Option<String> },
+    CompareSchemas {
+        conn: ConnId,
+        db: Option<String>,
+        schema: Option<String>,
+    },
     /// Load (or reload) the "Users" / "Roles" folder.
     LoadUsers(ConnId),
     NewUser(ConnId),
@@ -152,23 +177,45 @@ struct RowSpec<'a> {
 fn tree_row(ui: &mut Ui, state: &mut ExplorerState, spec: RowSpec<'_>) -> RowOut {
     let p = pal(ui);
     let text_color = spec.label_color.unwrap_or(p.text);
-    let label_galley = ui.painter().layout_no_wrap(spec.label.to_owned(), FontId::proportional(13.0), text_color);
+    let label_galley = ui.painter().layout_no_wrap(
+        spec.label.to_owned(),
+        FontId::proportional(13.0),
+        text_color,
+    );
     let x_label = 12.0 + spec.depth as f32 * INDENT + 20.0 + 16.0 + 6.0;
     let mut needed = x_label + label_galley.size().x + 6.0;
     if let Some(b) = spec.badge {
-        needed += ui.painter().layout_no_wrap(b.to_owned(), FontId::proportional(11.0), p.badge_fg).size().x + 12.0 + 6.0;
+        needed += ui
+            .painter()
+            .layout_no_wrap(b.to_owned(), FontId::proportional(11.0), p.badge_fg)
+            .size()
+            .x
+            + 12.0
+            + 6.0;
     }
     if let Some((d, _)) = spec.detail {
-        needed += ui.painter().layout_no_wrap(d.to_owned(), FontId::proportional(12.0), p.muted).size().x;
+        needed += ui
+            .painter()
+            .layout_no_wrap(d.to_owned(), FontId::proportional(12.0), p.muted)
+            .size()
+            .x;
     }
     needed += 14.0;
     state.widest_row = state.widest_row.max(needed);
     let width = state.row_width.max(needed);
     let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click());
     if state.reveal.as_deref() == Some(spec.key) {
-        ui.scroll_to_rect(rect, Some(egui::Align::Center)); state.reveal = None;
+        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+        state.reveal = None;
     }
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, state.selected.as_deref() == Some(spec.key), spec.label));
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            state.selected.as_deref() == Some(spec.key),
+            spec.label,
+        )
+    });
     if !ui.is_rect_visible(rect) {
         let mut toggled = false;
         if resp.double_clicked() && spec.expandable {
@@ -177,9 +224,16 @@ fn tree_row(ui: &mut Ui, state: &mut ExplorerState, spec: RowSpec<'_>) -> RowOut
         return RowOut { resp, toggled };
     }
     let selected = state.selected.as_deref() == Some(spec.key);
-    let bg_rect = Rect::from_min_max(pos2(rect.left() + 6.0, rect.top() + 1.0), pos2(rect.right() - 6.0, rect.bottom() - 1.0));
+    let bg_rect = Rect::from_min_max(
+        pos2(rect.left() + 6.0, rect.top() + 1.0),
+        pos2(rect.right() - 6.0, rect.bottom() - 1.0),
+    );
     if selected {
-        let fill = if state.focused { p.selection } else { p.selection_inactive };
+        let fill = if state.focused {
+            p.selection
+        } else {
+            p.selection_inactive
+        };
         ui.painter().rect_filled(bg_rect, 5.0, fill);
     } else if resp.hovered() {
         ui.painter().rect_filled(bg_rect, 5.0, p.row_hover);
@@ -189,8 +243,19 @@ fn tree_row(ui: &mut Ui, state: &mut ExplorerState, spec: RowSpec<'_>) -> RowOut
     let chevron_rect = Rect::from_min_size(pos2(x0, cy - 8.0), Vec2::splat(16.0));
     let mut toggled = false;
     if spec.expandable {
-        let ico = if spec.expanded { Ico::ChevronDown } else { Ico::ChevronRight };
-        icons::paint(ui.painter(), chevron_rect.shrink(1.0), ico, p.muted, &p, true);
+        let ico = if spec.expanded {
+            Ico::ChevronDown
+        } else {
+            Ico::ChevronRight
+        };
+        icons::paint(
+            ui.painter(),
+            chevron_rect.shrink(1.0),
+            ico,
+            p.muted,
+            &p,
+            true,
+        );
         if resp.clicked()
             && let Some(pt) = resp.interact_pointer_pos()
             && pt.x < chevron_rect.right() + 2.0
@@ -215,7 +280,13 @@ fn tree_row(ui: &mut Ui, state: &mut ExplorerState, spec: RowSpec<'_>) -> RowOut
         x = r.right() + 6.0;
     }
     if let Some((d, color)) = spec.detail {
-        painter.text(pos2(x, cy), egui::Align2::LEFT_CENTER, d, FontId::proportional(12.0), color);
+        painter.text(
+            pos2(x, cy),
+            egui::Align2::LEFT_CENTER,
+            d,
+            FontId::proportional(12.0),
+            color,
+        );
     }
     if resp.clicked() || resp.secondary_clicked() {
         state.selected = Some(spec.key.to_string());
@@ -262,16 +333,32 @@ fn selected_conn(state: &ExplorerState) -> Option<ConnId> {
 }
 
 /// Tool window header + icon bar.
-fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: &mut Vec<ExplorerAction>) {
+fn header(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    conns: &[ConnState],
+    actions: &mut Vec<ExplorerAction>,
+) {
     let p = pal(ui);
     ui.add_space(4.0);
     // Clipped rows: with a narrow panel they cannot widen the island.
     theme::clipped_row(ui, 30.0, |ui| {
         ui.add_space(14.0);
         let title_w = (ui.available_width() - 66.0).max(0.0);
-        ui.allocate_ui_with_layout(vec2(title_w, 30.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.add(egui::Label::new(RichText::new(tr("Database Explorer")).font(theme::bold(13.5)).color(p.text)).truncate());
-        });
+        ui.allocate_ui_with_layout(
+            vec2(title_w, 30.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(tr("Database Explorer"))
+                            .font(theme::bold(13.5))
+                            .color(p.text),
+                    )
+                    .truncate(),
+                );
+            },
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -302,15 +389,21 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
     let sel_conn = selected_conn(state);
     let sel_state = sel_conn.and_then(|id| conns.iter().find(|c| c.cfg.id == id));
     let connected = sel_state.is_some_and(|c| matches!(c.status, ConnStatus::Connected));
-    let active = sel_state.is_some_and(|c| matches!(c.status, ConnStatus::Connected | ConnStatus::Connecting));
-    let table = state.selected_table.clone().filter(|t| Some(t.conn) == sel_conn);
+    let active = sel_state
+        .is_some_and(|c| matches!(c.status, ConnStatus::Connected | ConnStatus::Connecting));
+    let table = state
+        .selected_table
+        .clone()
+        .filter(|t| Some(t.conn) == sel_conn);
 
     theme::clipped_row(ui, 30.0, |ui| {
         ui.add_space(10.0);
         ui.spacing_mut().item_spacing.x = 1.0;
         let plus = theme::icon_button(ui, Ico::Plus, true, tr("New"));
         let sel_driver = sel_state.map(|c| c.cfg.driver);
-        let sel_db = sel_conn.and_then(|_| selected_db(state, conns)).or_else(|| sel_state.and_then(|c| c.default_db().map(str::to_string)));
+        let sel_db = sel_conn
+            .and_then(|_| selected_db(state, conns))
+            .or_else(|| sel_state.and_then(|c| c.default_db().map(str::to_string)));
         egui::Popup::menu(&plus).show(|ui| {
             if ui.button(tr("New Connection…")).clicked() {
                 actions.push(ExplorerAction::NewConnection);
@@ -318,28 +411,52 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
             }
             let sql = !sel_driver.is_some_and(|d| d.is_nosql());
             let can_db = connected && sel_driver.is_some_and(|d| d.can_create_databases());
-            if ui.add_enabled(can_db, egui::Button::new(tr("New Database…"))).clicked()
+            if ui
+                .add_enabled(can_db, egui::Button::new(tr("New Database…")))
+                .clicked()
                 && let Some(id) = sel_conn
             {
                 actions.push(ExplorerAction::NewDatabase(id));
                 ui.close();
             }
-            if ui.add_enabled(connected && sql && sel_db.is_some(), egui::Button::new(tr("New Table…"))).clicked()
+            if ui
+                .add_enabled(
+                    connected && sql && sel_db.is_some(),
+                    egui::Button::new(tr("New Table…")),
+                )
+                .clicked()
                 && let (Some(conn), Some(db)) = (sel_conn, sel_db.clone())
             {
-                let schema = table.as_ref().filter(|t| t.db == db).map(|t| t.schema.clone());
+                let schema = table
+                    .as_ref()
+                    .filter(|t| t.db == db)
+                    .map(|t| t.schema.clone());
                 actions.push(ExplorerAction::NewTable { conn, db, schema });
                 ui.close();
             }
-            if ui.add_enabled(connected && sql && sel_db.is_some(), egui::Button::new(tr("New View…"))).clicked()
+            if ui
+                .add_enabled(
+                    connected && sql && sel_db.is_some(),
+                    egui::Button::new(tr("New View…")),
+                )
+                .clicked()
                 && let (Some(conn), Some(db)) = (sel_conn, sel_db.clone())
             {
-                let schema = table.as_ref().filter(|t| t.db == db).map(|t| t.schema.clone());
+                let schema = table
+                    .as_ref()
+                    .filter(|t| t.db == db)
+                    .map(|t| t.schema.clone());
                 actions.push(ExplorerAction::NewView { conn, db, schema });
                 ui.close();
             }
         });
-        if theme::icon_button(ui, Ico::Properties, sel_conn.is_some(), tr("Data Source Properties")).clicked()
+        if theme::icon_button(
+            ui,
+            Ico::Properties,
+            sel_conn.is_some(),
+            tr("Data Source Properties"),
+        )
+        .clicked()
             && let Some(id) = sel_conn
         {
             actions.push(ExplorerAction::Edit(id));
@@ -347,7 +464,9 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
         theme::toolbar_separator(ui);
         if theme::icon_button(ui, Ico::Refresh, !conns.is_empty(), tr("Refresh")).clicked() {
             for c in conns {
-                if matches!(c.status, ConnStatus::Connected) && sel_conn.is_none_or(|id| id == c.cfg.id) {
+                if matches!(c.status, ConnStatus::Connected)
+                    && sel_conn.is_none_or(|id| id == c.cfg.id)
+                {
                     actions.push(ExplorerAction::Refresh(c.cfg.id));
                 }
             }
@@ -358,7 +477,13 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
             actions.push(ExplorerAction::Disconnect(id));
         }
         theme::toolbar_separator(ui);
-        if theme::icon_button(ui, Ico::JumpToConsole, sel_conn.is_some(), tr("Jump to Console")).clicked()
+        if theme::icon_button(
+            ui,
+            Ico::JumpToConsole,
+            sel_conn.is_some(),
+            tr("Jump to Console"),
+        )
+        .clicked()
             && let Some(id) = sel_conn
         {
             actions.push(ExplorerAction::NewConsole(id, selected_db(state, conns)));
@@ -368,7 +493,13 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
         {
             actions.push(ExplorerAction::OpenTable(t));
         }
-        if theme::icon_button(ui, Ico::Ddl, table.is_some() && connected, tr("Generate DDL")).clicked()
+        if theme::icon_button(
+            ui,
+            Ico::Ddl,
+            table.is_some() && connected,
+            tr("Generate DDL"),
+        )
+        .clicked()
             && let Some(t) = table.clone()
         {
             actions.push(ExplorerAction::GenerateDdl(t));
@@ -376,7 +507,12 @@ fn header(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState], actions: 
         theme::toolbar_separator(ui);
         let eye = theme::icon_button(ui, Ico::Eye, true, tr("Filter Tables"));
         if state.show_filter {
-            ui.painter().rect_stroke(eye.rect, 6.0, Stroke::new(1.0, p.control_border), egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(
+                eye.rect,
+                6.0,
+                Stroke::new(1.0, p.control_border),
+                egui::StrokeKind::Inside,
+            );
         }
         if eye.clicked() {
             state.show_filter = !state.show_filter;
@@ -433,7 +569,9 @@ pub fn show(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState]) -> Vec<
             if conns.is_empty() {
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new(tr("Create a data source with Alt+Insert")).color(p.muted));
+                    ui.label(
+                        RichText::new(tr("Create a data source with Alt+Insert")).color(p.muted),
+                    );
                     ui.add_space(6.0);
                     if theme::primary_button(ui, tr("New Connection…")).clicked() {
                         actions.push(ExplorerAction::NewConnection);
@@ -452,7 +590,10 @@ pub fn show(ui: &mut Ui, state: &mut ExplorerState, conns: &[ConnState]) -> Vec<
 }
 
 fn db_has_match(d: &DatabaseInfo, filter: &str) -> bool {
-    d.schemas.as_ref().is_some_and(|ss| ss.iter().any(|s| s.tables.iter().any(|t| table_matches(t, filter))))
+    d.schemas.as_ref().is_some_and(|ss| {
+        ss.iter()
+            .any(|s| s.tables.iter().any(|t| table_matches(t, filter)))
+    })
 }
 
 fn routine_matches(r: &RoutineInfo, f: &str) -> bool {
@@ -460,21 +601,38 @@ fn routine_matches(r: &RoutineInfo, f: &str) -> bool {
 }
 
 /// Routines of `schema` (all of them when the database has a single schema).
-fn schema_routines<'a>(routines: Option<&'a RoutineList>, schema: Option<&'a str>) -> impl Iterator<Item = &'a RoutineInfo> {
-    routines.and_then(|l| l.items.as_deref()).unwrap_or_default().iter().filter(move |r| schema.is_none_or(|s| r.schema == s))
+fn schema_routines<'a>(
+    routines: Option<&'a RoutineList>,
+    schema: Option<&'a str>,
+) -> impl Iterator<Item = &'a RoutineInfo> {
+    routines
+        .and_then(|l| l.items.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .filter(move |r| schema.is_none_or(|s| r.schema == s))
 }
 
 /// Filtering by name also finds routines (once they are loaded).
 fn db_routines_match(c: &ConnState, d: &DatabaseInfo, filter: &str) -> bool {
-    !filter.is_empty() && schema_routines(c.routines.get(&d.name), None).any(|r| routine_matches(r, filter))
+    !filter.is_empty()
+        && schema_routines(c.routines.get(&d.name), None).any(|r| routine_matches(r, filter))
 }
 
-fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, c: &ConnState, filter: &str) {
+fn connection_rows(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    c: &ConnState,
+    filter: &str,
+) {
     let p = pal(ui);
     let filtering = !filter.is_empty();
     let id = c.cfg.id;
     let name_match = filtering && c.cfg.name.to_lowercase().contains(filter);
-    let any_table = c.databases.iter().any(|d| db_has_match(d, filter) || db_routines_match(c, d, filter));
+    let any_table = c
+        .databases
+        .iter()
+        .any(|d| db_has_match(d, filter) || db_routines_match(c, d, filter));
     if filtering && !name_match && !any_table {
         return;
     }
@@ -508,7 +666,11 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
     let mut resp = row.resp;
     if let Some((_, color)) = environment {
         let r = resp.rect;
-        ui.painter().vline(r.left() + 1.5, egui::Rangef::new(r.top() + 4.0, r.bottom() - 4.0), egui::Stroke::new(3.0, color));
+        ui.painter().vline(
+            r.left() + 1.5,
+            egui::Rangef::new(r.top() + 4.0, r.bottom() - 4.0),
+            egui::Stroke::new(3.0, color),
+        );
     }
     if let ConnStatus::Error(e) = &c.status {
         resp = resp.on_hover_text(RichText::new(e).color(p.error));
@@ -523,41 +685,87 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
     }
     resp.context_menu(|ui| {
         let connected = matches!(c.status, ConnStatus::Connected);
-        if ui.add_enabled(!connected, egui::Button::new(tr("Connect"))).clicked() {
+        if ui
+            .add_enabled(!connected, egui::Button::new(tr("Connect")))
+            .clicked()
+        {
             actions.push(ExplorerAction::Connect(id));
             state.expanded.insert(ckey.clone());
             ui.close();
         }
-        if ui.add_enabled(!matches!(c.status, ConnStatus::Disconnected), egui::Button::new(tr("Disconnect"))).clicked() {
+        if ui
+            .add_enabled(
+                !matches!(c.status, ConnStatus::Disconnected),
+                egui::Button::new(tr("Disconnect")),
+            )
+            .clicked()
+        {
             actions.push(ExplorerAction::Disconnect(id));
             ui.close();
         }
-        if ui.add_enabled(connected, egui::Button::new(tr("Refresh"))).clicked() {
+        if ui
+            .add_enabled(connected, egui::Button::new(tr("Refresh")))
+            .clicked()
+        {
             actions.push(ExplorerAction::Refresh(id));
             ui.close();
         }
         ui.separator();
-        if c.cfg.driver.can_create_databases() && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
+        if c.cfg.driver.can_create_databases()
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("New Database…")))
+                .clicked()
+        {
             actions.push(ExplorerAction::NewDatabase(id));
             ui.close();
         }
-        if crate::db::restore::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Restore database…"))).clicked() {
-            actions.push(ExplorerAction::Restore { conn: id, db: None, source: None });
+        if crate::db::restore::supported(c.cfg.driver)
+            && ui
+                .add_enabled(
+                    connected && !c.cfg.read_only,
+                    egui::Button::new(tr("Restore database…")),
+                )
+                .clicked()
+        {
+            actions.push(ExplorerAction::Restore {
+                conn: id,
+                db: None,
+                source: None,
+            });
             ui.close();
         }
         if ui.button(tr("New Console")).clicked() {
             actions.push(ExplorerAction::NewConsole(id, None));
             ui.close();
         }
-        if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
+        if crate::db::script::supported(c.cfg.driver)
+            && ui
+                .add_enabled(
+                    connected && !c.cfg.read_only,
+                    egui::Button::new(tr("Run SQL Script…")),
+                )
+                .clicked()
+        {
             actions.push(ExplorerAction::RunScript(id, None));
             ui.close();
         }
-        if crate::db::schema_compare::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Compare Schemas…"))).clicked() {
-            actions.push(ExplorerAction::CompareSchemas { conn: id, db: None, schema: None });
+        if crate::db::schema_compare::supported(c.cfg.driver)
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("Compare Schemas…")))
+                .clicked()
+        {
+            actions.push(ExplorerAction::CompareSchemas {
+                conn: id,
+                db: None,
+                schema: None,
+            });
             ui.close();
         }
-        if crate::db::sessions::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Session Monitor…"))).clicked() {
+        if crate::db::sessions::supported(c.cfg.driver)
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("Session Monitor…")))
+                .clicked()
+        {
             actions.push(ExplorerAction::SessionMonitor(id));
             ui.close();
         }
@@ -570,11 +778,20 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             actions.push(ExplorerAction::Duplicate(id));
             ui.close();
         }
-        if ui.button(tr("Copy as URL")).on_hover_text(tr("The connection's URL for other tools, without the password")).clicked() {
+        if ui
+            .button(tr("Copy as URL"))
+            .on_hover_text(tr(
+                "The connection's URL for other tools, without the password",
+            ))
+            .clicked()
+        {
             ui.ctx().copy_text(crate::db::url::connection_url(&c.cfg));
             ui.close();
         }
-        if ui.button(RichText::new(tr("Delete…")).color(p.error)).clicked() {
+        if ui
+            .button(RichText::new(tr("Delete…")).color(p.error))
+            .clicked()
+        {
             actions.push(ExplorerAction::Delete(id));
             ui.close();
         }
@@ -588,13 +805,21 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
     for d in &c.databases {
         database_rows(ui, state, actions, c, d, filter, name_match);
     }
-    if !filtering && matches!(c.status, ConnStatus::Connected) && crate::db::users::UserModel::of(c.cfg.driver).is_some() {
+    if !filtering
+        && matches!(c.status, ConnStatus::Connected)
+        && crate::db::users::UserModel::of(c.cfg.driver).is_some()
+    {
         users_rows(ui, state, actions, c);
     }
 }
 
 /// "Users" (MySQL / MariaDB) or "Roles" (PostgreSQL) folder at server level, after the databases.
-fn users_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, c: &ConnState) {
+fn users_rows(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    c: &ConnState,
+) {
     let p = pal(ui);
     let id = c.cfg.id;
     let driver = c.cfg.driver;
@@ -625,13 +850,20 @@ fn users_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
     if (row.toggled && !open || row.resp.clicked()) && node.list.is_none() && !node.loading {
         actions.push(ExplorerAction::LoadUsers(id));
     }
-    let new_label = if roles { tr("New Role…") } else { tr("New User…") };
+    let new_label = if roles {
+        tr("New Role…")
+    } else {
+        tr("New User…")
+    };
     row.resp.context_menu(|ui| {
         if ui.button(new_label).clicked() {
             actions.push(ExplorerAction::NewUser(id));
             ui.close();
         }
-        if ui.add_enabled(!node.loading, egui::Button::new(tr("Refresh"))).clicked() {
+        if ui
+            .add_enabled(!node.loading, egui::Button::new(tr("Refresh")))
+            .clicked()
+        {
             actions.push(ExplorerAction::LoadUsers(id));
             ui.close();
         }
@@ -644,7 +876,11 @@ fn users_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
     }
     let Some(list) = &node.list else { return };
     for a in &list.accounts {
-        let label = if a.account.name.is_empty() { format!("{}{}", tr("(anonymous)"), a.account.label(driver)) } else { a.account.label(driver) };
+        let label = if a.account.name.is_empty() {
+            format!("{}{}", tr("(anonymous)"), a.account.label(driver))
+        } else {
+            a.account.label(driver)
+        };
         let akey = format!("ua:{id}:{label}");
         let row = tree_row(
             ui,
@@ -666,7 +902,14 @@ fn users_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
             actions.push(ExplorerAction::EditUser(id, a.account.clone()));
         }
         row.resp.context_menu(|ui| {
-            if ui.button(if roles { tr("Edit Role…") } else { tr("Edit User…") }).clicked() {
+            if ui
+                .button(if roles {
+                    tr("Edit Role…")
+                } else {
+                    tr("Edit User…")
+                })
+                .clicked()
+            {
                 actions.push(ExplorerAction::EditUser(id, a.account.clone()));
                 ui.close();
             }
@@ -675,7 +918,17 @@ fn users_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
                 ui.close();
             }
             ui.separator();
-            if ui.button(RichText::new(if roles { tr("Drop Role…") } else { tr("Drop User…") }).color(p.error)).clicked() {
+            if ui
+                .button(
+                    RichText::new(if roles {
+                        tr("Drop Role…")
+                    } else {
+                        tr("Drop User…")
+                    })
+                    .color(p.error),
+                )
+                .clicked()
+            {
                 actions.push(ExplorerAction::DropUser(id, a.account.clone()));
                 ui.close();
             }
@@ -715,12 +968,22 @@ fn database_rows(
     let loading = c.loading.contains(&d.name);
     let multi_db = c.cfg.driver.has_databases();
     // Show the default schema directly when it is the only one.
-    let flat = d.schemas.as_ref().is_some_and(|schemas| match schemas.as_slice() {
-        [schema] => c.cfg.driver.flat_schema() || (c.cfg.driver == Driver::MsSql && schema.name == "dbo"),
-        _ => false,
-    });
+    let flat = d
+        .schemas
+        .as_ref()
+        .is_some_and(|schemas| match schemas.as_slice() {
+            [schema] => {
+                c.cfg.driver.flat_schema()
+                    || (c.cfg.driver == Driver::MsSql && schema.name == "dbo")
+            }
+            _ => false,
+        });
     let badge = d.schemas.as_ref().map(|ss| {
-        if flat { ss.iter().map(|s| s.tables.len()).sum::<usize>().to_string() } else { ss.len().to_string() }
+        if flat {
+            ss.iter().map(|s| s.tables.len()).sum::<usize>().to_string()
+        } else {
+            ss.len().to_string()
+        }
     });
     let detail = if loading {
         Some((tr("loading…"), p.muted))
@@ -764,43 +1027,104 @@ fn database_rows(
         }
     }
     row.resp.context_menu(|ui| {
-        if !c.cfg.driver.is_nosql() && ui.add_enabled(c.status == ConnStatus::Connected, egui::Button::new(tr("Back up database…"))).clicked() {
-            actions.push(ExplorerAction::Backup(id, db_name.clone())); ui.close();
+        if !c.cfg.driver.is_nosql()
+            && ui
+                .add_enabled(
+                    c.status == ConnStatus::Connected,
+                    egui::Button::new(tr("Back up database…")),
+                )
+                .clicked()
+        {
+            actions.push(ExplorerAction::Backup(id, db_name.clone()));
+            ui.close();
         }
-        if crate::db::restore::supported(c.cfg.driver) && ui.add_enabled(c.status == ConnStatus::Connected && !c.cfg.read_only, egui::Button::new(tr("Restore database…"))).clicked() {
-            actions.push(ExplorerAction::Restore { conn: id, db: Some(db_name.clone()), source: None }); ui.close();
+        if crate::db::restore::supported(c.cfg.driver)
+            && ui
+                .add_enabled(
+                    c.status == ConnStatus::Connected && !c.cfg.read_only,
+                    egui::Button::new(tr("Restore database…")),
+                )
+                .clicked()
+        {
+            actions.push(ExplorerAction::Restore {
+                conn: id,
+                db: Some(db_name.clone()),
+                source: None,
+            });
+            ui.close();
         }
         if ui.button(tr("New Console")).clicked() {
             actions.push(ExplorerAction::NewConsole(id, Some(db_name.clone())));
             ui.close();
         }
         let connected = matches!(c.status, ConnStatus::Connected);
-        if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
+        if crate::db::script::supported(c.cfg.driver)
+            && ui
+                .add_enabled(
+                    connected && !c.cfg.read_only,
+                    egui::Button::new(tr("Run SQL Script…")),
+                )
+                .clicked()
+        {
             actions.push(ExplorerAction::RunScript(id, Some(db_name.clone())));
             ui.close();
         }
-        if crate::db::schema_compare::supported(c.cfg.driver) && ui.add_enabled(connected, egui::Button::new(tr("Compare Schemas…"))).clicked() {
-            actions.push(ExplorerAction::CompareSchemas { conn: id, db: Some(db_name.clone()), schema: None });
+        if crate::db::schema_compare::supported(c.cfg.driver)
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("Compare Schemas…")))
+                .clicked()
+        {
+            actions.push(ExplorerAction::CompareSchemas {
+                conn: id,
+                db: Some(db_name.clone()),
+                schema: None,
+            });
             ui.close();
         }
         let sql = !c.cfg.driver.is_nosql();
-        if sql && ui.add_enabled(connected, egui::Button::new(tr("New Table…"))).clicked() {
-            actions.push(ExplorerAction::NewTable { conn: id, db: db_name.clone(), schema: None });
+        if sql
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("New Table…")))
+                .clicked()
+        {
+            actions.push(ExplorerAction::NewTable {
+                conn: id,
+                db: db_name.clone(),
+                schema: None,
+            });
             ui.close();
         }
-        if sql && ui.add_enabled(connected, egui::Button::new(tr("New View…"))).clicked() {
-            actions.push(ExplorerAction::NewView { conn: id, db: db_name.clone(), schema: None });
+        if sql
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("New View…")))
+                .clicked()
+        {
+            actions.push(ExplorerAction::NewView {
+                conn: id,
+                db: db_name.clone(),
+                schema: None,
+            });
             ui.close();
         }
         if routines.is_some() {
             new_routine_buttons(ui, actions, id, &db_name, None, connected);
         }
-        if c.cfg.driver.can_create_databases() && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
+        if c.cfg.driver.can_create_databases()
+            && ui
+                .add_enabled(connected, egui::Button::new(tr("New Database…")))
+                .clicked()
+        {
             actions.push(ExplorerAction::NewDatabase(id));
             ui.close();
         }
         ui.separator();
-        if ui.add_enabled(connected && !loading, egui::Button::new(tr("Reload Schema"))).clicked() {
+        if ui
+            .add_enabled(
+                connected && !loading,
+                egui::Button::new(tr("Reload Schema")),
+            )
+            .clicked()
+        {
             actions.push(ExplorerAction::LoadDatabase(id, db_name.clone()));
             ui.close();
         }
@@ -813,7 +1137,11 @@ fn database_rows(
             // The connection's default database cannot be dropped from its own session.
             let btn = egui::Button::new(RichText::new(tr("Drop…")).color(p.error));
             let resp = ui.add_enabled(connected && !d.current, btn);
-            let resp = if d.current { resp.on_disabled_hover_text(tr("It is the connection's default database")) } else { resp };
+            let resp = if d.current {
+                resp.on_disabled_hover_text(tr("It is the connection's default database"))
+            } else {
+                resp
+            };
             if resp.clicked() {
                 actions.push(ExplorerAction::DropDatabase(id, db_name.clone()));
                 ui.close();
@@ -838,16 +1166,70 @@ fn database_rows(
     };
     if flat {
         if let Some(s) = schemas.first() {
-            object_groups(ui, state, actions, id, &d.name, s, routines, filter, 2, crate::ui::table_menu::TableContext { driver: c.cfg.driver, connected: c.status == ConnStatus::Connected, read_only: c.cfg.read_only });
+            object_groups(
+                ui,
+                state,
+                actions,
+                id,
+                &d.name,
+                s,
+                routines,
+                filter,
+                2,
+                crate::ui::table_menu::TableContext {
+                    driver: c.cfg.driver,
+                    connected: c.status == ConnStatus::Connected,
+                    read_only: c.cfg.read_only,
+                },
+            );
         }
-        if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2, crate::db::restore::supported(c.cfg.driver) && c.status == ConnStatus::Connected && !c.cfg.read_only); }
+        if !c.cfg.driver.is_nosql() {
+            backup_rows(
+                ui,
+                state,
+                actions,
+                id,
+                &d.name,
+                2,
+                crate::db::restore::supported(c.cfg.driver)
+                    && c.status == ConnStatus::Connected
+                    && !c.cfg.read_only,
+            );
+        }
         return;
     }
     for s in schemas {
-        schema_rows(ui, state, actions, id, &d.name, schemas, s, routines, filter, name_match, crate::ui::table_menu::TableContext { driver: c.cfg.driver, connected: c.status == ConnStatus::Connected, read_only: c.cfg.read_only });
+        schema_rows(
+            ui,
+            state,
+            actions,
+            id,
+            &d.name,
+            schemas,
+            s,
+            routines,
+            filter,
+            name_match,
+            crate::ui::table_menu::TableContext {
+                driver: c.cfg.driver,
+                connected: c.status == ConnStatus::Connected,
+                read_only: c.cfg.read_only,
+            },
+        );
     }
-    if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2, crate::db::restore::supported(c.cfg.driver) && c.status == ConnStatus::Connected && !c.cfg.read_only); }
-
+    if !c.cfg.driver.is_nosql() {
+        backup_rows(
+            ui,
+            state,
+            actions,
+            id,
+            &d.name,
+            2,
+            crate::db::restore::supported(c.cfg.driver)
+                && c.status == ConnStatus::Connected
+                && !c.cfg.read_only,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -867,7 +1249,8 @@ fn schema_rows(
     let filtering = !filter.is_empty();
     let skey = format!("s:{conn}:{db}:{}", s.name);
     let s_any = s.tables.iter().any(|t| table_matches(t, filter))
-        || (filtering && schema_routines(routines, Some(&s.name)).any(|r| routine_matches(r, filter)));
+        || (filtering
+            && schema_routines(routines, Some(&s.name)).any(|r| routine_matches(r, filter)));
     if filtering && !s_any && !name_match {
         return;
     }
@@ -899,18 +1282,37 @@ fn schema_rows(
     }
     row.resp.context_menu(|ui| {
         if ui.button(tr("New Table…")).clicked() {
-            actions.push(ExplorerAction::NewTable { conn, db: db.to_string(), schema: Some(s.name.clone()) });
+            actions.push(ExplorerAction::NewTable {
+                conn,
+                db: db.to_string(),
+                schema: Some(s.name.clone()),
+            });
             ui.close();
         }
         if ui.button(tr("New View…")).clicked() {
-            actions.push(ExplorerAction::NewView { conn, db: db.to_string(), schema: Some(s.name.clone()) });
+            actions.push(ExplorerAction::NewView {
+                conn,
+                db: db.to_string(),
+                schema: Some(s.name.clone()),
+            });
             ui.close();
         }
         if routines.is_some() {
             new_routine_buttons(ui, actions, conn, db, Some(&s.name), true);
         }
-        if crate::db::schema_compare::supported(table_context.driver) && ui.add_enabled(table_context.connected, egui::Button::new(tr("Compare Schemas…"))).clicked() {
-            actions.push(ExplorerAction::CompareSchemas { conn, db: Some(db.to_string()), schema: Some(s.name.clone()) });
+        if crate::db::schema_compare::supported(table_context.driver)
+            && ui
+                .add_enabled(
+                    table_context.connected,
+                    egui::Button::new(tr("Compare Schemas…")),
+                )
+                .clicked()
+        {
+            actions.push(ExplorerAction::CompareSchemas {
+                conn,
+                db: Some(db.to_string()),
+                schema: Some(s.name.clone()),
+            });
             ui.close();
         }
         if ui.button(tr("Copy Name")).clicked() {
@@ -922,31 +1324,119 @@ fn schema_rows(
         toggle(state, &skey, s_open);
     }
     if s_open {
-        object_groups(ui, state, actions, conn, db, s, routines, filter, 3, table_context);
+        object_groups(
+            ui,
+            state,
+            actions,
+            conn,
+            db,
+            s,
+            routines,
+            filter,
+            3,
+            table_context,
+        );
     }
 }
 
-fn backup_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, conn: ConnId, db: &str, depth: usize, restore: bool) {
-    let records: Vec<_> = state.backups.iter().filter(|r| r.conn == conn && r.db == db).cloned().collect();
+fn backup_rows(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    conn: ConnId,
+    db: &str,
+    depth: usize,
+    restore: bool,
+) {
+    let records: Vec<_> = state
+        .backups
+        .iter()
+        .filter(|r| r.conn == conn && r.db == db)
+        .cloned()
+        .collect();
     let key = format!("backups:{conn}:{db}");
     let open = state.expanded.contains(&key);
     let count = records.len().to_string();
-    let row = tree_row(ui, state, RowSpec { key: &key, depth, expandable: true, expanded: open, icon: Ico::History, label: tr("Backups"), badge: None, detail: Some((&count, pal(ui).muted)), status: None, label_color: None });
-    if row.toggled { toggle(state, &key, open); }
+    let row = tree_row(
+        ui,
+        state,
+        RowSpec {
+            key: &key,
+            depth,
+            expandable: true,
+            expanded: open,
+            icon: Ico::History,
+            label: tr("Backups"),
+            badge: None,
+            detail: Some((&count, pal(ui).muted)),
+            status: None,
+            label_color: None,
+        },
+    );
+    if row.toggled {
+        toggle(state, &key, open);
+    }
     row.resp.context_menu(|ui| {
-        if ui.button(tr("Back up database…")).clicked() { actions.push(ExplorerAction::Backup(conn, db.into())); ui.close(); }
-        if ui.add_enabled(restore, egui::Button::new(tr("Restore database…"))).clicked() { actions.push(ExplorerAction::Restore { conn, db: Some(db.into()), source: None }); ui.close(); }
+        if ui.button(tr("Back up database…")).clicked() {
+            actions.push(ExplorerAction::Backup(conn, db.into()));
+            ui.close();
+        }
+        if ui
+            .add_enabled(restore, egui::Button::new(tr("Restore database…")))
+            .clicked()
+        {
+            actions.push(ExplorerAction::Restore {
+                conn,
+                db: Some(db.into()),
+                source: None,
+            });
+            ui.close();
+        }
     });
     if open {
-        if records.is_empty() { ui.indent(&key, |ui| { ui.label(tr("No backups yet")); }); }
+        if records.is_empty() {
+            ui.indent(&key, |ui| {
+                ui.label(tr("No backups yet"));
+            });
+        }
         for (index, record) in records.iter().enumerate().rev() {
             let label = format!("{} · {}", record.created, record.mode.label());
-            let row = tree_row(ui, state, RowSpec { key: &format!("{key}:{index}"), depth: depth + 1, expandable: false, expanded: false, icon: Ico::History, label: &label, badge: None, detail: None, status: None, label_color: None });
+            let row = tree_row(
+                ui,
+                state,
+                RowSpec {
+                    key: &format!("{key}:{index}"),
+                    depth: depth + 1,
+                    expandable: false,
+                    expanded: false,
+                    icon: Ico::History,
+                    label: &label,
+                    badge: None,
+                    detail: None,
+                    status: None,
+                    label_color: None,
+                },
+            );
             let response = row.resp.on_hover_text(&record.destination);
-            if response.double_clicked() { actions.push(ExplorerAction::Backup(conn, db.into())); }
+            if response.double_clicked() {
+                actions.push(ExplorerAction::Backup(conn, db.into()));
+            }
             response.context_menu(|ui| {
-                if ui.add_enabled(restore, egui::Button::new(tr("Restore from this backup…"))).clicked() { actions.push(ExplorerAction::Restore { conn, db: Some(db.into()), source: Some(record.destination.clone()) }); ui.close(); }
-                if ui.button(tr("Copy path")).clicked() { ui.ctx().copy_text(record.destination.clone()); ui.close(); }
+                if ui
+                    .add_enabled(restore, egui::Button::new(tr("Restore from this backup…")))
+                    .clicked()
+                {
+                    actions.push(ExplorerAction::Restore {
+                        conn,
+                        db: Some(db.into()),
+                        source: Some(record.destination.clone()),
+                    });
+                    ui.close();
+                }
+                if ui.button(tr("Copy path")).clicked() {
+                    ui.ctx().copy_text(record.destination.clone());
+                    ui.close();
+                }
             });
         }
     }
@@ -975,14 +1465,27 @@ fn object_groups(
     let sql = !driver.is_nosql();
     let groups: &[(ObjectKind, &str, &str)] = match driver {
         Driver::Redis => &[(ObjectKind::Table, tr("key groups"), "t")],
-        Driver::MongoDb => &[(ObjectKind::Table, tr("collections"), "t"), (ObjectKind::View, tr("views"), "v")],
+        Driver::MongoDb => &[
+            (ObjectKind::Table, tr("collections"), "t"),
+            (ObjectKind::View, tr("views"), "v"),
+        ],
         Driver::InfluxDb => &[(ObjectKind::Table, tr("measurements"), "t")],
-        Driver::Kusto => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Materialized views"), "v")],
+        Driver::Kusto => &[
+            (ObjectKind::Table, tr("Tables"), "t"),
+            (ObjectKind::View, tr("Materialized views"), "v"),
+        ],
         Driver::Prometheus => &[(ObjectKind::Table, tr("metrics"), "t")],
-        _ => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Views"), "v")],
+        _ => &[
+            (ObjectKind::Table, tr("Tables"), "t"),
+            (ObjectKind::View, tr("Views"), "v"),
+        ],
     };
     for &(kind, label, gk) in groups {
-        let tables: Vec<&TableInfo> = s.tables.iter().filter(|t| t.kind == kind && table_matches(t, filter)).collect();
+        let tables: Vec<&TableInfo> = s
+            .tables
+            .iter()
+            .filter(|t| t.kind == kind && table_matches(t, filter))
+            .collect();
         if filtering && tables.is_empty() {
             continue;
         }
@@ -1017,14 +1520,22 @@ fn object_groups(
         if kind == ObjectKind::Table && sql {
             row.resp.context_menu(|ui| {
                 if ui.button(tr("New Table…")).clicked() {
-                    actions.push(ExplorerAction::NewTable { conn, db: db.to_string(), schema: Some(s.name.clone()) });
+                    actions.push(ExplorerAction::NewTable {
+                        conn,
+                        db: db.to_string(),
+                        schema: Some(s.name.clone()),
+                    });
                     ui.close();
                 }
             });
         } else if sql {
             row.resp.context_menu(|ui| {
                 if ui.button(tr("New View…")).clicked() {
-                    actions.push(ExplorerAction::NewView { conn, db: db.to_string(), schema: Some(s.name.clone()) });
+                    actions.push(ExplorerAction::NewView {
+                        conn,
+                        db: db.to_string(),
+                        schema: Some(s.name.clone()),
+                    });
                     ui.close();
                 }
             });
@@ -1036,21 +1547,43 @@ fn object_groups(
             continue;
         }
         for t in tables {
-            let tref = TableRef { conn, db: db.to_string(), schema: s.name.clone(), table: t.name.clone() };
+            let tref = TableRef {
+                conn,
+                db: db.to_string(),
+                schema: s.name.clone(),
+                table: t.name.clone(),
+            };
             table_rows(ui, state, actions, tref, t, depth + 1, table_context);
         }
     }
     if let Some(list) = routines {
         for kind in [RoutineKind::Procedure, RoutineKind::Function] {
-            routine_group(ui, state, actions, conn, db, &s.name, list, kind, filter, depth);
+            routine_group(
+                ui, state, actions, conn, db, &s.name, list, kind, filter, depth,
+            );
         }
     }
 }
 
-fn new_routine_buttons(ui: &mut Ui, actions: &mut Vec<ExplorerAction>, conn: ConnId, db: &str, schema: Option<&str>, enabled: bool) {
-    for (kind, label) in [(RoutineKind::Procedure, tr("New Procedure…")), (RoutineKind::Function, tr("New Function…"))] {
+fn new_routine_buttons(
+    ui: &mut Ui,
+    actions: &mut Vec<ExplorerAction>,
+    conn: ConnId,
+    db: &str,
+    schema: Option<&str>,
+    enabled: bool,
+) {
+    for (kind, label) in [
+        (RoutineKind::Procedure, tr("New Procedure…")),
+        (RoutineKind::Function, tr("New Function…")),
+    ] {
         if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-            actions.push(ExplorerAction::NewRoutine { conn, db: db.to_string(), schema: schema.map(str::to_string), kind });
+            actions.push(ExplorerAction::NewRoutine {
+                conn,
+                db: db.to_string(),
+                schema: schema.map(str::to_string),
+                kind,
+            });
             ui.close();
         }
     }
@@ -1072,7 +1605,9 @@ fn routine_group(
 ) {
     let p = pal(ui);
     let filtering = !filter.is_empty();
-    let items: Vec<&RoutineInfo> = schema_routines(Some(list), Some(schema)).filter(|r| r.kind == kind && routine_matches(r, filter)).collect();
+    let items: Vec<&RoutineInfo> = schema_routines(Some(list), Some(schema))
+        .filter(|r| r.kind == kind && routine_matches(r, filter))
+        .collect();
     if filtering && items.is_empty() {
         return;
     }
@@ -1082,22 +1617,54 @@ fn routine_group(
     };
     let gkey = format!("g:{conn}:{db}:{schema}:{gk}");
     let open = state.expanded.contains(&gkey) || filtering;
-    let n = if list.items.is_some() { items.len().to_string() } else if list.loading { tr("loading…").to_string() } else { String::new() };
+    let n = if list.items.is_some() {
+        items.len().to_string()
+    } else if list.loading {
+        tr("loading…").to_string()
+    } else {
+        String::new()
+    };
     let row = tree_row(
         ui,
         state,
-        RowSpec { key: &gkey, depth, expandable: true, expanded: open, icon: Ico::Folder, label, badge: None, detail: Some((&n, p.muted)), status: None, label_color: None },
+        RowSpec {
+            key: &gkey,
+            depth,
+            expandable: true,
+            expanded: open,
+            icon: Ico::Folder,
+            label,
+            badge: None,
+            detail: Some((&n, p.muted)),
+            status: None,
+            label_color: None,
+        },
     );
     if row.resp.clicked() {
         state.selected_table = None;
-        actions.push(ExplorerAction::BrowseRoutines(ObjectScope {
-            conn, db: db.to_string(), schema: Some(schema.to_string()), kind: None,
-        }, kind));
+        actions.push(ExplorerAction::BrowseRoutines(
+            ObjectScope {
+                conn,
+                db: db.to_string(),
+                schema: Some(schema.to_string()),
+                kind: None,
+            },
+            kind,
+        ));
     }
     row.resp.context_menu(|ui| {
-        let text = if kind == RoutineKind::Procedure { tr("New Procedure…") } else { tr("New Function…") };
+        let text = if kind == RoutineKind::Procedure {
+            tr("New Procedure…")
+        } else {
+            tr("New Function…")
+        };
         if ui.button(text).clicked() {
-            actions.push(ExplorerAction::NewRoutine { conn, db: db.to_string(), schema: Some(schema.to_string()), kind });
+            actions.push(ExplorerAction::NewRoutine {
+                conn,
+                db: db.to_string(),
+                schema: Some(schema.to_string()),
+                kind,
+            });
             ui.close();
         }
     });
@@ -1111,16 +1678,33 @@ fn routine_group(
         error_line(ui, depth + 1, e);
     }
     for r in items {
-        routine_row(ui, state, actions, RoutineRef::new(conn, db, r), r, depth + 1);
+        routine_row(
+            ui,
+            state,
+            actions,
+            RoutineRef::new(conn, db, r),
+            r,
+            depth + 1,
+        );
     }
 }
 
 /// Tree key of a routine.
 pub fn routine_key(r: &RoutineRef) -> String {
-    format!("r:{}:{}:{}:{}({}):{:?}", r.conn, r.db, r.schema, r.name, r.signature, r.kind)
+    format!(
+        "r:{}:{}:{}:{}({}):{:?}",
+        r.conn, r.db, r.schema, r.name, r.signature, r.kind
+    )
 }
 
-fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, rref: RoutineRef, r: &RoutineInfo, depth: usize) {
+fn routine_row(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    rref: RoutineRef,
+    r: &RoutineInfo,
+    depth: usize,
+) {
     let p = pal(ui);
     let key = routine_key(&rref);
     let mut detail: String = r.arguments.chars().take(40).collect();
@@ -1136,7 +1720,11 @@ fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
             depth,
             expandable: false,
             expanded: false,
-            icon: if r.kind == RoutineKind::Procedure { Ico::Procedure } else { Ico::Function },
+            icon: if r.kind == RoutineKind::Procedure {
+                Ico::Procedure
+            } else {
+                Ico::Function
+            },
             label: &r.name,
             badge: None,
             detail: Some((&detail, p.muted)),
@@ -1166,7 +1754,11 @@ fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
             actions.push(ExplorerAction::ExecuteRoutine(rref.clone()));
             ui.close();
         }
-        let edit = if r.kind == RoutineKind::Procedure { tr("Edit Procedure…") } else { tr("Edit Function…") };
+        let edit = if r.kind == RoutineKind::Procedure {
+            tr("Edit Procedure…")
+        } else {
+            tr("Edit Function…")
+        };
         if ui.button(edit).clicked() {
             actions.push(ExplorerAction::EditRoutine(rref.clone()));
             ui.close();
@@ -1182,7 +1774,10 @@ fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
         ui.separator();
         new_routine_buttons(ui, actions, rref.conn, &rref.db, Some(&rref.schema), true);
         ui.separator();
-        if ui.button(RichText::new(tr("Drop…")).color(p.error)).clicked() {
+        if ui
+            .button(RichText::new(tr("Drop…")).color(p.error))
+            .clicked()
+        {
             actions.push(ExplorerAction::DropRoutine(rref.clone()));
             ui.close();
         }
@@ -1190,11 +1785,24 @@ fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
 }
 
 #[allow(clippy::too_many_arguments)]
-fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, tref: TableRef, t: &TableInfo, depth: usize, table_context: crate::ui::table_menu::TableContext) {
+fn table_rows(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    tref: TableRef,
+    t: &TableInfo,
+    depth: usize,
+    table_context: crate::ui::table_menu::TableContext,
+) {
     let tkey = table_key(&tref);
     let open = state.expanded.contains(&tkey);
-    let icon = if t.kind == ObjectKind::Table { Ico::Table } else { Ico::View };
-    let has_structure = t.kind == ObjectKind::Table && Group::ALL.iter().any(|g| g.supported(table_context.driver));
+    let icon = if t.kind == ObjectKind::Table {
+        Ico::Table
+    } else {
+        Ico::View
+    };
+    let has_structure =
+        t.kind == ObjectKind::Table && Group::ALL.iter().any(|g| g.supported(table_context.driver));
     let row = tree_row(
         ui,
         state,
@@ -1221,7 +1829,13 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
         toggle(state, &tkey, open);
     }
     row.resp.context_menu(|ui| {
-        crate::ui::table_menu::show(ui, std::slice::from_ref(&tref), Some(t.kind), table_context, actions);
+        crate::ui::table_menu::show(
+            ui,
+            std::slice::from_ref(&tref),
+            Some(t.kind),
+            table_context,
+            actions,
+        );
     });
     if !open {
         return;
@@ -1232,13 +1846,32 @@ fn table_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explorer
         table_structure::columns(ui, state, actions, &tref, t, depth + 1);
     }
     if has_structure {
-        for group in Group::ALL.into_iter().filter(|g| g.supported(table_context.driver)) {
-            table_structure::show(ui, state, actions, &tref, group, depth + 1, table_context.connected);
+        for group in Group::ALL
+            .into_iter()
+            .filter(|g| g.supported(table_context.driver))
+        {
+            table_structure::show(
+                ui,
+                state,
+                actions,
+                &tref,
+                group,
+                depth + 1,
+                table_context.connected,
+            );
         }
     }
 }
 
-fn column_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, table: &TableRef, tkey: &str, columns: &[crate::db::ColumnInfo], depth: usize) {
+fn column_rows(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    table: &TableRef,
+    tkey: &str,
+    columns: &[crate::db::ColumnInfo],
+    depth: usize,
+) {
     let p = pal(ui);
     for col in columns {
         let ckey = format!("{tkey}:{}", col.name);
@@ -1254,7 +1887,11 @@ fn column_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
                 depth,
                 expandable: false,
                 expanded: false,
-                icon: if col.primary_key { Ico::Key } else { Ico::Column },
+                icon: if col.primary_key {
+                    Ico::Key
+                } else {
+                    Ico::Column
+                },
                 label: &col.name,
                 badge: None,
                 detail: Some((&detail, p.muted)),
@@ -1264,7 +1901,11 @@ fn column_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
         );
         if row.resp.clicked() {
             state.selected_table = Some(table.clone());
-            actions.push(ExplorerAction::NavigateColumn { table: table.clone(), columns: vec![col.name.clone()], open: row.resp.double_clicked() });
+            actions.push(ExplorerAction::NavigateColumn {
+                table: table.clone(),
+                columns: vec![col.name.clone()],
+                open: row.resp.double_clicked(),
+            });
         }
         row.resp.context_menu(|ui| {
             if ui.button(tr("Copy Name")).clicked() {
@@ -1276,12 +1917,22 @@ fn column_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Explore
 }
 
 pub fn columns_key(table: &TableRef) -> String {
-    format!("cols:{}:{}:{}:{}", table.conn, table.db, table.schema, table.table)
+    format!(
+        "cols:{}:{}:{}:{}",
+        table.conn, table.db, table.schema, table.table
+    )
 }
 
 /// Tree key of a table's keys, indexes or foreign keys folder.
 pub fn table_group_key(table: &TableRef, group: Group) -> String {
-    format!("{}:{}:{}:{}:{}", group.prefix(), table.conn, table.db, table.schema, table.table)
+    format!(
+        "{}:{}:{}:{}:{}",
+        group.prefix(),
+        table.conn,
+        table.db,
+        table.schema,
+        table.table
+    )
 }
 
 /// Tree key of a table (to expand or select it from outside).
@@ -1294,7 +1945,6 @@ pub fn db_key(conn: ConnId, db: &str) -> String {
     format!("d:{conn}:{db}")
 }
 
-
 fn conn_of_key(key: &str) -> Option<ConnId> {
     let rest = key.split_once(':')?.1;
     rest.split(':').next()?.parse().ok()
@@ -1306,7 +1956,14 @@ fn connection_summary(c: &ConnState) -> String {
         crate::db::Driver::Sqlite => format!("SQLite: {}", cfg.file_path),
         crate::db::Driver::DuckDb if cfg.file_path.trim().is_empty() => "DuckDB: :memory:".into(),
         crate::db::Driver::DuckDb => format!("DuckDB: {}", cfg.file_path),
-        d => format!("{}: {}@{}:{}/{}", d.label(), cfg.user, cfg.host, cfg.port, cfg.database),
+        d => format!(
+            "{}: {}@{}:{}/{}",
+            d.label(),
+            cfg.user,
+            cfg.host,
+            cfg.port,
+            cfg.database
+        ),
     }
 }
 
@@ -1320,14 +1977,32 @@ mod tests {
     fn single_dbo_schema_shows_object_folders_directly() {
         let mut connection = ConnState::new(ConnectionConfig::new(1, Driver::MsSql));
         connection.status = ConnStatus::Connected;
-        connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: Some(vec![SchemaInfo { name: "dbo".into(), tables: Vec::new() }]) });
+        connection.databases.push(DatabaseInfo {
+            name: "shop".into(),
+            current: true,
+            schemas: Some(vec![SchemaInfo {
+                name: "dbo".into(),
+                tables: Vec::new(),
+            }]),
+        });
         let mut explorer = ExplorerState::default();
-        for key in ["c:1", "d:1:shop"] { explorer.expanded.insert(key.into()); }
+        for key in ["c:1", "d:1:shop"] {
+            explorer.expanded.insert(key.into());
+        }
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut ExplorerState| {
-            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
-            show(ui, state, std::slice::from_ref(&connection));
-        }, explorer);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(400.0, 600.0))
+            .build_ui_state(
+                move |ui, state: &mut ExplorerState| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        theme::apply(ui.ctx(), true);
+                        return;
+                    }
+                    show(ui, state, std::slice::from_ref(&connection));
+                },
+                explorer,
+            );
         h.run_steps(3);
         assert!(h.query_by_label("Tables").is_some());
         assert!(h.query_by_label("dbo").is_none());
@@ -1337,24 +2012,50 @@ mod tests {
     fn database_folders_start_collapsed_and_backup_targets_the_context_database() {
         let mut connection = ConnState::new(ConnectionConfig::new(1, Driver::MariaDb));
         connection.status = ConnStatus::Connected;
-        connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: Some(vec![SchemaInfo { name: "shop".into(), tables: vec![TableInfo { name: "orders".into(), kind: ObjectKind::Table, columns: Vec::new() }] }]) });
-        let mut explorer = ExplorerState::default(); explorer.expanded.insert("c:1".into());
+        connection.databases.push(DatabaseInfo {
+            name: "shop".into(),
+            current: true,
+            schemas: Some(vec![SchemaInfo {
+                name: "shop".into(),
+                tables: vec![TableInfo {
+                    name: "orders".into(),
+                    kind: ObjectKind::Table,
+                    columns: Vec::new(),
+                }],
+            }]),
+        });
+        let mut explorer = ExplorerState::default();
+        explorer.expanded.insert("c:1".into());
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut (ExplorerState, Option<String>)| {
-            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
-            for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
-                if let ExplorerAction::Backup(1, db) = action { state.1 = Some(db); }
-            }
-        }, (explorer, None));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(400.0, 600.0))
+            .build_ui_state(
+                move |ui, state: &mut (ExplorerState, Option<String>)| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        theme::apply(ui.ctx(), true);
+                        return;
+                    }
+                    for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
+                        if let ExplorerAction::Backup(1, db) = action {
+                            state.1 = Some(db);
+                        }
+                    }
+                },
+                (explorer, None),
+            );
         h.run_steps(3);
         assert!(h.query_by_label("Backups").is_none());
-        h.state_mut().0.expanded.insert("d:1:shop".into()); h.run_steps(2);
+        h.state_mut().0.expanded.insert("d:1:shop".into());
+        h.run_steps(2);
         assert!(h.query_by_label("Tables").is_some());
         assert!(h.query_by_label("Views").is_some());
         assert!(h.query_by_label("Backups").is_some());
         assert!(h.query_by_label("orders").is_none());
-        h.get_by_label("shop").click_secondary(); h.run_steps(2);
-        h.get_by_label("Back up database…").click(); h.run_steps(2);
+        h.get_by_label("shop").click_secondary();
+        h.run_steps(2);
+        h.get_by_label("Back up database…").click();
+        h.run_steps(2);
         assert_eq!(h.state().1.as_deref(), Some("shop"));
     }
 
@@ -1366,19 +2067,46 @@ mod tests {
             cfg.read_only = read_only;
             let mut connection = ConnState::new(cfg);
             connection.status = ConnStatus::Connected;
-            connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: None });
-            let mut explorer = ExplorerState::default(); explorer.expanded.insert("c:1".into());
+            connection.databases.push(DatabaseInfo {
+                name: "shop".into(),
+                current: true,
+                schemas: None,
+            });
+            let mut explorer = ExplorerState::default();
+            explorer.expanded.insert("c:1".into());
             let mut first = true;
-            let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut (ExplorerState, Requested)| {
-                if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
-                for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
-                    if let ExplorerAction::Restore { conn: 1, db, source } = action { state.1.push((db, source)); }
-                }
-            }, (explorer, Vec::new()));
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(vec2(400.0, 600.0))
+                .build_ui_state(
+                    move |ui, state: &mut (ExplorerState, Requested)| {
+                        if std::mem::take(&mut first) {
+                            theme::install_fonts(ui.ctx());
+                            theme::apply(ui.ctx(), true);
+                            return;
+                        }
+                        for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
+                            if let ExplorerAction::Restore {
+                                conn: 1,
+                                db,
+                                source,
+                            } = action
+                            {
+                                state.1.push((db, source));
+                            }
+                        }
+                    },
+                    (explorer, Vec::new()),
+                );
             h.run_steps(3);
-            h.get_by_label("shop").click_secondary(); h.run_steps(2);
-            h.get_by_label("Restore database…").click(); h.run_steps(2);
-            let expected = if read_only { Vec::new() } else { vec![(Some("shop".to_string()), None)] };
+            h.get_by_label("shop").click_secondary();
+            h.run_steps(2);
+            h.get_by_label("Restore database…").click();
+            h.run_steps(2);
+            let expected = if read_only {
+                Vec::new()
+            } else {
+                vec![(Some("shop".to_string()), None)]
+            };
             assert_eq!(h.state().1, expected);
         }
     }
@@ -1387,45 +2115,99 @@ mod tests {
     fn routine_folders_list_routines_and_offer_their_actions() {
         let mut connection = ConnState::new(ConnectionConfig::new(1, Driver::Postgres));
         connection.status = ConnStatus::Connected;
-        connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: Some(vec![SchemaInfo { name: "public".into(), tables: Vec::new() }]) });
-        let routine = |name: &str, kind| RoutineInfo { schema: "public".into(), name: name.into(), kind, signature: "a integer".into(), arguments: "a integer".into(), valid: true, ..Default::default() };
+        connection.databases.push(DatabaseInfo {
+            name: "shop".into(),
+            current: true,
+            schemas: Some(vec![SchemaInfo {
+                name: "public".into(),
+                tables: Vec::new(),
+            }]),
+        });
+        let routine = |name: &str, kind| RoutineInfo {
+            schema: "public".into(),
+            name: name.into(),
+            kind,
+            signature: "a integer".into(),
+            arguments: "a integer".into(),
+            valid: true,
+            ..Default::default()
+        };
         connection.routines.insert(
             "shop".into(),
-            RoutineList { items: Some(vec![routine("add_tax", RoutineKind::Function), routine("archive_orders", RoutineKind::Procedure)]), ..Default::default() },
+            RoutineList {
+                items: Some(vec![
+                    routine("add_tax", RoutineKind::Function),
+                    routine("archive_orders", RoutineKind::Procedure),
+                ]),
+                ..Default::default()
+            },
         );
         let mut explorer = ExplorerState::default();
         for key in ["c:1", "d:1:shop", "s:1:shop:public"] {
             explorer.expanded.insert(key.into());
         }
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut (ExplorerState, Vec<String>)| {
-            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
-            for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
-                let text = match action {
-                    ExplorerAction::ExecuteRoutine(r) => format!("execute {}({})", r.name, r.signature),
-                    ExplorerAction::EditRoutine(r) => format!("edit {}", r.name),
-                    ExplorerAction::DropRoutine(r) => format!("drop {:?} {}", r.kind, r.name),
-                    ExplorerAction::NewRoutine { schema, kind, .. } => format!("new {kind:?} in {schema:?}"),
-                    ExplorerAction::BrowseRoutines(scope, kind) => format!("browse {kind:?} in {:?}", scope.schema),
-                    _ => continue,
-                };
-                state.1.push(text);
-            }
-        }, (explorer, Vec::new()));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(400.0, 600.0))
+            .build_ui_state(
+                move |ui, state: &mut (ExplorerState, Vec<String>)| {
+                    if std::mem::take(&mut first) {
+                        theme::install_fonts(ui.ctx());
+                        theme::apply(ui.ctx(), true);
+                        return;
+                    }
+                    for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
+                        let text = match action {
+                            ExplorerAction::ExecuteRoutine(r) => {
+                                format!("execute {}({})", r.name, r.signature)
+                            }
+                            ExplorerAction::EditRoutine(r) => format!("edit {}", r.name),
+                            ExplorerAction::DropRoutine(r) => {
+                                format!("drop {:?} {}", r.kind, r.name)
+                            }
+                            ExplorerAction::NewRoutine { schema, kind, .. } => {
+                                format!("new {kind:?} in {schema:?}")
+                            }
+                            ExplorerAction::BrowseRoutines(scope, kind) => {
+                                format!("browse {kind:?} in {:?}", scope.schema)
+                            }
+                            _ => continue,
+                        };
+                        state.1.push(text);
+                    }
+                },
+                (explorer, Vec::new()),
+            );
         h.run_steps(3);
-        assert!(h.query_by_label("Procedures").is_some() && h.query_by_label("Functions").is_some());
-        h.get_by_label("Procedures").click(); h.run_steps(2);
-        h.get_by_label("Functions").click(); h.run_steps(2);
-        assert_eq!(h.state().1, ["browse Procedure in Some(\"public\")", "browse Function in Some(\"public\")"]);
+        assert!(
+            h.query_by_label("Procedures").is_some() && h.query_by_label("Functions").is_some()
+        );
+        h.get_by_label("Procedures").click();
+        h.run_steps(2);
+        h.get_by_label("Functions").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().1,
+            [
+                "browse Procedure in Some(\"public\")",
+                "browse Function in Some(\"public\")"
+            ]
+        );
         h.state_mut().1.clear();
-        assert!(h.query_by_label("add_tax").is_none(), "folders start collapsed");
+        assert!(
+            h.query_by_label("add_tax").is_none(),
+            "folders start collapsed"
+        );
         h.get_by_label("Functions").click_secondary();
         h.run_steps(2);
         h.get_by_label("New Function…").click();
         h.run_steps(2);
         h.state_mut().0.expanded.insert("g:1:shop:public:f".into());
         h.run_steps(2);
-        assert!(h.query_by_label("archive_orders").is_none(), "procedures live in their own folder");
+        assert!(
+            h.query_by_label("archive_orders").is_none(),
+            "procedures live in their own folder"
+        );
         h.get_by_label("add_tax").click_secondary();
         h.run_steps(2);
         h.get_by_label("Execute…").click();
@@ -1434,7 +2216,14 @@ mod tests {
         h.run_steps(2);
         h.get_by_label("Edit Function…").click();
         h.run_steps(2);
-        assert_eq!(h.state().1, ["new Function in Some(\"public\")", "execute add_tax(a integer)", "edit add_tax"]);
+        assert_eq!(
+            h.state().1,
+            [
+                "new Function in Some(\"public\")",
+                "execute add_tax(a integer)",
+                "edit add_tax"
+            ]
+        );
 
         // Filtering by name finds routines too.
         h.state_mut().0.expanded.clear();

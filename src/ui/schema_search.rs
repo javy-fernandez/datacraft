@@ -69,10 +69,18 @@ impl SchemaSearch {
         let connection = connections.iter().find(|c| c.cfg.id == self.conn);
         let running = self.cancel.is_some();
         let connected = connection.is_some_and(|c| c.status == ConnStatus::Connected);
-        let subtitle = connection.map(|c| format!("{} · {}", c.cfg.name, self.db)).unwrap_or_else(|| self.db.clone());
-        super::workflow_dialog::show(ctx, egui::Id::new("schema_search"), tr("Find in Schema…"), &subtitle, egui::vec2(900.0, 740.0), |root, regions| {
-            let mut body = regions.body_ui(root);
-            egui::ScrollArea::vertical().id_salt("search_body").auto_shrink([false, false]).show(&mut body, |ui| {
+        let subtitle = connection
+            .map(|c| format!("{} · {}", c.cfg.name, self.db))
+            .unwrap_or_else(|| self.db.clone());
+        super::workflow_dialog::show(
+            ctx,
+            egui::Id::new("schema_search"),
+            tr("Find in Schema…"),
+            &subtitle,
+            egui::vec2(900.0, 740.0),
+            |root, regions| {
+                let mut body = regions.body_ui(root);
+                egui::ScrollArea::vertical().id_salt("search_body").auto_shrink([false, false]).show(&mut body, |ui| {
                 ui.add_enabled_ui(!running, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(tr("Database"));
@@ -152,56 +160,66 @@ impl SchemaSearch {
                     });
                 }
             });
-            let mut footer = regions.footer_ui(root);
-            footer.horizontal(|ui| {
-                if running {
-                    ui.spinner();
-                    ui.label(tr("Searching tables…"));
-                }
-                if let Some(i) = self.selected
-                    && let Some(Ok(report)) = &self.report
-                    && let Some(entry) = report.matches.get(i)
-                    && crate::ui::theme::secondary_button(ui, tr("Open table")).clicked()
-                {
-                    actions.push(BrowserAction::Explorer(ExplorerAction::OpenTable(TableRef {
-                        conn: self.conn,
-                        db: self.searched_db.clone(),
-                        schema: entry.schema.clone(),
-                        table: entry.table.clone(),
-                    })));
-                    close = true;
-                }
-            });
-            footer.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled_ui(!running && connected && !self.value.is_empty(), |ui| crate::ui::theme::primary_button(ui, tr("Search"))).inner.clicked() {
-                    self.request_id = self.request_id.wrapping_add(1);
-                    let cancel = Arc::new(Notify::new());
-                    actions.push(BrowserAction::Search(Box::new(Request::SchemaSearch {
-                        conn: self.conn,
-                        request_id: self.request_id,
-                        request: SearchRequest {
-                            db: self.db.clone(),
-                            schema: (!self.schema.trim().is_empty()).then(|| self.schema.trim().to_string()),
-                            value: self.value.clone(),
-                            exact: self.exact,
-                            case_sensitive: self.case_sensitive,
-                        },
-                        cancel: cancel.clone(),
-                    })));
-                    self.cancel = Some(cancel);
-                    self.searched_db.clone_from(&self.db);
-                    self.report = None;
-                    self.preview = None;
-                    self.selected = None;
-                }
-                if running && crate::ui::theme::secondary_button(ui, tr("Cancel")).clicked() {
-                    self.stop();
-                }
-                if crate::ui::theme::secondary_button(ui, tr("Close")).clicked() {
-                    close = true;
-                }
-            });
-        });
+                let mut footer = regions.footer_ui(root);
+                footer.horizontal(|ui| {
+                    if running {
+                        ui.spinner();
+                        ui.label(tr("Searching tables…"));
+                    }
+                    if let Some(i) = self.selected
+                        && let Some(Ok(report)) = &self.report
+                        && let Some(entry) = report.matches.get(i)
+                        && crate::ui::theme::secondary_button(ui, tr("Open table")).clicked()
+                    {
+                        actions.push(BrowserAction::Explorer(ExplorerAction::OpenTable(
+                            TableRef {
+                                conn: self.conn,
+                                db: self.searched_db.clone(),
+                                schema: entry.schema.clone(),
+                                table: entry.table.clone(),
+                            },
+                        )));
+                        close = true;
+                    }
+                });
+                footer.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled_ui(!running && connected && !self.value.is_empty(), |ui| {
+                            crate::ui::theme::primary_button(ui, tr("Search"))
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        self.request_id = self.request_id.wrapping_add(1);
+                        let cancel = Arc::new(Notify::new());
+                        actions.push(BrowserAction::Search(Box::new(Request::SchemaSearch {
+                            conn: self.conn,
+                            request_id: self.request_id,
+                            request: SearchRequest {
+                                db: self.db.clone(),
+                                schema: (!self.schema.trim().is_empty())
+                                    .then(|| self.schema.trim().to_string()),
+                                value: self.value.clone(),
+                                exact: self.exact,
+                                case_sensitive: self.case_sensitive,
+                            },
+                            cancel: cancel.clone(),
+                        })));
+                        self.cancel = Some(cancel);
+                        self.searched_db.clone_from(&self.db);
+                        self.report = None;
+                        self.preview = None;
+                        self.selected = None;
+                    }
+                    if running && crate::ui::theme::secondary_button(ui, tr("Cancel")).clicked() {
+                        self.stop();
+                    }
+                    if crate::ui::theme::secondary_button(ui, tr("Close")).clicked() {
+                        close = true;
+                    }
+                });
+            },
+        );
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             close = true;
         }
@@ -225,24 +243,36 @@ mod tests {
         for size in [egui::vec2(780.0, 560.0), egui::vec2(400.0, 300.0)] {
             for dark in [false, true] {
                 let mut search = SchemaSearch::default();
-                search.open(&ObjectScope { conn: 7, db: "shop_".repeat(50), schema: None, kind: None });
-                search.report = Some(Err("Search failed with additional diagnostic context.\n".repeat(80)));
+                search.open(&ObjectScope {
+                    conn: 7,
+                    db: "shop_".repeat(50),
+                    schema: None,
+                    kind: None,
+                });
+                search.report = Some(Err(
+                    "Search failed with additional diagnostic context.\n".repeat(80)
+                ));
                 let mut first = true;
-                let mut h = egui_kittest::Harness::builder().with_size(size).build_ui_state(
-                    move |ui, search: &mut SchemaSearch| {
-                        if std::mem::take(&mut first) {
-                            crate::ui::theme::install_fonts(ui.ctx());
-                            crate::ui::theme::apply(ui.ctx(), dark);
-                        } else {
-                            search.show(ui.ctx(), &[]);
-                        }
-                    },
-                    search,
-                );
+                let mut h = egui_kittest::Harness::builder()
+                    .with_size(size)
+                    .build_ui_state(
+                        move |ui, search: &mut SchemaSearch| {
+                            if std::mem::take(&mut first) {
+                                crate::ui::theme::install_fonts(ui.ctx());
+                                crate::ui::theme::apply(ui.ctx(), dark);
+                            } else {
+                                search.show(ui.ctx(), &[]);
+                            }
+                        },
+                        search,
+                    );
                 h.run_steps(3);
                 let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
                 for label in ["Search", "Close"] {
-                    assert!(screen.contains_rect(h.get_by_label(label).rect()), "{label}");
+                    assert!(
+                        screen.contains_rect(h.get_by_label(label).rect()),
+                        "{label}"
+                    );
                 }
                 h.state_mut().cancel = Some(Arc::new(Notify::new()));
                 h.run_steps(2);
@@ -298,17 +328,19 @@ mod tests {
             schemas: None,
         });
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(780.0, 560.0)).build_ui_state(
-            move |ui, state: &mut (SchemaSearch, Vec<ConnState>)| {
-                if std::mem::take(&mut first) {
-                    crate::ui::theme::install_fonts(ui.ctx());
-                    crate::ui::theme::apply(ui.ctx(), dark);
-                    return;
-                }
-                state.0.show(ui.ctx(), &state.1);
-            },
-            (search, vec![connection]),
-        );
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(780.0, 560.0))
+            .build_ui_state(
+                move |ui, state: &mut (SchemaSearch, Vec<ConnState>)| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        crate::ui::theme::apply(ui.ctx(), dark);
+                        return;
+                    }
+                    state.0.show(ui.ctx(), &state.1);
+                },
+                (search, vec![connection]),
+            );
         h.run_steps(3);
         h.get_by_label("public.customers   (1)").click();
         h.run_steps(3);
@@ -321,7 +353,13 @@ mod tests {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("target/navigation-snapshots");
             std::fs::create_dir_all(&dir).unwrap();
-            h.render().unwrap().save(dir.join(format!("schema-search-{}.png", if dark { "dark" } else { "light" }))).unwrap();
+            h.render()
+                .unwrap()
+                .save(dir.join(format!(
+                    "schema-search-{}.png",
+                    if dark { "dark" } else { "light" }
+                )))
+                .unwrap();
         }
     }
 

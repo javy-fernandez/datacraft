@@ -838,7 +838,9 @@ mod tests {
     #[test]
     fn removing_the_last_row_resets_the_hidden_connector() {
         let row = |connector| flag("odd]name", connector);
-        let mut group = Group { children: vec![row(Connector::Or), row(Connector::Or), row(Connector::And)] };
+        let mut group = Group {
+            children: vec![row(Connector::Or), row(Connector::Or), row(Connector::And)],
+        };
         group.remove_row(2);
         assert_eq!(group.children[1].connector, Connector::And);
         // A row in the middle keeps the connectors around it.

@@ -74,16 +74,27 @@ pub enum Mask {
 }
 
 const FIRST_NAMES: [&str; 24] = [
-    "Alex", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Robin", "Jamie", "Avery", "Riley", "Quinn", "Drew", "Elena",
-    "Marco", "Yuki", "Amara", "Lucas", "Nadia", "Omar", "Ingrid", "Mateo", "Leila", "Hugo", "Sofia",
+    "Alex", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Robin", "Jamie", "Avery", "Riley",
+    "Quinn", "Drew", "Elena", "Marco", "Yuki", "Amara", "Lucas", "Nadia", "Omar", "Ingrid",
+    "Mateo", "Leila", "Hugo", "Sofia",
 ];
 const LAST_NAMES: [&str; 24] = [
-    "Smith", "Garcia", "Muller", "Rossi", "Silva", "Kim", "Novak", "Dubois", "Tanaka", "Jensen", "Lopez", "Martin",
-    "Costa", "Weber", "Moreau", "Ivanova", "Okafor", "Nguyen", "Larsen", "Romero", "Fischer", "Sato", "Brown", "Ruiz",
+    "Smith", "Garcia", "Muller", "Rossi", "Silva", "Kim", "Novak", "Dubois", "Tanaka", "Jensen",
+    "Lopez", "Martin", "Costa", "Weber", "Moreau", "Ivanova", "Okafor", "Nguyen", "Larsen",
+    "Romero", "Fischer", "Sato", "Brown", "Ruiz",
 ];
 
 impl Mask {
-    pub const ALL: [Mask; 8] = [Mask::Keep, Mask::Null, Mask::Blank, Mask::Hash, Mask::Partial, Mask::Email, Mask::Name, Mask::Phone];
+    pub const ALL: [Mask; 8] = [
+        Mask::Keep,
+        Mask::Null,
+        Mask::Blank,
+        Mask::Hash,
+        Mask::Partial,
+        Mask::Email,
+        Mask::Name,
+        Mask::Phone,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -101,7 +112,10 @@ impl Mask {
     /// Rules that fit a column: NULL needs a nullable column that isn't a key, and the others
     /// write text (an empty text can't be a key either).
     pub fn allowed(self, driver: Driver, column: &ColumnInfo) -> bool {
-        let text = matches!(classify(driver, &column.data_type), Kind::Varchar(_) | Kind::Text);
+        let text = matches!(
+            classify(driver, &column.data_type),
+            Kind::Varchar(_) | Kind::Text
+        );
         // MongoDB's `_id` must stay unique: only the hash keeps distinct values distinct.
         if driver == Driver::MongoDb && column.name == "_id" {
             return self == Mask::Keep || (self == Mask::Hash && text);
@@ -122,13 +136,55 @@ impl Mask {
             Mask::Email
         } else if has(&["phone", "mobile", "cell", "fax", "telef", "tel_", "movil"]) || n == "tel" {
             Mask::Phone
-        } else if has(&["first_name", "firstname", "last_name", "lastname", "full_name", "fullname", "surname", "given_name", "family_name", "nombre", "apellido"])
-            || matches!(n.as_str(), "name" | "contact" | "contact_name" | "customer_name" | "person_name" | "user_name" | "username")
-        {
+        } else if has(&[
+            "first_name",
+            "firstname",
+            "last_name",
+            "lastname",
+            "full_name",
+            "fullname",
+            "surname",
+            "given_name",
+            "family_name",
+            "nombre",
+            "apellido",
+        ]) || matches!(
+            n.as_str(),
+            "name"
+                | "contact"
+                | "contact_name"
+                | "customer_name"
+                | "person_name"
+                | "user_name"
+                | "username"
+        ) {
             Mask::Name
-        } else if has(&["iban", "card", "tarjeta", "account_number", "ssn", "dni", "nif", "nie", "passport", "pasaporte", "tax_id", "vat"]) {
+        } else if has(&[
+            "iban",
+            "card",
+            "tarjeta",
+            "account_number",
+            "ssn",
+            "dni",
+            "nif",
+            "nie",
+            "passport",
+            "pasaporte",
+            "tax_id",
+            "vat",
+        ]) {
             Mask::Partial
-        } else if has(&["password", "passwd", "secret", "token", "address", "street", "direccion", "domicilio", "ip_addr"]) {
+        } else if has(&[
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "address",
+            "street",
+            "direccion",
+            "domicilio",
+            "ip_addr",
+        ]) {
             Mask::Hash
         } else {
             Mask::Keep
@@ -142,7 +198,13 @@ impl Mask {
             let key = aws_lc_rs::hmac::Key::new(aws_lc_rs::hmac::HMAC_SHA256, key);
             aws_lc_rs::hmac::sign(&key, v.as_bytes()).as_ref().to_vec()
         };
-        let hex = |d: &[u8], n: usize| d.iter().take(n.div_ceil(2)).map(|b| format!("{b:02x}")).collect::<String>()[..n].to_string();
+        let hex = |d: &[u8], n: usize| {
+            d.iter()
+                .take(n.div_ceil(2))
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()[..n]
+                .to_string()
+        };
         let out = match self {
             Mask::Keep => v.clone(),
             Mask::Null => return None,
@@ -158,7 +220,11 @@ impl Mask {
             Mask::Email => format!("user_{}@example.com", hex(&digest(), 10)),
             Mask::Name => {
                 let d = digest();
-                format!("{} {}", FIRST_NAMES[d[0] as usize % FIRST_NAMES.len()], LAST_NAMES[d[1] as usize % LAST_NAMES.len()])
+                format!(
+                    "{} {}",
+                    FIRST_NAMES[d[0] as usize % FIRST_NAMES.len()],
+                    LAST_NAMES[d[1] as usize % LAST_NAMES.len()]
+                )
             }
             Mask::Phone => {
                 let d = digest();
@@ -182,7 +248,13 @@ fn text_limit(driver: Driver, data_type: &str) -> Option<u32> {
 }
 
 /// Applies each column's mask to the rows.
-pub fn mask_rows(driver: Driver, columns: &[ColumnInfo], masks: &[Mask], key: &str, rows: &mut [Vec<Cell>]) {
+pub fn mask_rows(
+    driver: Driver,
+    columns: &[ColumnInfo],
+    masks: &[Mask],
+    key: &str,
+    rows: &mut [Vec<Cell>],
+) {
     let plan: Vec<(usize, Mask, Option<u32>)> = masks
         .iter()
         .enumerate()
@@ -221,9 +293,14 @@ enum Kind {
 
 /// Numbers inside the parentheses of a type: `varchar(20)` → [20], `numeric(10,2)` → [10, 2].
 fn type_args(t: &str) -> Vec<u32> {
-    let Some(start) = t.find('(') else { return Vec::new() };
+    let Some(start) = t.find('(') else {
+        return Vec::new();
+    };
     let end = t[start..].find(')').map_or(t.len(), |e| start + e);
-    t[start + 1..end].split(',').filter_map(|a| a.trim().split(' ').next()?.parse().ok()).collect()
+    t[start + 1..end]
+        .split(',')
+        .filter_map(|a| a.trim().split(' ').next()?.parse().ok())
+        .collect()
 }
 
 fn classify(driver: Driver, data_type: &str) -> Kind {
@@ -268,24 +345,38 @@ fn classify(driver: Driver, data_type: &str) -> Kind {
             _ => Kind::Decimal(None),
         },
         "money" | "smallmoney" => Kind::Decimal(Some((19, 4))),
-        "real" | "float" | "float4" | "float8" | "double" | "double precision" | "binary_double" | "binary_float" => Kind::Float,
+        "real" | "float" | "float4" | "float8" | "double" | "double precision"
+        | "binary_double" | "binary_float" => Kind::Float,
         "boolean" | "bool" | "bit" => Kind::Bool,
         "date" if driver == Driver::Oracle => Kind::Timestamp,
         "date" => Kind::Date,
         "time" | "time without time zone" | "time with time zone" | "timetz" => Kind::Time,
-        "timestamp" | "timestamp without time zone" | "datetime" | "datetime2" | "smalldatetime" | "timestamp_ntz" => {
-            if t.contains("with time zone") { Kind::TimestampTz } else { Kind::Timestamp }
+        "timestamp"
+        | "timestamp without time zone"
+        | "datetime"
+        | "datetime2"
+        | "smalldatetime"
+        | "timestamp_ntz" => {
+            if t.contains("with time zone") {
+                Kind::TimestampTz
+            } else {
+                Kind::Timestamp
+            }
         }
-        "timestamptz" | "timestamp with time zone" | "timestamp with local time zone" | "datetimeoffset" | "timestamp_tz"
+        "timestamptz"
+        | "timestamp with time zone"
+        | "timestamp with local time zone"
+        | "datetimeoffset"
+        | "timestamp_tz"
         | "timestamp_ltz" => Kind::TimestampTz,
-        "varchar" | "character varying" | "nvarchar" | "varchar2" | "nvarchar2" | "char" | "character" | "nchar"
-        | "bpchar" | "string" => match args.first() {
+        "varchar" | "character varying" | "nvarchar" | "varchar2" | "nvarchar2" | "char"
+        | "character" | "nchar" | "bpchar" | "string" => match args.first() {
             Some(&n) if n > 0 && !t.contains("max") => Kind::Varchar(n),
             _ => Kind::Text,
         },
         "uuid" | "uniqueidentifier" => Kind::Varchar(36),
-        "bytea" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "binary" | "varbinary" | "raw" | "long raw" | "image"
-        | "bfile" => Kind::Binary,
+        "bytea" | "blob" | "tinyblob" | "mediumblob" | "longblob" | "binary" | "varbinary"
+        | "raw" | "long raw" | "image" | "bfile" => Kind::Binary,
         _ if t.starts_with("timestamp") && t.contains("time zone") => Kind::TimestampTz,
         _ if t.starts_with("timestamp") => Kind::Timestamp,
         _ => Kind::Text,
@@ -335,7 +426,13 @@ pub fn is_binary(driver: Driver, data_type: &str) -> bool {
 
 /// Type for the target table's column. Same engine: the source type as is.
 pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool) -> String {
-    let family = |d: Driver| if d == Driver::MariaDb { Driver::MySql } else { d };
+    let family = |d: Driver| {
+        if d == Driver::MariaDb {
+            Driver::MySql
+        } else {
+            d
+        }
+    };
     let lower = data_type.to_ascii_lowercase();
     // PostgreSQL arrays and user-defined types don't exist elsewhere either.
     if family(from) == family(to) && !lower.ends_with("[]") {
@@ -346,7 +443,11 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
     }
     let kind = match classify(from, data_type) {
         // A key needs a bounded type on MySQL and Oracle.
-        Kind::Text if primary_key && matches!(to, Driver::MySql | Driver::MariaDb | Driver::Oracle) => Kind::Varchar(255),
+        Kind::Text
+            if primary_key && matches!(to, Driver::MySql | Driver::MariaDb | Driver::Oracle) =>
+        {
+            Kind::Varchar(255)
+        }
         k => k,
     };
     use Driver::*;
@@ -386,7 +487,9 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
         (Kind::Int, Postgres) => "integer".into(),
         (Kind::Int, _) => "int".into(),
         (Kind::BigInt, _) => "bigint".into(),
-        (Kind::Decimal(Some((p, s))), Oracle | Snowflake) => format!("number({},{})", p.min(38), s.min(p.min(38))),
+        (Kind::Decimal(Some((p, s))), Oracle | Snowflake) => {
+            format!("number({},{})", p.min(38), s.min(p.min(38)))
+        }
         (Kind::Decimal(Some((p, s))), _) => format!("decimal({},{})", p.min(38), s.min(p.min(38))),
         (Kind::Decimal(None), Postgres) => "numeric".into(),
         (Kind::Decimal(None), Oracle) => "number".into(),
@@ -469,13 +572,22 @@ fn truth(v: &str) -> Option<bool> {
 /// as a BSON date; values without a zone are taken as UTC.
 fn parse_date(v: &str) -> Option<mongodb::bson::DateTime> {
     let v = v.trim();
-    let mut s = if v.len() == 10 { format!("{v}T00:00:00") } else { v.replacen(' ', "T", 1) };
+    let mut s = if v.len() == 10 {
+        format!("{v}T00:00:00")
+    } else {
+        v.replacen(' ', "T", 1)
+    };
     s.retain(|c| c != ' ');
     // `+02` / `-0530` (PostgreSQL, SQL Server) → `+02:00` / `-05:30`.
-    let tail = s.rfind(['+', '-']).filter(|&i| i > 10).map(|i| s[i + 1..].to_string());
+    let tail = s
+        .rfind(['+', '-'])
+        .filter(|&i| i > 10)
+        .map(|i| s[i + 1..].to_string());
     match tail {
         Some(t) if t.len() == 2 && t.bytes().all(|b| b.is_ascii_digit()) => s.push_str(":00"),
-        Some(t) if t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()) => s.insert(s.len() - 2, ':'),
+        Some(t) if t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()) => {
+            s.insert(s.len() - 2, ':')
+        }
         Some(_) => {}
         None if !s.ends_with(['Z', 'z']) => s.push('Z'),
         None => {}
@@ -491,7 +603,11 @@ pub fn to_bson(mongo_type: &str, value: Cell) -> mongodb::bson::Bson {
     let t = v.trim();
     let typed = match mongo_type {
         "string" => None,
-        "int" => t.parse::<i32>().map(Bson::Int32).or_else(|_| t.parse::<i64>().map(Bson::Int64)).ok(),
+        "int" => t
+            .parse::<i32>()
+            .map(Bson::Int32)
+            .or_else(|_| t.parse::<i64>().map(Bson::Int64))
+            .ok(),
         "long" => t.parse::<i64>().map(Bson::Int64).ok(),
         "double" => t.parse::<f64>().map(Bson::Double).ok(),
         "decimal" => t.parse().map(Bson::Decimal128).ok(),
@@ -499,7 +615,9 @@ pub fn to_bson(mongo_type: &str, value: Cell) -> mongodb::bson::Bson {
         "date" => parse_date(t).map(Bson::DateTime),
         "objectId" => ObjectId::parse_str(t).map(Bson::ObjectId).ok(),
         // Documents, arrays and other types were rendered as (extended) JSON.
-        _ if t.starts_with(['{', '[']) => serde_json::from_str::<serde_json::Value>(t).ok().and_then(|j| Bson::try_from(j).ok()),
+        _ if t.starts_with(['{', '[']) => serde_json::from_str::<serde_json::Value>(t)
+            .ok()
+            .and_then(|j| Bson::try_from(j).ok()),
         _ => None,
     };
     typed.unwrap_or(Bson::String(v))
@@ -530,16 +648,32 @@ pub fn mongo_filter(filter: &str) -> String {
 }
 
 fn mongo_collection(name: &str) -> String {
-    format!("db.getCollection({})", serde_json::to_string(name).unwrap_or_default())
+    format!(
+        "db.getCollection({})",
+        serde_json::to_string(name).unwrap_or_default()
+    )
 }
 
 /// `find` of the source documents with the selected fields; `limit` caps them.
-pub fn find_command(collection: &str, columns: &[ColumnInfo], filter: &str, limit: Option<u64>) -> String {
-    let mut fields: Vec<String> = columns.iter().map(|c| format!("{}: 1", serde_json::to_string(&c.name).unwrap_or_default())).collect();
+pub fn find_command(
+    collection: &str,
+    columns: &[ColumnInfo],
+    filter: &str,
+    limit: Option<u64>,
+) -> String {
+    let mut fields: Vec<String> = columns
+        .iter()
+        .map(|c| format!("{}: 1", serde_json::to_string(&c.name).unwrap_or_default()))
+        .collect();
     if !columns.iter().any(|c| c.name == "_id") {
         fields.push("\"_id\": 0".into());
     }
-    let mut cmd = format!("{}.find({}, {{{}}})", mongo_collection(collection), mongo_filter(filter), fields.join(", "));
+    let mut cmd = format!(
+        "{}.find({}, {{{}}})",
+        mongo_collection(collection),
+        mongo_filter(filter),
+        fields.join(", ")
+    );
     if let Some(n) = limit {
         cmd.push_str(&format!(".limit({n})"));
     }
@@ -548,7 +682,11 @@ pub fn find_command(collection: &str, columns: &[ColumnInfo], filter: &str, limi
 
 /// `countDocuments` of the documents the filter selects (for a percentage).
 pub fn count_command(collection: &str, filter: &str) -> String {
-    format!("{}.countDocuments({})", mongo_collection(collection), mongo_filter(filter))
+    format!(
+        "{}.countDocuments({})",
+        mongo_collection(collection),
+        mongo_filter(filter)
+    )
 }
 
 /// true if the filter is one document that only reads (no `$where` tricks past `find`).
@@ -562,11 +700,24 @@ pub fn is_read_filter(filter: &str) -> bool {
 }
 
 /// What the copy runs on a MongoDB target, for the dialog's preview.
-pub fn mongo_insert_preview(collection: &str, names: &[String], types: &[&str], clear: bool) -> String {
+pub fn mongo_insert_preview(
+    collection: &str,
+    names: &[String],
+    types: &[&str],
+    clear: bool,
+) -> String {
     let coll = mongo_collection(collection);
-    let fields: Vec<String> = names.iter().zip(types).map(|(n, t)| format!("{}: <{t}>", serde_json::to_string(n).unwrap_or_default())).collect();
+    let fields: Vec<String> = names
+        .iter()
+        .zip(types)
+        .map(|(n, t)| format!("{}: <{t}>", serde_json::to_string(n).unwrap_or_default()))
+        .collect();
     let insert = format!("{coll}.insertMany([{{{}}}, …])", fields.join(", "));
-    if clear { format!("{coll}.deleteMany({{}});\n\n{insert}") } else { insert }
+    if clear {
+        format!("{coll}.deleteMany({{}});\n\n{insert}")
+    } else {
+        insert
+    }
 }
 
 /// Source value as the target expects it: booleans read as `t`/`true` become `1`/`0` on the
@@ -594,8 +745,19 @@ fn convert(from: Driver, to: Driver, data_type: &str, value: Cell) -> Cell {
 }
 
 /// SELECT of the source rows; `limit` caps them.
-pub fn select_sql(driver: Driver, schema: &str, table: &str, columns: &[ColumnInfo], filter: &str, limit: Option<u64>) -> String {
-    let cols = columns.iter().map(|c| driver.quote_ident(&c.name)).collect::<Vec<_>>().join(", ");
+pub fn select_sql(
+    driver: Driver,
+    schema: &str,
+    table: &str,
+    columns: &[ColumnInfo],
+    filter: &str,
+    limit: Option<u64>,
+) -> String {
+    let cols = columns
+        .iter()
+        .map(|c| driver.quote_ident(&c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
     let t = Session::quote_table(driver, schema, table);
     let top = match (driver, limit) {
         (Driver::MsSql, Some(n)) => format!("TOP ({n}) "),
@@ -615,7 +777,10 @@ pub fn select_sql(driver: Driver, schema: &str, table: &str, columns: &[ColumnIn
 
 /// COUNT(*) of the rows the filter selects (for a percentage).
 pub fn count_sql(driver: Driver, schema: &str, table: &str, filter: &str) -> String {
-    let mut sql = format!("SELECT COUNT(*) FROM {}", Session::quote_table(driver, schema, table));
+    let mut sql = format!(
+        "SELECT COUNT(*) FROM {}",
+        Session::quote_table(driver, schema, table)
+    );
     let w = filter.trim().trim_end_matches(';').trim();
     if !w.is_empty() {
         sql.push_str(&format!(" WHERE {w}"));
@@ -639,18 +804,35 @@ pub fn target_columns(from: Driver, to: Driver, columns: &[ColumnInfo]) -> Vec<N
 
 /// `CREATE TABLE` for the target. Names keep their case (quoted when needed), so the INSERTs,
 /// which always quote, find them.
-pub fn create_sql(from: Driver, to: Driver, schema: &str, table: &str, columns: &[ColumnInfo]) -> String {
+pub fn create_sql(
+    from: Driver,
+    to: Driver,
+    schema: &str,
+    table: &str,
+    columns: &[ColumnInfo],
+) -> String {
     let schema = if to.flat_schema() { "" } else { schema };
     create_table_sql(to, schema, table, &target_columns(from, to, columns))
 }
 
 /// Multi-row INSERTs into the `names` columns (Oracle: one row each, it has no multi-row VALUES).
 /// `columns` are the source columns, for their types.
-pub fn insert_sql(from: Driver, to: Driver, table: &str, columns: &[ColumnInfo], names: &[String], rows: Vec<Vec<Cell>>) -> Vec<String> {
+pub fn insert_sql(
+    from: Driver,
+    to: Driver,
+    table: &str,
+    columns: &[ColumnInfo],
+    names: &[String],
+    rows: Vec<Vec<Cell>>,
+) -> Vec<String> {
     if columns.is_empty() {
         return Vec::new();
     }
-    let cols = names.iter().map(|n| to.quote_ident(n)).collect::<Vec<_>>().join(", ");
+    let cols = names
+        .iter()
+        .map(|n| to.quote_ident(n))
+        .collect::<Vec<_>>()
+        .join(", ");
     let batch = if to == Driver::Oracle { 1 } else { BATCH };
     let mut out = Vec::new();
     let mut tuples = Vec::new();
@@ -662,12 +844,18 @@ pub fn insert_sql(from: Driver, to: Driver, table: &str, columns: &[ColumnInfo],
             .collect();
         tuples.push(format!("({})", vals.join(", ")));
         if tuples.len() == batch {
-            out.push(format!("INSERT INTO {table} ({cols})\nVALUES {}", tuples.join(",\n       ")));
+            out.push(format!(
+                "INSERT INTO {table} ({cols})\nVALUES {}",
+                tuples.join(",\n       ")
+            ));
             tuples.clear();
         }
     }
     if !tuples.is_empty() {
-        out.push(format!("INSERT INTO {table} ({cols})\nVALUES {}", tuples.join(",\n       ")));
+        out.push(format!(
+            "INSERT INTO {table} ({cols})\nVALUES {}",
+            tuples.join(",\n       ")
+        ));
     }
     out
 }
@@ -697,7 +885,11 @@ struct Part {
 
 /// Rows read from the source: the copied table, plus the related ones (insert order) and their
 /// foreign keys when a subset was asked for.
-async fn read_source(s: &mut Session, from: Driver, req: &CopyRequest) -> anyhow::Result<(Vec<TableRows>, Vec<ForeignKey>)> {
+async fn read_source(
+    s: &mut Session,
+    from: Driver,
+    req: &CopyRequest,
+) -> anyhow::Result<(Vec<TableRows>, Vec<ForeignKey>)> {
     if from == Driver::MongoDb {
         let root = TableRows {
             schema: req.source_schema.clone(),
@@ -710,7 +902,12 @@ async fn read_source(s: &mut Session, from: Driver, req: &CopyRequest) -> anyhow
     let limit = if req.percent >= 100 {
         None
     } else {
-        let rs = s.execute(&count_sql(from, &req.source_schema, &req.source_table, &req.filter), 1).await?;
+        let rs = s
+            .execute(
+                &count_sql(from, &req.source_schema, &req.source_table, &req.filter),
+                1,
+            )
+            .await?;
         let total: u64 = rs
             .first()
             .and_then(|r| r.rows.first())
@@ -719,10 +916,24 @@ async fn read_source(s: &mut Session, from: Driver, req: &CopyRequest) -> anyhow
             .unwrap_or(0);
         Some((total * u64::from(req.percent)).div_ceil(100))
     };
-    let sql = select_sql(from, &req.source_schema, &req.source_table, &req.columns, &req.filter, limit);
-    let rs = s.execute(&sql, MAX_ROWS).await?.into_iter().next().unwrap_or_default();
+    let sql = select_sql(
+        from,
+        &req.source_schema,
+        &req.source_table,
+        &req.columns,
+        &req.filter,
+        limit,
+    );
+    let rs = s
+        .execute(&sql, MAX_ROWS)
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     if rs.truncated {
-        anyhow::bail!(tr("The table has more than 1,000,000 rows: copy fewer with a filter or a percentage"));
+        anyhow::bail!(tr(
+            "The table has more than 1,000,000 rows: copy fewer with a filter or a percentage"
+        ));
     }
     let root = TableRows {
         schema: req.source_schema.clone(),
@@ -734,11 +945,24 @@ async fn read_source(s: &mut Session, from: Driver, req: &CopyRequest) -> anyhow
         return Ok((vec![root], Vec::new()));
     }
     let catalog = s.introspect_database(&req.source_db).await?;
-    let fk_rows = s.execute(&subset::fk_sql(from, &req.source_db, &req.source_schema), MAX_ROWS).await?;
-    let fks = subset::parse_fks(from, &fk_rows.into_iter().next().unwrap_or_default(), &catalog);
-    let missing = subset::missing_key_columns(&fks, &req.source_schema, &req.source_table, &req.columns);
+    let fk_rows = s
+        .execute(
+            &subset::fk_sql(from, &req.source_db, &req.source_schema),
+            MAX_ROWS,
+        )
+        .await?;
+    let fks = subset::parse_fks(
+        from,
+        &fk_rows.into_iter().next().unwrap_or_default(),
+        &catalog,
+    );
+    let missing =
+        subset::missing_key_columns(&fks, &req.source_schema, &req.source_table, &req.columns);
     if !missing.is_empty() {
-        anyhow::bail!(trf("Select the key columns the foreign keys need: {columns}", &[("columns", &missing.join(", "))]));
+        anyhow::bail!(trf(
+            "Select the key columns the foreign keys need: {columns}",
+            &[("columns", &missing.join(", "))]
+        ));
     }
     let mut tables = subset::collect(s, from, &catalog, &fks, root, req.children).await?;
     subset::insert_order(&mut tables, &fks);
@@ -747,52 +971,110 @@ async fn read_source(s: &mut Session, from: Driver, req: &CopyRequest) -> anyhow
 
 /// The source collection's documents as rows of the selected fields (missing fields are NULL).
 async fn read_documents(s: &mut Session, req: &CopyRequest) -> anyhow::Result<Vec<Vec<Cell>>> {
-    let first_cell = |rs: Vec<super::ResultSet>| rs.into_iter().next().and_then(|r| r.rows.into_iter().next()).and_then(|r| r.into_iter().next().flatten());
+    let first_cell = |rs: Vec<super::ResultSet>| {
+        rs.into_iter()
+            .next()
+            .and_then(|r| r.rows.into_iter().next())
+            .and_then(|r| r.into_iter().next().flatten())
+    };
     let limit = if req.percent >= 100 {
         None
     } else {
-        let rs = s.execute(&count_command(&req.source_table, &req.filter), 1).await?;
-        let total: u64 = first_cell(rs).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let rs = s
+            .execute(&count_command(&req.source_table, &req.filter), 1)
+            .await?;
+        let total: u64 = first_cell(rs)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
         Some((total * u64::from(req.percent)).div_ceil(100))
     };
     // `limit(0)` means no limit to MongoDB.
     if limit == Some(0) {
         return Ok(Vec::new());
     }
-    let rs = s.execute(&find_command(&req.source_table, &req.columns, &req.filter, limit), MAX_ROWS).await?.into_iter().next().unwrap_or_default();
+    let rs = s
+        .execute(
+            &find_command(&req.source_table, &req.columns, &req.filter, limit),
+            MAX_ROWS,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     if rs.truncated {
-        anyhow::bail!(tr("The table has more than 1,000,000 rows: copy fewer with a filter or a percentage"));
+        anyhow::bail!(tr(
+            "The table has more than 1,000,000 rows: copy fewer with a filter or a percentage"
+        ));
     }
     // The result's columns are the fields the documents have, in their order.
-    let at: Vec<Option<usize>> = req.columns.iter().map(|c| rs.columns.iter().position(|n| *n == c.name)).collect();
-    Ok(rs.rows.into_iter().map(|mut r| at.iter().map(|i| i.and_then(|i| r.get_mut(i)?.take())).collect()).collect())
+    let at: Vec<Option<usize>> = req
+        .columns
+        .iter()
+        .map(|c| rs.columns.iter().position(|n| *n == c.name))
+        .collect();
+    Ok(rs
+        .rows
+        .into_iter()
+        .map(|mut r| {
+            at.iter()
+                .map(|i| i.and_then(|i| r.get_mut(i)?.take()))
+                .collect()
+        })
+        .collect())
 }
 
 /// Writes the rows to a MongoDB collection (created when it doesn't exist) in unordered
 /// `insertMany` batches. There is no transaction (a standalone server has none): a failure or a
 /// cancel keeps the batches already inserted. Documents whose `_id` the collection already has
 /// are skipped. Returns the documents inserted.
-async fn write_documents(t: &mut Session, from: Driver, req: &CopyRequest, columns: &[ColumnInfo], rows: Vec<Vec<Cell>>) -> anyhow::Result<u64> {
-    let Engine::MongoDb(m) = &mut **t else { anyhow::bail!(tr("Not available for this engine")) };
+async fn write_documents(
+    t: &mut Session,
+    from: Driver,
+    req: &CopyRequest,
+    columns: &[ColumnInfo],
+    rows: Vec<Vec<Cell>>,
+) -> anyhow::Result<u64> {
+    let Engine::MongoDb(m) = &mut **t else {
+        anyhow::bail!(tr("Not available for this engine"))
+    };
     if req.clear {
-        m.execute(&format!("{}.deleteMany({{}})", mongo_collection(&req.target_table)), 0).await?;
+        m.execute(
+            &format!("{}.deleteMany({{}})", mongo_collection(&req.target_table)),
+            0,
+        )
+        .await?;
     }
-    let types: Vec<String> = columns.iter().map(|c| target_type(from, Driver::MongoDb, &c.data_type, c.primary_key)).collect();
+    let types: Vec<String> = columns
+        .iter()
+        .map(|c| target_type(from, Driver::MongoDb, &c.data_type, c.primary_key))
+        .collect();
     let types: Vec<&str> = types.iter().map(String::as_str).collect();
     let mut rows = rows.into_iter();
     let mut inserted = 0;
     loop {
-        let docs: Vec<_> = rows.by_ref().take(MONGO_BATCH).map(|r| to_document(&req.target_names, &types, r)).collect();
+        let docs: Vec<_> = rows
+            .by_ref()
+            .take(MONGO_BATCH)
+            .map(|r| to_document(&req.target_names, &types, r))
+            .collect();
         if docs.is_empty() {
             return Ok(inserted);
         }
-        inserted += m.insert_skipping_duplicates(&req.target_table, docs).await?.0;
+        inserted += m
+            .insert_skipping_duplicates(&req.target_table, docs)
+            .await?
+            .0;
     }
 }
 
 /// Masks of each table: the dialog's for the copied one; for the others, those suggested by
 /// their column names (never on key columns) if asked; then made equal along foreign keys.
-fn table_masks(from: Driver, req: &CopyRequest, tables: &[TableRows], fks: &[ForeignKey]) -> Vec<Vec<Mask>> {
+fn table_masks(
+    from: Driver,
+    req: &CopyRequest,
+    tables: &[TableRows],
+    fks: &[ForeignKey],
+) -> Vec<Vec<Mask>> {
     let mut masks: Vec<Vec<Mask>> = tables
         .iter()
         .map(|t| {
@@ -802,9 +1084,18 @@ fn table_masks(from: Driver, req: &CopyRequest, tables: &[TableRows], fks: &[For
             t.columns
                 .iter()
                 .map(|c| {
-                    let key = c.primary_key || fks.iter().any(|fk| fk.schema == t.schema && fk.table == t.table && fk.columns.contains(&c.name));
+                    let key = c.primary_key
+                        || fks.iter().any(|fk| {
+                            fk.schema == t.schema
+                                && fk.table == t.table
+                                && fk.columns.contains(&c.name)
+                        });
                     let m = Mask::suggest(&c.name);
-                    if req.mask_related && !key && m.allowed(from, c) { m } else { Mask::Keep }
+                    if req.mask_related && !key && m.allowed(from, c) {
+                        m
+                    } else {
+                        Mask::Keep
+                    }
                 })
                 .collect()
         })
@@ -814,14 +1105,29 @@ fn table_masks(from: Driver, req: &CopyRequest, tables: &[TableRows], fks: &[For
 }
 
 /// Target tables, by name ignoring case, when the subset needs to know which exist.
-fn find_target<'a>(catalog: &'a [SchemaInfo], schema: &str, table: &str) -> Option<&'a [ColumnInfo]> {
-    let s = catalog.iter().find(|s| s.name.eq_ignore_ascii_case(schema)).or_else(|| (catalog.len() == 1).then(|| &catalog[0]))?;
-    s.tables.iter().find(|t| t.name.eq_ignore_ascii_case(table)).map(|t| t.columns.as_slice())
+fn find_target<'a>(
+    catalog: &'a [SchemaInfo],
+    schema: &str,
+    table: &str,
+) -> Option<&'a [ColumnInfo]> {
+    let s = catalog
+        .iter()
+        .find(|s| s.name.eq_ignore_ascii_case(schema))
+        .or_else(|| (catalog.len() == 1).then(|| &catalog[0]))?;
+    s.tables
+        .iter()
+        .find(|t| t.name.eq_ignore_ascii_case(table))
+        .map(|t| t.columns.as_slice())
 }
 
 /// Runs the copy and returns the rows inserted per target table. A cancel stops it and rolls
 /// the target back.
-pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyRequest, cancel: Arc<Notify>) -> anyhow::Result<Vec<(String, u64)>> {
+pub async fn copy(
+    source: ConnectionConfig,
+    target: ConnectionConfig,
+    req: CopyRequest,
+    cancel: Arc<Notify>,
+) -> anyhow::Result<Vec<(String, u64)>> {
     let (from, to) = (source.driver, target.driver);
     let mut source = source;
     source.read_only = true;
@@ -848,7 +1154,11 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
     }
 
     if to == Driver::MongoDb {
-        let rows = tables.into_iter().next().map(|t| t.rows).unwrap_or_default();
+        let rows = tables
+            .into_iter()
+            .next()
+            .map(|t| t.rows)
+            .unwrap_or_default();
         let write = async {
             let mut t = open(target, &req.target_db).await?;
             write_documents(&mut t, from, &req, &req.columns, rows).await
@@ -859,10 +1169,18 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
         };
     }
 
-    let schema = if to.flat_schema() && to != Driver::Sqlite { req.target_db.as_str() } else { req.target_schema.as_str() };
+    let schema = if to.flat_schema() && to != Driver::Sqlite {
+        req.target_db.as_str()
+    } else {
+        req.target_schema.as_str()
+    };
     let prepare = async {
         let mut t = open(target, &req.target_db).await?;
-        let catalog = if related { t.introspect_database(&req.target_db).await? } else { Vec::new() };
+        let catalog = if related {
+            t.introspect_database(&req.target_db).await?
+        } else {
+            Vec::new()
+        };
         let mut parts = Vec::new();
         for tr in tables {
             let root = tr.schema == req.source_schema && tr.table == req.source_table;
@@ -884,12 +1202,21 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
                             .columns
                             .iter()
                             .enumerate()
-                            .filter_map(|(i, c)| existing.iter().find(|e| e.name.eq_ignore_ascii_case(&c.name)).map(|e| (i, e.name.clone())))
+                            .filter_map(|(i, c)| {
+                                existing
+                                    .iter()
+                                    .find(|e| e.name.eq_ignore_ascii_case(&c.name))
+                                    .map(|e| (i, e.name.clone()))
+                            })
                             .collect();
                         Part {
                             columns: keep.iter().map(|(i, _)| tr.columns[*i].clone()).collect(),
                             names: keep.iter().map(|(_, n)| n.clone()).collect(),
-                            rows: tr.rows.iter().map(|r| keep.iter().map(|(i, _)| r[*i].clone()).collect()).collect(),
+                            rows: tr
+                                .rows
+                                .iter()
+                                .map(|r| keep.iter().map(|(i, _)| r[*i].clone()).collect())
+                                .collect(),
                             target_table: tr.table.clone(),
                             create: false,
                             clear: false,
@@ -917,7 +1244,11 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
             for (c, n) in cols.iter_mut().zip(&p.names) {
                 c.name.clone_from(n);
             }
-            t.execute(&create_sql(from, to, &req.target_schema, &p.target_table, &cols), 0).await?;
+            t.execute(
+                &create_sql(from, to, &req.target_schema, &p.target_table, &cols),
+                0,
+            )
+            .await?;
         }
         anyhow::Ok((t, parts))
     };
@@ -932,7 +1263,11 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
         let table = Session::quote_table(to, schema, &p.target_table);
         if p.clear {
             // ClickHouse refuses a DELETE without WHERE.
-            statements.push(if to == Driver::ClickHouse { format!("TRUNCATE TABLE {table}") } else { format!("DELETE FROM {table}") });
+            statements.push(if to == Driver::ClickHouse {
+                format!("TRUNCATE TABLE {table}")
+            } else {
+                format!("DELETE FROM {table}")
+            });
         }
         report.push((p.target_table, p.rows.len() as u64));
         statements.extend(insert_sql(from, to, &table, &p.columns, &p.names, p.rows));
@@ -953,8 +1288,19 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
 
 /// Leaves out the rows whose primary key the target table already has (a related customer
 /// copied before, say), so copying again adds what is missing instead of failing.
-async fn skip_existing_rows(t: &mut Session, to: Driver, schema: &str, part: &mut Part) -> anyhow::Result<()> {
-    let pk: Vec<usize> = part.columns.iter().enumerate().filter(|(_, c)| c.primary_key).map(|(i, _)| i).collect();
+async fn skip_existing_rows(
+    t: &mut Session,
+    to: Driver,
+    schema: &str,
+    part: &mut Part,
+) -> anyhow::Result<()> {
+    let pk: Vec<usize> = part
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.primary_key)
+        .map(|(i, _)| i)
+        .collect();
     if pk.is_empty() || part.rows.is_empty() {
         return Ok(());
     }
@@ -967,13 +1313,22 @@ async fn skip_existing_rows(t: &mut Session, to: Driver, schema: &str, part: &mu
     let table = Session::quote_table(to, schema, &part.target_table);
     let mut found = std::collections::HashSet::new();
     for chunk in subset::key_chunks(&keys) {
-        let rs = t.execute(&subset::existing_key_sql(to, &table, &names, chunk), MAX_ROWS).await?;
+        let rs = t
+            .execute(
+                &subset::existing_key_sql(to, &table, &names, chunk),
+                MAX_ROWS,
+            )
+            .await?;
         for row in rs.into_iter().flat_map(|r| r.rows) {
             found.insert(subset::normalize_key(&row));
         }
     }
     if !found.is_empty() {
-        part.rows.retain(|r| !found.contains(&subset::normalize_key(&pk.iter().map(|&i| r[i].clone()).collect::<Vec<_>>())));
+        part.rows.retain(|r| {
+            !found.contains(&subset::normalize_key(
+                &pk.iter().map(|&i| r[i].clone()).collect::<Vec<_>>(),
+            ))
+        });
     }
     Ok(())
 }
@@ -983,23 +1338,74 @@ mod tests {
     use super::*;
 
     fn col(name: &str, ty: &str, pk: bool) -> ColumnInfo {
-        ColumnInfo { name: name.into(), data_type: ty.into(), nullable: !pk, primary_key: pk }
+        ColumnInfo {
+            name: name.into(),
+            data_type: ty.into(),
+            nullable: !pk,
+            primary_key: pk,
+        }
     }
 
     #[test]
     fn translates_types_between_engines() {
-        assert_eq!(target_type(Driver::Postgres, Driver::Postgres, "character varying(20)", false), "character varying(20)");
-        assert_eq!(target_type(Driver::MySql, Driver::MariaDb, "tinyint(1)", false), "tinyint(1)");
-        assert_eq!(target_type(Driver::Postgres, Driver::MsSql, "character varying(20)", false), "nvarchar(20)");
-        assert_eq!(target_type(Driver::Postgres, Driver::MySql, "text", true), "varchar(255)");
-        assert_eq!(target_type(Driver::Postgres, Driver::Oracle, "boolean", false), "number(1)");
-        assert_eq!(target_type(Driver::Oracle, Driver::Postgres, "number(10)", false), "bigint");
-        assert_eq!(target_type(Driver::Oracle, Driver::Postgres, "number(10,2)", false), "decimal(10,2)");
-        assert_eq!(target_type(Driver::Oracle, Driver::Postgres, "date", false), "timestamp");
-        assert_eq!(target_type(Driver::MsSql, Driver::Postgres, "datetimeoffset", false), "timestamptz");
-        assert_eq!(target_type(Driver::MsSql, Driver::Sqlite, "nvarchar(max)", false), "TEXT");
-        assert_eq!(target_type(Driver::MySql, Driver::Snowflake, "int", false), "number(38,0)");
-        assert_eq!(target_type(Driver::Postgres, Driver::MySql, "integer[]", false), "longtext");
+        assert_eq!(
+            target_type(
+                Driver::Postgres,
+                Driver::Postgres,
+                "character varying(20)",
+                false
+            ),
+            "character varying(20)"
+        );
+        assert_eq!(
+            target_type(Driver::MySql, Driver::MariaDb, "tinyint(1)", false),
+            "tinyint(1)"
+        );
+        assert_eq!(
+            target_type(
+                Driver::Postgres,
+                Driver::MsSql,
+                "character varying(20)",
+                false
+            ),
+            "nvarchar(20)"
+        );
+        assert_eq!(
+            target_type(Driver::Postgres, Driver::MySql, "text", true),
+            "varchar(255)"
+        );
+        assert_eq!(
+            target_type(Driver::Postgres, Driver::Oracle, "boolean", false),
+            "number(1)"
+        );
+        assert_eq!(
+            target_type(Driver::Oracle, Driver::Postgres, "number(10)", false),
+            "bigint"
+        );
+        assert_eq!(
+            target_type(Driver::Oracle, Driver::Postgres, "number(10,2)", false),
+            "decimal(10,2)"
+        );
+        assert_eq!(
+            target_type(Driver::Oracle, Driver::Postgres, "date", false),
+            "timestamp"
+        );
+        assert_eq!(
+            target_type(Driver::MsSql, Driver::Postgres, "datetimeoffset", false),
+            "timestamptz"
+        );
+        assert_eq!(
+            target_type(Driver::MsSql, Driver::Sqlite, "nvarchar(max)", false),
+            "TEXT"
+        );
+        assert_eq!(
+            target_type(Driver::MySql, Driver::Snowflake, "int", false),
+            "number(38,0)"
+        );
+        assert_eq!(
+            target_type(Driver::Postgres, Driver::MySql, "integer[]", false),
+            "longtext"
+        );
         assert!(is_binary(Driver::Postgres, "bytea") && is_binary(Driver::MsSql, "varbinary(max)"));
         assert!(!is_binary(Driver::Oracle, "varchar2(10 char)"));
     }
@@ -1008,10 +1414,32 @@ mod tests {
     fn translates_clickhouse_types() {
         // Into ClickHouse: types that keep the values (its `float` is Float32; Date and DateTime
         // start in 1970, and DateTime has no fractions of a second).
-        assert_eq!(target_type(Driver::Postgres, Driver::ClickHouse, "double precision", false), "Float64");
-        assert_eq!(target_type(Driver::Sqlite, Driver::ClickHouse, "DATE", false), "Date32");
-        assert_eq!(target_type(Driver::MySql, Driver::ClickHouse, "datetime(6)", false), "DateTime64(6)");
-        assert_eq!(target_type(Driver::Postgres, Driver::ClickHouse, "timestamp with time zone", false), "DateTime64(6)");
+        assert_eq!(
+            target_type(
+                Driver::Postgres,
+                Driver::ClickHouse,
+                "double precision",
+                false
+            ),
+            "Float64"
+        );
+        assert_eq!(
+            target_type(Driver::Sqlite, Driver::ClickHouse, "DATE", false),
+            "Date32"
+        );
+        assert_eq!(
+            target_type(Driver::MySql, Driver::ClickHouse, "datetime(6)", false),
+            "DateTime64(6)"
+        );
+        assert_eq!(
+            target_type(
+                Driver::Postgres,
+                Driver::ClickHouse,
+                "timestamp with time zone",
+                false
+            ),
+            "DateTime64(6)"
+        );
         // Out of ClickHouse: through Nullable / LowCardinality, unsigned integers widened.
         let from_ch = |ty: &str| target_type(Driver::ClickHouse, Driver::Postgres, ty, false);
         assert_eq!(from_ch("Nullable(Float64)"), "double precision");
@@ -1025,36 +1453,109 @@ mod tests {
         assert_eq!(from_ch("LowCardinality(Nullable(String))"), "text");
         assert_eq!(from_ch("FixedString(8)"), "varchar(8)");
         assert_eq!(from_ch("Array(String)"), "text");
-        assert_eq!(target_type(Driver::ClickHouse, Driver::Sqlite, "Bool", false), "BOOLEAN");
+        assert_eq!(
+            target_type(Driver::ClickHouse, Driver::Sqlite, "Bool", false),
+            "BOOLEAN"
+        );
         // Same engine: the type as is.
-        assert_eq!(target_type(Driver::ClickHouse, Driver::ClickHouse, "LowCardinality(String)", false), "LowCardinality(String)");
+        assert_eq!(
+            target_type(
+                Driver::ClickHouse,
+                Driver::ClickHouse,
+                "LowCardinality(String)",
+                false
+            ),
+            "LowCardinality(String)"
+        );
     }
 
     #[test]
     fn masks_are_deterministic_and_fit_the_column() {
         let key = b"k";
-        let email = Mask::Email.apply(key, Some("ana@corp.com".into()), None).unwrap();
-        assert!(email.starts_with("user_") && email.ends_with("@example.com") && email.len() == 27, "{email}");
-        assert_eq!(Mask::Email.apply(key, Some("ana@corp.com".into()), None).unwrap(), email);
-        assert_ne!(Mask::Email.apply(b"other", Some("ana@corp.com".into()), None).unwrap(), email);
-        assert_ne!(Mask::Hash.apply(key, Some("a".into()), None), Mask::Hash.apply(key, Some("b".into()), None));
-        assert_eq!(Mask::Hash.apply(key, Some("a".into()), Some(6)).unwrap().len(), 6);
-        assert_eq!(Mask::Partial.apply(key, Some("ES91 2100 1234".into()), None).unwrap(), "**********1234");
-        assert_eq!(Mask::Partial.apply(key, Some("123".into()), None).unwrap(), "***");
-        assert!(Mask::Phone.apply(key, Some("+34 600".into()), None).unwrap().starts_with("555-"));
+        let email = Mask::Email
+            .apply(key, Some("ana@corp.com".into()), None)
+            .unwrap();
+        assert!(
+            email.starts_with("user_") && email.ends_with("@example.com") && email.len() == 27,
+            "{email}"
+        );
+        assert_eq!(
+            Mask::Email
+                .apply(key, Some("ana@corp.com".into()), None)
+                .unwrap(),
+            email
+        );
+        assert_ne!(
+            Mask::Email
+                .apply(b"other", Some("ana@corp.com".into()), None)
+                .unwrap(),
+            email
+        );
+        assert_ne!(
+            Mask::Hash.apply(key, Some("a".into()), None),
+            Mask::Hash.apply(key, Some("b".into()), None)
+        );
+        assert_eq!(
+            Mask::Hash
+                .apply(key, Some("a".into()), Some(6))
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(
+            Mask::Partial
+                .apply(key, Some("ES91 2100 1234".into()), None)
+                .unwrap(),
+            "**********1234"
+        );
+        assert_eq!(
+            Mask::Partial.apply(key, Some("123".into()), None).unwrap(),
+            "***"
+        );
+        assert!(
+            Mask::Phone
+                .apply(key, Some("+34 600".into()), None)
+                .unwrap()
+                .starts_with("555-")
+        );
         assert_eq!(Mask::Name.apply(key, None, None), None);
         assert_eq!(Mask::Null.apply(key, Some("x".into()), None), None);
-        assert_eq!(Mask::Blank.apply(key, Some("x".into()), None), Some(String::new()));
+        assert_eq!(
+            Mask::Blank.apply(key, Some("x".into()), None),
+            Some(String::new())
+        );
 
-        let pk = ColumnInfo { name: "id".into(), data_type: "varchar(10)".into(), nullable: false, primary_key: true };
-        let num = ColumnInfo { name: "n".into(), data_type: "integer".into(), nullable: true, primary_key: false };
-        assert!(!Mask::Null.allowed(Driver::Postgres, &pk) && !Mask::Blank.allowed(Driver::Postgres, &pk));
+        let pk = ColumnInfo {
+            name: "id".into(),
+            data_type: "varchar(10)".into(),
+            nullable: false,
+            primary_key: true,
+        };
+        let num = ColumnInfo {
+            name: "n".into(),
+            data_type: "integer".into(),
+            nullable: true,
+            primary_key: false,
+        };
+        assert!(
+            !Mask::Null.allowed(Driver::Postgres, &pk)
+                && !Mask::Blank.allowed(Driver::Postgres, &pk)
+        );
         assert!(Mask::Hash.allowed(Driver::Postgres, &pk));
-        assert!(Mask::Null.allowed(Driver::Postgres, &num) && !Mask::Hash.allowed(Driver::Postgres, &num));
+        assert!(
+            Mask::Null.allowed(Driver::Postgres, &num)
+                && !Mask::Hash.allowed(Driver::Postgres, &num)
+        );
 
         let cols = [pk, num];
         let mut rows = vec![vec![Some("abc".into()), Some("7".into())]];
-        mask_rows(Driver::Postgres, &cols, &[Mask::Hash, Mask::Null], "k", &mut rows);
+        mask_rows(
+            Driver::Postgres,
+            &cols,
+            &[Mask::Hash, Mask::Null],
+            "k",
+            &mut rows,
+        );
         assert_eq!(rows[0][0].as_ref().map(String::len), Some(10));
         assert_eq!(rows[0][1], None);
     }
@@ -1073,10 +1574,22 @@ mod tests {
 
     #[test]
     fn converts_booleans() {
-        assert_eq!(convert(Driver::Postgres, Driver::MySql, "boolean", Some("t".into())), Some("1".into()));
-        assert_eq!(convert(Driver::MsSql, Driver::Postgres, "bit", Some("false".into())), Some("false".into()));
-        assert_eq!(convert(Driver::Postgres, Driver::MySql, "integer", Some("t".into())), Some("t".into()));
-        assert_eq!(convert(Driver::Postgres, Driver::MySql, "boolean", None), None);
+        assert_eq!(
+            convert(Driver::Postgres, Driver::MySql, "boolean", Some("t".into())),
+            Some("1".into())
+        );
+        assert_eq!(
+            convert(Driver::MsSql, Driver::Postgres, "bit", Some("false".into())),
+            Some("false".into())
+        );
+        assert_eq!(
+            convert(Driver::Postgres, Driver::MySql, "integer", Some("t".into())),
+            Some("t".into())
+        );
+        assert_eq!(
+            convert(Driver::Postgres, Driver::MySql, "boolean", None),
+            None
+        );
     }
 
     #[test]
@@ -1086,12 +1599,18 @@ mod tests {
             select_sql(Driver::Postgres, "public", "t", &cols, "id > 3;", Some(5)),
             "SELECT \"id\", \"name\" FROM \"public\".\"t\" WHERE id > 3 LIMIT 5"
         );
-        assert_eq!(select_sql(Driver::MsSql, "dbo", "t", &cols, "", Some(5)), "SELECT TOP (5) [id], [name] FROM [dbo].[t]");
+        assert_eq!(
+            select_sql(Driver::MsSql, "dbo", "t", &cols, "", Some(5)),
+            "SELECT TOP (5) [id], [name] FROM [dbo].[t]"
+        );
         assert_eq!(
             select_sql(Driver::Oracle, "HR", "T", &cols, "", Some(5)),
             "SELECT * FROM (SELECT \"id\", \"name\" FROM \"HR\".\"T\") WHERE ROWNUM <= 5"
         );
-        assert_eq!(count_sql(Driver::Sqlite, "main", "t", " a = 1 "), "SELECT COUNT(*) FROM \"t\" WHERE a = 1");
+        assert_eq!(
+            count_sql(Driver::Sqlite, "main", "t", " a = 1 "),
+            "SELECT COUNT(*) FROM \"t\" WHERE a = 1"
+        );
     }
 
     #[test]
@@ -1099,8 +1618,25 @@ mod tests {
         use Driver::*;
         let to_pg = |t: &str| target_type(MongoDb, Postgres, t, false);
         assert_eq!(
-            ["int", "long", "double", "decimal", "bool", "date", "objectId", "string", "object", "array", "mixed", "null"].map(to_pg),
-            ["integer", "bigint", "double precision", "numeric", "boolean", "timestamp", "varchar(24)", "text", "text", "text", "text", "text"]
+            [
+                "int", "long", "double", "decimal", "bool", "date", "objectId", "string", "object",
+                "array", "mixed", "null"
+            ]
+            .map(to_pg),
+            [
+                "integer",
+                "bigint",
+                "double precision",
+                "numeric",
+                "boolean",
+                "timestamp",
+                "varchar(24)",
+                "text",
+                "text",
+                "text",
+                "text",
+                "text"
+            ]
         );
         assert_eq!(target_type(MongoDb, Sqlite, "objectId", true), "TEXT");
         assert_eq!(target_type(MongoDb, MySql, "string", true), "varchar(255)");
@@ -1108,30 +1644,76 @@ mod tests {
         assert!(is_binary(MongoDb, "binData"));
         let sql_to_mongo = |t: &str| target_type(Postgres, MongoDb, t, false);
         assert_eq!(
-            ["integer", "bigint", "numeric(10,2)", "double precision", "boolean", "date", "timestamptz", "varchar(20)", "jsonb", "bytea"].map(sql_to_mongo),
-            ["int", "long", "decimal", "double", "bool", "date", "date", "string", "object", "binData"]
+            [
+                "integer",
+                "bigint",
+                "numeric(10,2)",
+                "double precision",
+                "boolean",
+                "date",
+                "timestamptz",
+                "varchar(20)",
+                "jsonb",
+                "bytea"
+            ]
+            .map(sql_to_mongo),
+            [
+                "int", "long", "decimal", "double", "bool", "date", "date", "string", "object",
+                "binData"
+            ]
         );
-        let cols = [col("_id", "objectId", true), col("name", "string", false), col("n", "int", false)];
+        let cols = [
+            col("_id", "objectId", true),
+            col("name", "string", false),
+            col("n", "int", false),
+        ];
         assert!(Mask::Name.allowed(MongoDb, &cols[1]) && Mask::Blank.allowed(MongoDb, &cols[1]));
-        assert!(Mask::Hash.allowed(MongoDb, &cols[0]) && !Mask::Email.allowed(MongoDb, &cols[0]) && !Mask::Null.allowed(MongoDb, &cols[0]));
+        assert!(
+            Mask::Hash.allowed(MongoDb, &cols[0])
+                && !Mask::Email.allowed(MongoDb, &cols[0])
+                && !Mask::Null.allowed(MongoDb, &cols[0])
+        );
         assert!(!Mask::Hash.allowed(MongoDb, &cols[2]) && Mask::Null.allowed(MongoDb, &cols[2]));
         // MongoDB dates go to SQL without the `T` and the `Z`; booleans as each engine wants them.
-        assert_eq!(convert(MongoDb, MySql, "date", Some("2026-01-02T03:04:05.120Z".into())), Some("2026-01-02 03:04:05.120".into()));
-        assert_eq!(convert(MongoDb, Sqlite, "bool", Some("true".into())), Some("1".into()));
+        assert_eq!(
+            convert(
+                MongoDb,
+                MySql,
+                "date",
+                Some("2026-01-02T03:04:05.120Z".into())
+            ),
+            Some("2026-01-02 03:04:05.120".into())
+        );
+        assert_eq!(
+            convert(MongoDb, Sqlite, "bool", Some("true".into())),
+            Some("1".into())
+        );
     }
 
     #[test]
     fn converts_text_to_bson() {
         use mongodb::bson::{Bson, doc, oid::ObjectId};
         assert_eq!(to_bson("int", Some("42".into())), Bson::Int32(42));
-        assert_eq!(to_bson("int", Some("9007199254740993".into())), Bson::Int64(9007199254740993));
+        assert_eq!(
+            to_bson("int", Some("9007199254740993".into())),
+            Bson::Int64(9007199254740993)
+        );
         assert_eq!(to_bson("long", Some("7".into())), Bson::Int64(7));
         assert_eq!(to_bson("double", Some("1.5".into())), Bson::Double(1.5));
-        assert_eq!(to_bson("decimal", Some("10.20".into())), Bson::Decimal128("10.20".parse().unwrap()));
+        assert_eq!(
+            to_bson("decimal", Some("10.20".into())),
+            Bson::Decimal128("10.20".parse().unwrap())
+        );
         assert_eq!(to_bson("bool", Some("t".into())), Bson::Boolean(true));
         assert_eq!(to_bson("bool", Some("0".into())), Bson::Boolean(false));
-        assert_eq!(to_bson("int", Some("abc".into())), Bson::String("abc".into()));
-        assert_eq!(to_bson("string", Some("{\"a\": 1}".into())), Bson::String("{\"a\": 1}".into()));
+        assert_eq!(
+            to_bson("int", Some("abc".into())),
+            Bson::String("abc".into())
+        );
+        assert_eq!(
+            to_bson("string", Some("{\"a\": 1}".into())),
+            Bson::String("{\"a\": 1}".into())
+        );
         assert_eq!(to_bson("int", None), Bson::Null);
         let date = |s: &str| match to_bson("date", Some(s.into())) {
             Bson::DateTime(d) => d.try_to_rfc3339_string().unwrap(),
@@ -1143,37 +1725,74 @@ mod tests {
         assert_eq!(date("2026-01-02 03:04:05 +0530").len(), 20);
         assert_eq!(date("2026-01-02T03:04:05.123Z"), "2026-01-02T03:04:05.123Z");
         let oid = "64b7f1f1f1f1f1f1f1f1f1f1";
-        assert_eq!(to_bson("objectId", Some(oid.into())), Bson::ObjectId(ObjectId::parse_str(oid).unwrap()));
+        assert_eq!(
+            to_bson("objectId", Some(oid.into())),
+            Bson::ObjectId(ObjectId::parse_str(oid).unwrap())
+        );
         // A hashed `_id` is no longer an ObjectId: it stays a string.
-        assert_eq!(to_bson("objectId", Some("0123abcd".into())), Bson::String("0123abcd".into()));
+        assert_eq!(
+            to_bson("objectId", Some("0123abcd".into())),
+            Bson::String("0123abcd".into())
+        );
         // Documents and arrays come back from the relaxed extended JSON `render` writes.
-        let nested = Bson::Document(doc! { "k": true, "at": mongodb::bson::DateTime::from_millis(0), "id": ObjectId::parse_str(oid).unwrap() });
+        let nested = Bson::Document(
+            doc! { "k": true, "at": mongodb::bson::DateTime::from_millis(0), "id": ObjectId::parse_str(oid).unwrap() },
+        );
         let text = super::super::mongo::render(&nested);
         assert_eq!(to_bson("object", text), nested);
-        assert_eq!(to_bson("array", Some("[1, \"a\"]".into())), Bson::Array(vec![Bson::Int32(1), Bson::String("a".into())]));
-        assert_eq!(to_bson("mixed", Some("plain".into())), Bson::String("plain".into()));
+        assert_eq!(
+            to_bson("array", Some("[1, \"a\"]".into())),
+            Bson::Array(vec![Bson::Int32(1), Bson::String("a".into())])
+        );
+        assert_eq!(
+            to_bson("mixed", Some("plain".into())),
+            Bson::String("plain".into())
+        );
 
         let names: Vec<String> = ["_id", "n", "tags"].map(String::from).to_vec();
-        let d = to_document(&names, &["objectId", "int", "array"], vec![None, Some("3".into()), None]);
+        let d = to_document(
+            &names,
+            &["objectId", "int", "array"],
+            vec![None, Some("3".into()), None],
+        );
         assert_eq!(d, doc! { "n": 3, "tags": Bson::Null });
     }
 
     #[test]
     fn builds_mongodb_commands() {
-        let cols = [col("_id", "objectId", true), col("first name", "string", false)];
+        let cols = [
+            col("_id", "objectId", true),
+            col("first name", "string", false),
+        ];
         assert_eq!(mongo_filter(""), "{}");
-        assert_eq!(mongo_filter(" status: \"active\"; "), "{status: \"active\"}");
+        assert_eq!(
+            mongo_filter(" status: \"active\"; "),
+            "{status: \"active\"}"
+        );
         assert_eq!(mongo_filter("{a: 1}"), "{a: 1}");
         assert_eq!(
             find_command("people", &cols, "age: {$gt: 30}", Some(5)),
             "db.getCollection(\"people\").find({age: {$gt: 30}}, {\"_id\": 1, \"first name\": 1}).limit(5)"
         );
-        assert_eq!(find_command("p", &cols[1..], "", None), "db.getCollection(\"p\").find({}, {\"first name\": 1, \"_id\": 0})");
-        assert_eq!(count_command("p", "a: 1"), "db.getCollection(\"p\").countDocuments({a: 1})");
-        for cmd in [find_command("people", &cols, "age: {$gt: 30}", Some(5)), count_command("p", "")] {
+        assert_eq!(
+            find_command("p", &cols[1..], "", None),
+            "db.getCollection(\"p\").find({}, {\"first name\": 1, \"_id\": 0})"
+        );
+        assert_eq!(
+            count_command("p", "a: 1"),
+            "db.getCollection(\"p\").countDocuments({a: 1})"
+        );
+        for cmd in [
+            find_command("people", &cols, "age: {$gt: 30}", Some(5)),
+            count_command("p", ""),
+        ] {
             assert!(super::super::mongo::is_read_command(&cmd), "{cmd}");
         }
-        assert!(is_read_filter("") && is_read_filter("status: 'a', n: {$in: [1, 2]}") && is_read_filter("{_id: ObjectId(\"64b7f1f1f1f1f1f1f1f1f1f1\")}"));
+        assert!(
+            is_read_filter("")
+                && is_read_filter("status: 'a', n: {$in: [1, 2]}")
+                && is_read_filter("{_id: ObjectId(\"64b7f1f1f1f1f1f1f1f1f1f1\")}")
+        );
         assert!(!is_read_filter("a: 1}).limit(1).sort({a: 1"));
         assert!(!is_read_filter("a: 1}, {b: 1"));
         assert!(!is_read_filter("a: "));
@@ -1186,17 +1805,45 @@ mod tests {
 
     #[test]
     fn builds_create_and_inserts() {
-        let cols = [col("id", "integer", true), col("Name", "character varying(20)", false), col("ok", "boolean", false)];
+        let cols = [
+            col("id", "integer", true),
+            col("Name", "character varying(20)", false),
+            col("ok", "boolean", false),
+        ];
         assert_eq!(
             create_sql(Driver::Postgres, Driver::MySql, "public", "Users", &cols),
             "create table Users\n(\n    id int not null,\n    Name varchar(20),\n    ok boolean,\n    primary key (id)\n)"
         );
-        let rows: Vec<Vec<Cell>> = (0..150).map(|i| vec![Some(i.to_string()), Some("it's".into()), Some("t".into())]).collect();
+        let rows: Vec<Vec<Cell>> = (0..150)
+            .map(|i| vec![Some(i.to_string()), Some("it's".into()), Some("t".into())])
+            .collect();
         let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
-        let s = insert_sql(Driver::Postgres, Driver::MySql, "`db`.`Users`", &cols, &names, rows);
+        let s = insert_sql(
+            Driver::Postgres,
+            Driver::MySql,
+            "`db`.`Users`",
+            &cols,
+            &names,
+            rows,
+        );
         assert_eq!(s.len(), 2);
-        assert!(s[0].starts_with("INSERT INTO `db`.`Users` (`id`, `Name`, `ok`)\nVALUES ('0', 'it''s', '1'),"));
-        let one = insert_sql(Driver::Sqlite, Driver::Oracle, "\"T\"", &cols, &names, vec![vec![None, None, Some("f".into())]]);
-        assert_eq!(one, vec!["INSERT INTO \"T\" (\"id\", \"Name\", \"ok\")\nVALUES (NULL, NULL, '0')".to_string()]);
+        assert!(s[0].starts_with(
+            "INSERT INTO `db`.`Users` (`id`, `Name`, `ok`)\nVALUES ('0', 'it''s', '1'),"
+        ));
+        let one = insert_sql(
+            Driver::Sqlite,
+            Driver::Oracle,
+            "\"T\"",
+            &cols,
+            &names,
+            vec![vec![None, None, Some("f".into())]],
+        );
+        assert_eq!(
+            one,
+            vec![
+                "INSERT INTO \"T\" (\"id\", \"Name\", \"ok\")\nVALUES (NULL, NULL, '0')"
+                    .to_string()
+            ]
+        );
     }
 }

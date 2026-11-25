@@ -25,7 +25,10 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::{Value, json};
 
 use super::snowflake::http_error;
-use super::{AuthMode, Cell, ColumnInfo, ConnectionConfig, Driver, ObjectKind, ResultSet, SchemaInfo, TableInfo};
+use super::{
+    AuthMode, Cell, ColumnInfo, ConnectionConfig, Driver, ObjectKind, ResultSet, SchemaInfo,
+    TableInfo,
+};
 use crate::i18n::{tr, trf};
 
 /// The public cloud's Entra ID, for clusters that don't publish theirs.
@@ -48,7 +51,11 @@ enum Auth {
     /// The Azure CLI's signed-in account.
     AzureCli { tenant: Option<String> },
     /// An Entra ID application (client credentials).
-    Application { tenant: String, client_id: String, secret: String },
+    Application {
+        tenant: String,
+        client_id: String,
+        secret: String,
+    },
 }
 
 pub struct KustoSession {
@@ -68,7 +75,12 @@ pub struct KustoSession {
 
 /// HTTPS unless "Use TLS" was turned off (the emulator serves plain HTTP).
 fn tls(cfg: &ConnectionConfig) -> bool {
-    !cfg.property("tls").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+    !cfg.property("tls").is_some_and(|v| {
+        matches!(
+            v.to_ascii_lowercase().as_str(),
+            "false" | "0" | "no" | "off"
+        )
+    })
 }
 
 /// The cluster's address without the scheme's default port. A cluster URI typed in the host
@@ -80,8 +92,13 @@ pub fn cluster_url(cfg: &ConnectionConfig) -> String {
         None => (tls(cfg), host),
     };
     let authority = host.split('/').next().unwrap_or_default();
-    let (host, port) = super::url::parse_authority(authority, cfg.port).unwrap_or((authority.to_string(), cfg.port));
-    let host = if host.is_empty() { "localhost".to_string() } else { host };
+    let (host, port) = super::url::parse_authority(authority, cfg.port)
+        .unwrap_or((authority.to_string(), cfg.port));
+    let host = if host.is_empty() {
+        "localhost".to_string()
+    } else {
+        host
+    };
     let scheme = if tls { "https" } else { "http" };
     match port {
         0 => format!("{scheme}://{host}"),
@@ -97,14 +114,25 @@ fn service_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
     let message = api_error_message(&v["error"]).unwrap_or_else(|| {
         // Plain text (`General_BadRequest: …\r\nError details: …`): its first line.
         let text = body.trim().lines().next().unwrap_or_default().trim();
-        if text.is_empty() { status.canonical_reason().unwrap_or_default().to_string() } else { text.chars().take(300).collect() }
+        if text.is_empty() {
+            status.canonical_reason().unwrap_or_default().to_string()
+        } else {
+            text.chars().take(300).collect()
+        }
     });
-    anyhow!(trf("HTTP {status} from Kusto: {message}", &[("status", &status), ("message", &message)]))
+    anyhow!(trf(
+        "HTTP {status} from Kusto: {message}",
+        &[("status", &status), ("message", &message)]
+    ))
 }
 
 /// `@message` (the details) or `message` of a OneApi error (`{"code": …, "@message": …}`).
 fn api_error_message(error: &Value) -> Option<String> {
-    error["@message"].as_str().or_else(|| error["message"].as_str()).map(|m| m.trim().to_string()).filter(|m| !m.is_empty())
+    error["@message"]
+        .as_str()
+        .or_else(|| error["message"].as_str())
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
 }
 
 impl KustoSession {
@@ -120,8 +148,14 @@ impl KustoSession {
                 if cfg.password.trim().is_empty() {
                     bail!(tr("The application's client secret is required"));
                 }
-                let Some(tenant) = tenant else { bail!(tr("The tenant is required to sign in as an application")) };
-                Auth::Application { tenant, client_id, secret: cfg.password.trim().to_string() }
+                let Some(tenant) = tenant else {
+                    bail!(tr("The tenant is required to sign in as an application"))
+                };
+                Auth::Application {
+                    tenant,
+                    client_id,
+                    secret: cfg.password.trim().to_string(),
+                }
             }
             AuthMode::AzureCli | AuthMode::Authenticator => Auth::AzureCli { tenant },
         };
@@ -172,17 +206,38 @@ impl KustoSession {
         let (token, lifetime) = match &self.auth {
             Auth::None => return Ok(None),
             Auth::AzureCli { tenant } => az_token(&self.resource, tenant.as_deref()).await?,
-            Auth::Application { tenant, client_id, secret } => {
-                app_token(&self.http, &self.login, tenant, client_id, secret, &self.resource).await?
+            Auth::Application {
+                tenant,
+                client_id,
+                secret,
+            } => {
+                app_token(
+                    &self.http,
+                    &self.login,
+                    tenant,
+                    client_id,
+                    secret,
+                    &self.resource,
+                )
+                .await?
             }
         };
-        let renew = Instant::now() + lifetime.saturating_sub(TOKEN_MARGIN).max(Duration::from_secs(30));
+        let renew = Instant::now()
+            + lifetime
+                .saturating_sub(TOKEN_MARGIN)
+                .max(Duration::from_secs(30));
         self.token = Some((token.clone(), renew));
         Ok(Some(token))
     }
 
     /// One request to `/v2/rest/query` or `/v1/rest/mgmt`, with the client request `options`.
-    async fn post(&mut self, path: &str, db: &str, csl: &str, mut options: Value) -> anyhow::Result<Value> {
+    async fn post(
+        &mut self,
+        path: &str,
+        db: &str,
+        csl: &str,
+        mut options: Value,
+    ) -> anyhow::Result<Value> {
         let bearer = self.bearer().await?;
         if self.read_only {
             options["request_readonly"] = json!(true);
@@ -205,7 +260,12 @@ impl KustoSession {
         if !status.is_success() {
             return Err(service_error(status, &body));
         }
-        serde_json::from_str(&body).map_err(|e| anyhow!(trf("Unreadable response from Kusto: {error}", &[("error", &e)])))
+        serde_json::from_str(&body).map_err(|e| {
+            anyhow!(trf(
+                "Unreadable response from Kusto: {error}",
+                &[("error", &e)]
+            ))
+        })
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
@@ -214,11 +274,23 @@ impl KustoSession {
 
     /// The databases the account can see.
     pub async fn list_databases(&mut self) -> anyhow::Result<Vec<String>> {
-        let body = self.post("/v1/rest/mgmt", "", ".show databases | project DatabaseName", json!({})).await?;
+        let body = self
+            .post(
+                "/v1/rest/mgmt",
+                "",
+                ".show databases | project DatabaseName",
+                json!({}),
+            )
+            .await?;
         let mut names: Vec<String> = parse_v1(&body, usize::MAX)
             .into_iter()
             .next()
-            .map(|rs| rs.rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())
+            .map(|rs| {
+                rs.rows
+                    .into_iter()
+                    .filter_map(|r| r.into_iter().next().flatten())
+                    .collect()
+            })
             .unwrap_or_default();
         names.sort_by_key(|n| n.to_lowercase());
         Ok(names)
@@ -233,9 +305,17 @@ impl KustoSession {
 
     /// "Azure Data Explorer 1.0.9788.37182" (the emulator and Fabric don't name their offering).
     pub async fn server_version(&mut self) -> Option<String> {
-        let body = self.post("/v1/rest/mgmt", "", ".show version", json!({})).await.ok()?;
+        let body = self
+            .post("/v1/rest/mgmt", "", ".show version", json!({}))
+            .await
+            .ok()?;
         let rs = parse_v1(&body, 1).into_iter().next()?;
-        let col = |name: &str| rs.columns.iter().position(|c| c == name).and_then(|i| rs.rows.first()?.get(i)?.clone());
+        let col = |name: &str| {
+            rs.columns
+                .iter()
+                .position(|c| c == name)
+                .and_then(|i| rs.rows.first()?.get(i)?.clone())
+        };
         let offering = col("ServiceOffering")
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
             .and_then(|v| v["Type"].as_str().map(str::to_string))
@@ -251,16 +331,31 @@ impl KustoSession {
             return Ok(Vec::new());
         }
         let db = self.database.clone();
-        let command = format!(".show database {} schema as json", Driver::Kusto.quote_ident(&db));
+        let command = format!(
+            ".show database {} schema as json",
+            Driver::Kusto.quote_ident(&db)
+        );
         let body = self.post("/v1/rest/mgmt", &db, &command, json!({})).await?;
-        let json = parse_v1(&body, 1).into_iter().next().and_then(|rs| rs.rows.into_iter().next()?.into_iter().next()?);
-        let schema: Value = json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-        Ok(vec![SchemaInfo { name: db, tables: schema_tables(&schema) }])
+        let json = parse_v1(&body, 1)
+            .into_iter()
+            .next()
+            .and_then(|rs| rs.rows.into_iter().next()?.into_iter().next()?);
+        let schema: Value = json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        Ok(vec![SchemaInfo {
+            name: db,
+            tables: schema_tables(&schema),
+        }])
     }
 
     /// Runs ONE request: a KQL query (possibly several statements and results) or a control
     /// command.
-    pub async fn execute(&mut self, script: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
+    pub async fn execute(
+        &mut self,
+        script: &str,
+        max_rows: usize,
+    ) -> anyhow::Result<Vec<ResultSet>> {
         let start = Instant::now();
         let statement = script.trim().to_string();
         if statement.is_empty() {
@@ -272,7 +367,10 @@ impl KustoSession {
             // From the dot: Kusto refuses comments before a command. Control commands ignore
             // `truncationmaxrecords`, so the rows are cut here.
             let command = skip_comments(&statement).to_string();
-            parse_v1(&self.post("/v1/rest/mgmt", &db, &command, json!({})).await?, max_rows)
+            parse_v1(
+                &self.post("/v1/rest/mgmt", &db, &command, json!({})).await?,
+                max_rows,
+            )
         } else {
             let options = if max_rows < usize::MAX {
                 // The rows up to the limit come, then an error that `parse_v2` takes as the cut.
@@ -280,7 +378,12 @@ impl KustoSession {
             } else {
                 json!({})
             };
-            parse_v2(&self.post("/v2/rest/query", &db, &statement, options).await?, max_rows)?
+            parse_v2(
+                &self
+                    .post("/v2/rest/query", &db, &statement, options)
+                    .await?,
+                max_rows,
+            )?
         };
         if results.is_empty() {
             results.push(ResultSet::default());
@@ -294,16 +397,28 @@ impl KustoSession {
 }
 
 /// Entra ID login hosts of the Azure clouds: the client secret is only sent to one of these.
-const LOGIN_HOSTS: &[&str] = &["login.microsoftonline.com", "login.microsoftonline.us", "login.chinacloudapi.cn", "login.partner.microsoftonline.cn"];
+const LOGIN_HOSTS: &[&str] = &[
+    "login.microsoftonline.com",
+    "login.microsoftonline.us",
+    "login.chinacloudapi.cn",
+    "login.partner.microsoftonline.cn",
+];
 /// Domains of Kusto's token audiences: a token for anything else (Azure Resource Manager…) is
 /// never requested for the cluster.
-const KUSTO_DOMAINS: &[&str] =
-    &["kusto.windows.net", "kusto.usgovcloudapi.net", "kusto.chinacloudapi.cn", "kusto.fabric.microsoft.com", "kustomfa.windows.net"];
+const KUSTO_DOMAINS: &[&str] = &[
+    "kusto.windows.net",
+    "kusto.usgovcloudapi.net",
+    "kusto.chinacloudapi.cn",
+    "kusto.fabric.microsoft.com",
+    "kustomfa.windows.net",
+];
 
 /// The host of an `https://` URL, lowercased.
 fn https_host(url: &str) -> Option<String> {
     let url = reqwest::Url::parse(url).ok()?;
-    (url.scheme() == "https").then(|| url.host_str().map(str::to_ascii_lowercase)).flatten()
+    (url.scheme() == "https")
+        .then(|| url.host_str().map(str::to_ascii_lowercase))
+        .flatten()
 }
 
 /// The cluster's Entra ID login endpoint and token audience, or the public cloud's. The metadata
@@ -312,7 +427,12 @@ fn https_host(url: &str) -> Option<String> {
 /// secret, nor get a token meant for another Azure service.
 async fn cloud(http: &reqwest::Client, base: &str) -> (String, String) {
     let metadata: Option<Value> = async {
-        let resp = http.get(format!("{base}/v1/rest/auth/metadata")).timeout(Duration::from_secs(10)).send().await.ok()?;
+        let resp = http
+            .get(format!("{base}/v1/rest/auth/metadata"))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .ok()?;
         resp.json().await.ok()
     }
     .await;
@@ -322,23 +442,44 @@ async fn cloud(http: &reqwest::Client, base: &str) -> (String, String) {
 /// `cloud`'s choice from the cluster's metadata.
 fn trusted_cloud(metadata: Option<&Value>, base: &str) -> (String, String) {
     let get = |key: &str| {
-        metadata.and_then(|m| m["AzureAD"][key].as_str()).map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
+        metadata
+            .and_then(|m| m["AzureAD"][key].as_str())
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
     };
-    let login = get("LoginEndpoint").filter(|l| https_host(l).is_some_and(|h| LOGIN_HOSTS.contains(&h.as_str())));
+    let login = get("LoginEndpoint")
+        .filter(|l| https_host(l).is_some_and(|h| LOGIN_HOSTS.contains(&h.as_str())));
     let cluster = https_host(base);
     let resource = get("KustoServiceResourceId").filter(|r| {
-        https_host(r).is_some_and(|h| Some(&h) == cluster.as_ref() || KUSTO_DOMAINS.iter().any(|d| h.ends_with(&format!(".{d}"))))
+        https_host(r).is_some_and(|h| {
+            Some(&h) == cluster.as_ref()
+                || KUSTO_DOMAINS.iter().any(|d| h.ends_with(&format!(".{d}")))
+        })
     });
-    (login.unwrap_or_else(|| LOGIN_ENDPOINT.into()), resource.unwrap_or_else(|| base.to_string()))
+    (
+        login.unwrap_or_else(|| LOGIN_ENDPOINT.into()),
+        resource.unwrap_or_else(|| base.to_string()),
+    )
 }
 
 /// `az account get-access-token` for the cluster's audience: (token, lifetime).
 async fn az_token(resource: &str, tenant: Option<&str>) -> anyhow::Result<(String, Duration)> {
-    let mut args: Vec<String> = ["account", "get-access-token", "--resource", resource, "--output", "json"].map(String::from).to_vec();
+    let mut args: Vec<String> = [
+        "account",
+        "get-access-token",
+        "--resource",
+        resource,
+        "--output",
+        "json",
+    ]
+    .map(String::from)
+    .to_vec();
     if let Some(tenant) = tenant {
         args.extend(["--tenant".to_string(), tenant.to_string()]);
     }
-    let output = tokio::task::spawn_blocking(move || run_az(&args)).await.map_err(|e| anyhow!(e.to_string()))??;
+    let output = tokio::task::spawn_blocking(move || run_az(&args))
+        .await
+        .map_err(|e| anyhow!(e.to_string()))??;
     if !output.status.success() {
         // `ERROR: Please run 'az login' to setup account.`
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -368,26 +509,50 @@ fn run_az(args: &[String]) -> anyhow::Result<std::process::Output> {
             result => return result.map_err(|e| anyhow!(e)),
         }
     }
-    bail!(tr("The Azure CLI (az) was not found: install it and run az login, or choose another authentication"))
+    bail!(tr(
+        "The Azure CLI (az) was not found: install it and run az login, or choose another authentication"
+    ))
 }
 
 /// The token and its lifetime from `az account get-access-token`'s JSON (`expires_on` is a POSIX
 /// time, a number or a string depending on the CLI's version).
 fn parse_az_token(stdout: &[u8], now: SystemTime) -> anyhow::Result<(String, Duration)> {
-    let unreadable = |e: &dyn std::fmt::Display| anyhow!(trf("Unreadable response from the Azure CLI: {error}", &[("error", &e)]));
+    let unreadable = |e: &dyn std::fmt::Display| {
+        anyhow!(trf(
+            "Unreadable response from the Azure CLI: {error}",
+            &[("error", &e)]
+        ))
+    };
     let v: Value = serde_json::from_slice(stdout).map_err(|e| unreadable(&e))?;
-    let token = v["accessToken"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| unreadable(&"accessToken"))?;
-    let expires = v["expires_on"].as_i64().or_else(|| v["expires_on"].as_str().and_then(|s| s.trim().parse().ok()));
-    let now = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let lifetime = expires.map_or(Duration::from_secs(600), |e| Duration::from_secs((e - now).max(0) as u64));
+    let token = v["accessToken"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| unreadable(&"accessToken"))?;
+    let expires = v["expires_on"]
+        .as_i64()
+        .or_else(|| v["expires_on"].as_str().and_then(|s| s.trim().parse().ok()));
+    let now = now
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let lifetime = expires.map_or(Duration::from_secs(600), |e| {
+        Duration::from_secs((e - now).max(0) as u64)
+    });
     Ok((token.to_string(), lifetime))
 }
 
 /// The `application/x-www-form-urlencoded` body of a client credentials token request.
 fn token_request_body(client_id: &str, secret: &str, resource: &str) -> String {
     let scope = format!("{resource}/.default");
-    let params = [("grant_type", "client_credentials"), ("client_id", client_id), ("client_secret", secret), ("scope", &scope)];
-    reqwest::Url::parse_with_params("http://form.invalid/", &params).ok().and_then(|u| u.query().map(str::to_string)).unwrap_or_default()
+    let params = [
+        ("grant_type", "client_credentials"),
+        ("client_id", client_id),
+        ("client_secret", secret),
+        ("scope", &scope),
+    ];
+    reqwest::Url::parse_with_params("http://form.invalid/", &params)
+        .ok()
+        .and_then(|u| u.query().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// A token for an Entra ID application (client credentials): (token, lifetime).
@@ -418,8 +583,14 @@ async fn app_token(
             .unwrap_or_else(|| status.to_string());
         bail!(trf("Sign-in failed: {message}", &[("message", &message)]));
     }
-    let token = v["access_token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| anyhow!(tr("Sign-in failed: no access token")))?;
-    let lifetime = v["expires_in"].as_u64().or_else(|| v["expires_in"].as_str().and_then(|s| s.parse().ok())).unwrap_or(600);
+    let token = v["access_token"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| anyhow!(tr("Sign-in failed: no access token")))?;
+    let lifetime = v["expires_in"]
+        .as_u64()
+        .or_else(|| v["expires_in"].as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(600);
     Ok((token.to_string(), Duration::from_secs(lifetime)))
 }
 
@@ -439,14 +610,24 @@ fn cell(v: &Value) -> Cell {
 }
 
 fn column_names(columns: &Value) -> Vec<String> {
-    columns.as_array().into_iter().flatten().map(|c| c["ColumnName"].as_str().unwrap_or_default().to_string()).collect()
+    columns
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| c["ColumnName"].as_str().unwrap_or_default().to_string())
+        .collect()
 }
 
 /// A v2 query response (an array of frames): one grid per `PrimaryResult` table. Errors come in
 /// the data (a row that is an error object) or at the end (`DataSetCompletion`); the one for
 /// `truncationmaxrecords` only marks the grids that reached `max_rows` as cut.
 fn parse_v2(body: &Value, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
-    let frames = body.as_array().ok_or_else(|| anyhow!(trf("Unreadable response from Kusto: {error}", &[("error", &"frames")])))?;
+    let frames = body.as_array().ok_or_else(|| {
+        anyhow!(trf(
+            "Unreadable response from Kusto: {error}",
+            &[("error", &"frames")]
+        ))
+    })?;
     let mut results = Vec::new();
     let mut error: Option<Value> = None;
     for frame in frames {
@@ -463,9 +644,16 @@ fn parse_v2(body: &Value, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
                 }
                 let truncated = rows.len() > max_rows;
                 rows.truncate(max_rows);
-                results.push(ResultSet { columns: column_names(&frame["Columns"]), rows, truncated, ..Default::default() });
+                results.push(ResultSet {
+                    columns: column_names(&frame["Columns"]),
+                    rows,
+                    truncated,
+                    ..Default::default()
+                });
             }
-            Some("DataSetCompletion") if frame["HasErrors"] == true || frame["Cancelled"] == true => {
+            Some("DataSetCompletion")
+                if frame["HasErrors"] == true || frame["Cancelled"] == true =>
+            {
                 error.get_or_insert_with(|| frame.clone());
             }
             _ => {}
@@ -473,10 +661,14 @@ fn parse_v2(body: &Value, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
     }
     if let Some(e) = error {
         let first = &e["OneApiErrors"][0]["error"];
-        let message = api_error_message(first).unwrap_or_else(|| tr("The query was cancelled").to_string());
+        let message =
+            api_error_message(first).unwrap_or_else(|| tr("The query was cancelled").to_string());
         let cut = message.contains("E_QUERY_RESULT_SET_TOO_LARGE");
         let mut marked = false;
-        for rs in results.iter_mut().filter(|rs| cut && rs.rows.len() >= max_rows) {
+        for rs in results
+            .iter_mut()
+            .filter(|rs| cut && rs.rows.len() >= max_rows)
+        {
             rs.truncated = true;
             marked = true;
         }
@@ -491,31 +683,63 @@ fn parse_v2(body: &Value, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
 /// contents (`Ordinal, Kind, Name, Id…`), only the tables it lists as `QueryResult` are results.
 fn parse_v1(body: &Value, max_rows: usize) -> Vec<ResultSet> {
     let tables: &[Value] = body["Tables"].as_array().map_or(&[], Vec::as_slice);
-    let toc = tables.last().filter(|t| column_names(&t["Columns"]).iter().take(4).eq(["Ordinal", "Kind", "Name", "Id"].iter()));
+    let toc = tables.last().filter(|t| {
+        column_names(&t["Columns"])
+            .iter()
+            .take(4)
+            .eq(["Ordinal", "Kind", "Name", "Id"].iter())
+    });
     let wanted: Option<Vec<u64>> = toc.map(|t| {
-        t["Rows"].as_array().into_iter().flatten().filter(|r| r[1] == "QueryResult").filter_map(|r| r[0].as_u64()).collect()
+        t["Rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r[1] == "QueryResult")
+            .filter_map(|r| r[0].as_u64())
+            .collect()
     });
     tables
         .iter()
         .enumerate()
         .filter(|(i, _)| wanted.as_ref().is_none_or(|w| w.contains(&(*i as u64))))
         .map(|(_, t)| {
-            let mut rows: Vec<Vec<Cell>> =
-                t["Rows"].as_array().into_iter().flatten().map(|r| r.as_array().into_iter().flatten().map(cell).collect()).collect();
+            let mut rows: Vec<Vec<Cell>> = t["Rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|r| r.as_array().into_iter().flatten().map(cell).collect())
+                .collect();
             let truncated = rows.len() > max_rows;
             rows.truncate(max_rows);
-            ResultSet { columns: column_names(&t["Columns"]), rows, truncated, ..Default::default() }
+            ResultSet {
+                columns: column_names(&t["Columns"]),
+                rows,
+                truncated,
+                ..Default::default()
+            }
         })
         .collect()
 }
 
 /// Tables and materialized views of `.show database … schema as json`, by name.
 fn schema_tables(schema: &Value) -> Vec<TableInfo> {
-    let Some(db) = schema["Databases"].as_object().and_then(|d| d.values().next()) else { return Vec::new() };
-    let mut tables: Vec<TableInfo> = [("Tables", ObjectKind::Table), ("MaterializedViews", ObjectKind::View)]
-        .into_iter()
-        .flat_map(|(key, kind)| {
-            db[key].as_object().into_iter().flat_map(|o| o.values()).map(move |t| TableInfo {
+    let Some(db) = schema["Databases"]
+        .as_object()
+        .and_then(|d| d.values().next())
+    else {
+        return Vec::new();
+    };
+    let mut tables: Vec<TableInfo> = [
+        ("Tables", ObjectKind::Table),
+        ("MaterializedViews", ObjectKind::View),
+    ]
+    .into_iter()
+    .flat_map(|(key, kind)| {
+        db[key]
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.values())
+            .map(move |t| TableInfo {
                 name: t["Name"].as_str().unwrap_or_default().to_string(),
                 kind,
                 columns: t["OrderedColumns"]
@@ -531,8 +755,8 @@ fn schema_tables(schema: &Value) -> Vec<TableInfo> {
                     })
                     .collect(),
             })
-        })
-        .collect();
+    })
+    .collect();
     tables.sort_by_key(|t| t.name.to_lowercase());
     tables
 }
@@ -560,7 +784,10 @@ pub fn is_command(statement: &str) -> bool {
 pub fn is_read_command(statement: &str) -> bool {
     match skip_comments(statement).strip_prefix('.') {
         Some(rest) => {
-            let word = rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_').next().unwrap_or_default();
+            let word = rest
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .next()
+                .unwrap_or_default();
             word.eq_ignore_ascii_case("show")
         }
         None => true,
@@ -594,13 +821,23 @@ mod tests {
     use super::*;
 
     fn blocks(script: &str) -> Vec<&str> {
-        split_script(script).into_iter().map(|(s, e)| &script[s..e]).collect()
+        split_script(script)
+            .into_iter()
+            .map(|(s, e)| &script[s..e])
+            .collect()
     }
 
     #[test]
     fn scripts_split_on_blank_lines_not_semicolons() {
         let script = "let n = 2;\nT | take n\n\n  // a comment\n  \n.show tables\n// only comments\n\n// alone\n\nA | count; B | count\n";
-        assert_eq!(blocks(script), ["let n = 2;\nT | take n", ".show tables\n// only comments", "A | count; B | count"]);
+        assert_eq!(
+            blocks(script),
+            [
+                "let n = 2;\nT | take n",
+                ".show tables\n// only comments",
+                "A | count; B | count"
+            ]
+        );
         // A multi-line string keeps its blank lines.
         let fenced = "print s = ```\n\nkeep\n```\n\nprint 2";
         assert_eq!(blocks(fenced), ["print s = ```\n\nkeep\n```", "print 2"]);
@@ -614,10 +851,23 @@ mod tests {
     fn commands_and_read_only() {
         assert!(is_command("// list\n.show tables"));
         assert!(!is_command("T | where Name startswith '.'"));
-        for read in ["T | take 10", "let x = 1; print x", "// c\n.show tables", ".SHOW databases", ".show table T extents | count"] {
+        for read in [
+            "T | take 10",
+            "let x = 1; print x",
+            "// c\n.show tables",
+            ".SHOW databases",
+            ".show table T extents | count",
+        ] {
             assert!(is_read_command(read), "{read}");
         }
-        for write in [".create table T (a: string)", ".set-or-append T <| print 1", ".drop table T", "// c\n.ingest inline into table T <| 1", ".execute database script <| .show tables", ".show-x"] {
+        for write in [
+            ".create table T (a: string)",
+            ".set-or-append T <| print 1",
+            ".drop table T",
+            "// c\n.ingest inline into table T <| 1",
+            ".execute database script <| .show tables",
+            ".show-x",
+        ] {
             assert!(!is_read_command(write), "{write}");
         }
     }
@@ -636,13 +886,29 @@ mod tests {
         .unwrap();
         let sets = parse_v2(&body, 100).unwrap();
         assert_eq!(sets.len(), 2);
-        assert_eq!(sets[0].columns, ["l", "r", "s", "d", "b", "dyn", "dec", "n", "nan"]);
+        assert_eq!(
+            sets[0].columns,
+            ["l", "r", "s", "d", "b", "dyn", "dec", "n", "nan"]
+        );
         let row: Vec<Option<&str>> = sets[0].rows[0].iter().map(Option::as_deref).collect();
         assert_eq!(
             row,
-            [Some("9007199254740993"), Some("1.5"), Some("a\"b"), Some("2024-01-02T03:04:05.678Z"), Some("true"), Some(r#"{"x":[1,2]}"#), Some("1.25"), None, Some("NaN")]
+            [
+                Some("9007199254740993"),
+                Some("1.5"),
+                Some("a\"b"),
+                Some("2024-01-02T03:04:05.678Z"),
+                Some("true"),
+                Some(r#"{"x":[1,2]}"#),
+                Some("1.25"),
+                None,
+                Some("NaN")
+            ]
         );
-        assert_eq!((sets[1].rows[0][0].as_deref(), sets[1].truncated), (Some("59066"), false));
+        assert_eq!(
+            (sets[1].rows[0][0].as_deref(), sets[1].truncated),
+            (Some("59066"), false)
+        );
     }
 
     fn completion(message: &str) -> String {
@@ -655,15 +921,39 @@ mod tests {
     fn the_row_limit_error_only_cuts() {
         let grid = |rows: usize| {
             let rows: Vec<String> = (0..rows).map(|i| format!("[{i}]")).collect();
-            format!(r#"{{"FrameType":"DataTable","TableKind":"PrimaryResult","Columns":[{{"ColumnName":"x"}}],"Rows":[{}]}}"#, rows.join(","))
+            format!(
+                r#"{{"FrameType":"DataTable","TableKind":"PrimaryResult","Columns":[{{"ColumnName":"x"}}],"Rows":[{}]}}"#,
+                rows.join(",")
+            )
         };
         let too_large = "The results of this query exceed the set limit of 3 records (E_QUERY_RESULT_SET_TOO_LARGE, 0x80DA0003).";
-        let body: Value = serde_json::from_str(&format!("[{},{},{}]", grid(3), grid(1), completion(too_large))).unwrap();
+        let body: Value = serde_json::from_str(&format!(
+            "[{},{},{}]",
+            grid(3),
+            grid(1),
+            completion(too_large)
+        ))
+        .unwrap();
         let sets = parse_v2(&body, 3).unwrap();
-        assert_eq!(sets.iter().map(|rs| (rs.rows.len(), rs.truncated)).collect::<Vec<_>>(), [(3, true), (1, false)]);
+        assert_eq!(
+            sets.iter()
+                .map(|rs| (rs.rows.len(), rs.truncated))
+                .collect::<Vec<_>>(),
+            [(3, true), (1, false)]
+        );
         // Other errors stay errors, also with rows.
-        let body: Value = serde_json::from_str(&format!("[{},{}]", grid(3), completion("Low memory condition (E_LOW_MEMORY_CONDITION)."))).unwrap();
-        assert!(parse_v2(&body, 3).unwrap_err().to_string().contains("E_LOW_MEMORY_CONDITION"));
+        let body: Value = serde_json::from_str(&format!(
+            "[{},{}]",
+            grid(3),
+            completion("Low memory condition (E_LOW_MEMORY_CONDITION).")
+        ))
+        .unwrap();
+        assert!(
+            parse_v2(&body, 3)
+                .unwrap_err()
+                .to_string()
+                .contains("E_LOW_MEMORY_CONDITION")
+        );
         // An error in the data.
         let body: Value = serde_json::from_str(
             r#"[{"FrameType":"DataTable","TableKind":"PrimaryResult","Columns":[{"ColumnName":"x"}],"Rows":[[1],{"OneApiErrors":[{"error":{"code":"x","@message":"Partial query failure: boom"}}]}]}]"#,
@@ -684,7 +974,14 @@ mod tests {
         .unwrap();
         let sets = parse_v1(&body, 2);
         assert_eq!(sets.len(), 1);
-        assert_eq!((sets[0].columns.as_slice(), sets[0].rows.len(), sets[0].truncated), (["DatabaseName".to_string()].as_slice(), 2, true));
+        assert_eq!(
+            (
+                sets[0].columns.as_slice(),
+                sets[0].rows.len(),
+                sets[0].truncated
+            ),
+            (["DatabaseName".to_string()].as_slice(), 2, true)
+        );
         // Without a table of contents, every table.
         let body: Value = serde_json::from_str(r#"{"Tables":[{"TableName":"Table_0","Columns":[{"ColumnName":"BuildVersion"}],"Rows":[["1.0"]]}]}"#).unwrap();
         assert_eq!(parse_v1(&body, 10)[0].rows, [[Some("1.0".to_string())]]);
@@ -701,9 +998,21 @@ mod tests {
         )
         .unwrap();
         let tables = schema_tables(&schema);
-        let names: Vec<(&str, ObjectKind)> = tables.iter().map(|t| (t.name.as_str(), t.kind)).collect();
-        assert_eq!(names, [("a_table", ObjectKind::Table), ("DailyCovid19", ObjectKind::View), ("StormEvents", ObjectKind::Table)]);
-        let storm: Vec<(&str, &str)> = tables[2].columns.iter().map(|c| (c.name.as_str(), c.data_type.as_str())).collect();
+        let names: Vec<(&str, ObjectKind)> =
+            tables.iter().map(|t| (t.name.as_str(), t.kind)).collect();
+        assert_eq!(
+            names,
+            [
+                ("a_table", ObjectKind::Table),
+                ("DailyCovid19", ObjectKind::View),
+                ("StormEvents", ObjectKind::Table)
+            ]
+        );
+        let storm: Vec<(&str, &str)> = tables[2]
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.data_type.as_str()))
+            .collect();
         assert_eq!(storm, [("StartTime", "datetime"), ("State", "string")]);
     }
 
@@ -711,17 +1020,33 @@ mod tests {
     fn errors_carry_the_details() {
         let body = r#"{"error":{"code":"General_BadRequest","message":"Request is invalid and cannot be executed.","@message":"Syntax error: SYN0002: Query operator expected. [line:position=1:15]"}}"#;
         let err = service_error(reqwest::StatusCode::BAD_REQUEST, body).to_string();
-        assert!(err.contains("400 Bad Request") && err.contains("SYN0002"), "{err}");
-        let err = service_error(reqwest::StatusCode::BAD_REQUEST, "General_BadRequest: Request is invalid.\r\nError details: x").to_string();
-        assert!(err.ends_with("General_BadRequest: Request is invalid."), "{err}");
+        assert!(
+            err.contains("400 Bad Request") && err.contains("SYN0002"),
+            "{err}"
+        );
+        let err = service_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "General_BadRequest: Request is invalid.\r\nError details: x",
+        )
+        .to_string();
+        assert!(
+            err.ends_with("General_BadRequest: Request is invalid."),
+            "{err}"
+        );
         let err = service_error(reqwest::StatusCode::UNAUTHORIZED, "").to_string();
         assert!(err.contains("401 Unauthorized"), "{err}");
     }
 
     #[test]
     fn editor_query_and_names() {
-        assert_eq!(table_query("My Table", "", "", 50), "['My Table']\n| take 50");
-        assert_eq!(table_query("T", "State == \"TX\"", "StartTime desc", 10), "['T']\n| where State == \"TX\"\n| order by StartTime desc\n| take 10");
+        assert_eq!(
+            table_query("My Table", "", "", 50),
+            "['My Table']\n| take 50"
+        );
+        assert_eq!(
+            table_query("T", "State == \"TX\"", "StartTime desc", 10),
+            "['T']\n| where State == \"TX\"\n| order by StartTime desc\n| take 10"
+        );
         assert_eq!(Driver::Kusto.quote_ident(r"a'b\c"), r"['a\'b\\c']");
     }
 
@@ -744,27 +1069,66 @@ mod tests {
     fn only_microsoft_logins_and_kusto_audiences_are_trusted() {
         let meta = |login: &str, resource: &str| json!({ "AzureAD": { "LoginEndpoint": login, "KustoServiceResourceId": resource } });
         let base = "https://help.kusto.windows.net";
-        let public = meta("https://login.microsoftonline.com/", "https://kusto.kusto.windows.net");
-        assert_eq!(trusted_cloud(Some(&public), base), (LOGIN_ENDPOINT.into(), "https://kusto.kusto.windows.net".into()));
-        let gov = meta("https://login.microsoftonline.us", "https://kusto.kusto.usgovcloudapi.net");
-        assert_eq!(trusted_cloud(Some(&gov), "https://c.kusto.usgovcloudapi.net").0, "https://login.microsoftonline.us");
+        let public = meta(
+            "https://login.microsoftonline.com/",
+            "https://kusto.kusto.windows.net",
+        );
+        assert_eq!(
+            trusted_cloud(Some(&public), base),
+            (
+                LOGIN_ENDPOINT.into(),
+                "https://kusto.kusto.windows.net".into()
+            )
+        );
+        let gov = meta(
+            "https://login.microsoftonline.us",
+            "https://kusto.kusto.usgovcloudapi.net",
+        );
+        assert_eq!(
+            trusted_cloud(Some(&gov), "https://c.kusto.usgovcloudapi.net").0,
+            "https://login.microsoftonline.us"
+        );
         // A hostile cluster: the secret stays with Microsoft's login, the token is for the cluster.
         let evil = meta("https://login.evil.example", "https://management.azure.com");
-        assert_eq!(trusted_cloud(Some(&evil), "https://evil.example"), (LOGIN_ENDPOINT.into(), "https://evil.example".into()));
-        let lookalike = meta("http://login.microsoftonline.com", "https://kusto.windows.net.evil.example");
-        assert_eq!(trusted_cloud(Some(&lookalike), base), (LOGIN_ENDPOINT.into(), base.into()));
+        assert_eq!(
+            trusted_cloud(Some(&evil), "https://evil.example"),
+            (LOGIN_ENDPOINT.into(), "https://evil.example".into())
+        );
+        let lookalike = meta(
+            "http://login.microsoftonline.com",
+            "https://kusto.windows.net.evil.example",
+        );
+        assert_eq!(
+            trusted_cloud(Some(&lookalike), base),
+            (LOGIN_ENDPOINT.into(), base.into())
+        );
         // The cluster's own address as the audience.
-        assert_eq!(trusted_cloud(Some(&meta("", "https://my.cluster.example/")), "https://my.cluster.example").1, "https://my.cluster.example");
-        assert_eq!(trusted_cloud(None, base), (LOGIN_ENDPOINT.into(), base.into()));
+        assert_eq!(
+            trusted_cloud(
+                Some(&meta("", "https://my.cluster.example/")),
+                "https://my.cluster.example"
+            )
+            .1,
+            "https://my.cluster.example"
+        );
+        assert_eq!(
+            trusted_cloud(None, base),
+            (LOGIN_ENDPOINT.into(), base.into())
+        );
     }
 
     #[test]
     fn azure_cli_tokens() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let (token, lifetime) = parse_az_token(br#"{"accessToken":"t","expires_on":1003600,"tokenType":"Bearer"}"#, now).unwrap();
+        let (token, lifetime) = parse_az_token(
+            br#"{"accessToken":"t","expires_on":1003600,"tokenType":"Bearer"}"#,
+            now,
+        )
+        .unwrap();
         assert_eq!((token.as_str(), lifetime), ("t", Duration::from_secs(3600)));
         // Older CLIs: a string.
-        let (_, lifetime) = parse_az_token(br#"{"accessToken":"t","expires_on":"1000060"}"#, now).unwrap();
+        let (_, lifetime) =
+            parse_az_token(br#"{"accessToken":"t","expires_on":"1000060"}"#, now).unwrap();
         assert_eq!(lifetime, Duration::from_secs(60));
         assert!(parse_az_token(b"not json", now).is_err());
         assert!(parse_az_token(br#"{"accessToken":""}"#, now).is_err());
@@ -773,10 +1137,12 @@ mod tests {
     #[test]
     fn client_credentials_form() {
         let body = token_request_body("id", "s&c=r t+", "https://kusto.kusto.windows.net");
-        assert_eq!(body, "grant_type=client_credentials&client_id=id&client_secret=s%26c%3Dr+t%2B&scope=https%3A%2F%2Fkusto.kusto.windows.net%2F.default");
+        assert_eq!(
+            body,
+            "grant_type=client_credentials&client_id=id&client_secret=s%26c%3Dr+t%2B&scope=https%3A%2F%2Fkusto.kusto.windows.net%2F.default"
+        );
     }
 }
-
 
 /// Against the Kusto emulator (DATACRAFT_KUSTO_URL, e.g. `http://127.0.0.1:8080`; no
 /// authentication): each test works in a volatile database of its own, dropped at the end. The
@@ -813,7 +1179,11 @@ mod live_tests {
         async fn new() -> Option<Self> {
             let mut cfg = emulator_cfg()?;
             cfg.database = format!("dc_test_{}", uuid::Uuid::new_v4().simple());
-            Self::admin().await?.execute(&format!(".create database {} volatile", cfg.database), 10).await.unwrap();
+            Self::admin()
+                .await?
+                .execute(&format!(".create database {} volatile", cfg.database), 10)
+                .await
+                .unwrap();
             let mut s = KustoSession::connect(&cfg).await.unwrap();
             for command in [
                 ".create table ['Storm Events'] (StartTime: datetime, State: string, Damage: long, Ratio: real, Tags: dynamic, Ok: bool)",
@@ -824,7 +1194,9 @@ mod live_tests {
                 ".create materialized-view ByState on table ['Storm Events'] { ['Storm Events'] | summarize Total = sum(Damage) by State }",
                 ".create function Texas() { ['Storm Events'] | where State == 'TEXAS' }",
             ] {
-                s.execute(command, 10).await.unwrap_or_else(|e| panic!("{command}: {e}"));
+                s.execute(command, 10)
+                    .await
+                    .unwrap_or_else(|e| panic!("{command}: {e}"));
             }
             Some(Self { cfg })
         }
@@ -840,35 +1212,75 @@ mod live_tests {
         }
 
         async fn drop_database(self) {
-            Self::admin().await.unwrap().execute(&format!(".drop database {} ifexists", self.cfg.database), 10).await.unwrap();
+            Self::admin()
+                .await
+                .unwrap()
+                .execute(
+                    &format!(".drop database {} ifexists", self.cfg.database),
+                    10,
+                )
+                .await
+                .unwrap();
         }
     }
 
     fn column<'a>(rs: &'a ResultSet, name: &str) -> Vec<Option<&'a str>> {
-        let i = rs.columns.iter().position(|c| c == name).unwrap_or_else(|| panic!("no {name} in {:?}", rs.columns));
+        let i = rs
+            .columns
+            .iter()
+            .position(|c| c == name)
+            .unwrap_or_else(|| panic!("no {name} in {:?}", rs.columns));
         rs.rows.iter().map(|r| r[i].as_deref()).collect()
     }
 
     #[tokio::test]
     #[ignore]
     async fn explorer() {
-        let Some(f) = Fixture::new().await else { return };
+        let Some(f) = Fixture::new().await else {
+            return;
+        };
         let mut s = f.session().await;
         assert!(s.list_databases().await.unwrap().contains(&f.cfg.database));
         assert!(s.server_version().await.unwrap().starts_with("Kusto 1."));
         let schema = s.introspect().await.unwrap();
         assert_eq!(schema[0].name, f.cfg.database);
-        let objects: Vec<(&str, ObjectKind)> = schema[0].tables.iter().map(|t| (t.name.as_str(), t.kind)).collect();
-        assert_eq!(objects, [("ByState", ObjectKind::View), ("Storm Events", ObjectKind::Table)]);
-        let columns: Vec<String> = schema[0].tables[1].columns.iter().map(|c| format!("{} {}", c.name, c.data_type)).collect();
-        assert_eq!(columns, ["StartTime datetime", "State string", "Damage long", "Ratio real", "Tags dynamic", "Ok bool"]);
+        let objects: Vec<(&str, ObjectKind)> = schema[0]
+            .tables
+            .iter()
+            .map(|t| (t.name.as_str(), t.kind))
+            .collect();
+        assert_eq!(
+            objects,
+            [
+                ("ByState", ObjectKind::View),
+                ("Storm Events", ObjectKind::Table)
+            ]
+        );
+        let columns: Vec<String> = schema[0].tables[1]
+            .columns
+            .iter()
+            .map(|c| format!("{} {}", c.name, c.data_type))
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                "StartTime datetime",
+                "State string",
+                "Damage long",
+                "Ratio real",
+                "Tags dynamic",
+                "Ok bool"
+            ]
+        );
         f.drop_database().await;
     }
 
     #[tokio::test]
     #[ignore]
     async fn queries_and_commands() {
-        let Some(f) = Fixture::new().await else { return };
+        let Some(f) = Fixture::new().await else {
+            return;
+        };
         let mut s = f.session().await;
         // One request, two results; `;` is KQL's.
         let script = "let s = 'TEXAS';\n['Storm Events'] | where State == s | count;\n['Storm Events'] | where State != s | project State, Tags, Ratio";
@@ -876,23 +1288,68 @@ mod live_tests {
         assert_eq!(sets.len(), 2);
         assert_eq!(column(&sets[0], "Count"), [Some("2")]);
         assert_eq!(column(&sets[1], "State"), [Some("NEW YORK, \"NY\"")]);
-        assert_eq!((column(&sets[1], "Tags"), column(&sets[1], "Ratio")), (vec![Some("[]")], vec![None]));
+        assert_eq!(
+            (column(&sets[1], "Tags"), column(&sets[1], "Ratio")),
+            (vec![Some("[]")], vec![None])
+        );
         assert!(sets.iter().all(|rs| rs.statement == script));
-        let rs = s.execute("['Storm Events'] | where Damage == 100 | project StartTime, Tags, Ok, Ratio", 100).await.unwrap().remove(0);
-        assert_eq!(rs.rows[0].iter().map(Option::as_deref).collect::<Vec<_>>(), [Some("2024-01-01T00:00:00Z"), Some(r#"{"a":[1,2]}"#), Some("true"), Some("0.5")]);
+        let rs = s
+            .execute(
+                "['Storm Events'] | where Damage == 100 | project StartTime, Tags, Ok, Ratio",
+                100,
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            rs.rows[0].iter().map(Option::as_deref).collect::<Vec<_>>(),
+            [
+                Some("2024-01-01T00:00:00Z"),
+                Some(r#"{"a":[1,2]}"#),
+                Some("true"),
+                Some("0.5")
+            ]
+        );
         // Control commands and functions.
-        let rs = s.execute("// the tables\n.show tables | project TableName", 100).await.unwrap().remove(0);
+        let rs = s
+            .execute("// the tables\n.show tables | project TableName", 100)
+            .await
+            .unwrap()
+            .remove(0);
         assert_eq!(column(&rs, "TableName"), [Some("Storm Events")]);
-        assert_eq!(column(&s.execute("Texas() | count", 100).await.unwrap()[0], "Count"), [Some("2")]);
+        assert_eq!(
+            column(
+                &s.execute("Texas() | count", 100).await.unwrap()[0],
+                "Count"
+            ),
+            [Some("2")]
+        );
         // A script is split by blank lines, as the console runs it.
         let script = "print a = 1\n\n// next\nprint b = 2; print c = 3";
-        let requests: Vec<String> = crate::sql::split_batches(script, Driver::Kusto).into_iter().map(|st| st.text).collect();
-        assert_eq!(requests, ["print a = 1", "// next\nprint b = 2; print c = 3"]);
+        let requests: Vec<String> = crate::sql::split_batches(script, Driver::Kusto)
+            .into_iter()
+            .map(|st| st.text)
+            .collect();
+        assert_eq!(
+            requests,
+            ["print a = 1", "// next\nprint b = 2; print c = 3"]
+        );
         assert_eq!(s.execute(&requests[1], 10).await.unwrap().len(), 2);
         // Errors carry Kusto's details.
-        let err = s.execute("['Storm Events'] | wher x", 10).await.unwrap_err().to_string();
-        assert!(err.contains("400 Bad Request") && err.contains("SYN0002"), "{err}");
-        let err = s.execute("NoSuchTable | take 1", 10).await.unwrap_err().to_string();
+        let err = s
+            .execute("['Storm Events'] | wher x", 10)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("400 Bad Request") && err.contains("SYN0002"),
+            "{err}"
+        );
+        let err = s
+            .execute("NoSuchTable | take 1", 10)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("NoSuchTable"), "{err}");
         let err = s.execute(".show tablez", 10).await.unwrap_err().to_string();
         assert!(err.contains("Syntax error"), "{err}");
@@ -902,15 +1359,39 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn row_limit() {
-        let Some(f) = Fixture::new().await else { return };
+        let Some(f) = Fixture::new().await else {
+            return;
+        };
         let mut s = f.session().await;
-        let rs = s.execute("range x from 1 to 100000 step 1", 100).await.unwrap().remove(0);
-        assert_eq!((rs.rows.len(), rs.truncated, rs.rows[99][0].as_deref()), (100, true, Some("100")));
-        let rs = s.execute("range x from 1 to 100 step 1", 100).await.unwrap().remove(0);
+        let rs = s
+            .execute("range x from 1 to 100000 step 1", 100)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            (rs.rows.len(), rs.truncated, rs.rows[99][0].as_deref()),
+            (100, true, Some("100"))
+        );
+        let rs = s
+            .execute("range x from 1 to 100 step 1", 100)
+            .await
+            .unwrap()
+            .remove(0);
         assert_eq!((rs.rows.len(), rs.truncated), (100, false));
         // Per result: only the second one is cut.
-        let sets = s.execute("range x from 1 to 5 step 1; range y from 1 to 50 step 1", 10).await.unwrap();
-        assert_eq!(sets.iter().map(|rs| (rs.rows.len(), rs.truncated)).collect::<Vec<_>>(), [(5, false), (10, true)]);
+        let sets = s
+            .execute(
+                "range x from 1 to 5 step 1; range y from 1 to 50 step 1",
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sets.iter()
+                .map(|rs| (rs.rows.len(), rs.truncated))
+                .collect::<Vec<_>>(),
+            [(5, false), (10, true)]
+        );
         // Control commands are cut here.
         let rs = s.execute(".show databases", 1).await.unwrap().remove(0);
         assert_eq!((rs.rows.len(), rs.truncated), (1, true));
@@ -920,13 +1401,32 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn data_editor_and_dispatch() {
-        let Some(f) = Fixture::new().await else { return };
+        let Some(f) = Fixture::new().await else {
+            return;
+        };
         let mut s = Session::connect(&f.cfg).await.unwrap();
-        let q = crate::app::table_query(Driver::Kusto, &f.cfg.database, "Storm Events", "State == \"TEXAS\"", "Damage desc", 100);
+        let q = crate::app::table_query(
+            Driver::Kusto,
+            &f.cfg.database,
+            "Storm Events",
+            "State == \"TEXAS\"",
+            "Damage desc",
+            100,
+        );
         let rs = s.execute(&q, 100).await.unwrap().remove(0);
         assert_eq!(column(&rs, "Damage"), [Some("250"), Some("100")]);
-        let q = crate::app::table_query(Driver::Kusto, &f.cfg.database, "ByState", "", "State asc", 100);
-        assert_eq!(column(&s.execute(&q, 100).await.unwrap()[0], "Total"), [Some("0"), Some("350")]);
+        let q = crate::app::table_query(
+            Driver::Kusto,
+            &f.cfg.database,
+            "ByState",
+            "",
+            "State asc",
+            100,
+        );
+        assert_eq!(
+            column(&s.execute(&q, 100).await.unwrap()[0], "Total"),
+            [Some("0"), Some("350")]
+        );
         assert!(s.apply_changes(&["x".into()]).await.is_err());
         assert!(s.run_transaction(&["x".into()]).await.is_err());
         assert_eq!(s.current_database().await.unwrap(), f.cfg.database);
@@ -936,19 +1436,37 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn read_only_connections() {
-        let Some(f) = Fixture::new().await else { return };
+        let Some(f) = Fixture::new().await else {
+            return;
+        };
         let mut cfg = f.cfg.clone();
         cfg.read_only = true;
         let mut s = KustoSession::connect(&cfg).await.unwrap();
         // The server refuses writes, whatever the app lets through.
-        for write in [".create table Blocked (a: string)", ".set-or-append ['Storm Events'] <| print StartTime = now()"] {
+        for write in [
+            ".create table Blocked (a: string)",
+            ".set-or-append ['Storm Events'] <| print StartTime = now()",
+        ] {
             let err = s.execute(write, 10).await.unwrap_err().to_string();
             assert!(err.contains("readonly"), "{write}: {err}");
         }
-        let err = s.execute("evaluate http_request('https://127.0.0.1/')", 10).await.unwrap_err().to_string();
+        let err = s
+            .execute("evaluate http_request('https://127.0.0.1/')", 10)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("request_callout_disabled"), "{err}");
-        assert_eq!(column(&s.execute(".show tables", 10).await.unwrap()[0], "TableName"), [Some("Storm Events")]);
-        assert_eq!(column(&s.execute("Texas() | count", 10).await.unwrap()[0], "Count"), [Some("2")]);
+        assert_eq!(
+            column(
+                &s.execute(".show tables", 10).await.unwrap()[0],
+                "TableName"
+            ),
+            [Some("Storm Events")]
+        );
+        assert_eq!(
+            column(&s.execute("Texas() | count", 10).await.unwrap()[0], "Count"),
+            [Some("2")]
+        );
         f.drop_database().await;
     }
 
@@ -961,15 +1479,37 @@ mod live_tests {
         let version = s.server_version().await.unwrap();
         assert!(version.starts_with("Azure Data Explorer "), "{version}");
         let schema = s.introspect().await.unwrap();
-        let storm = schema[0].tables.iter().find(|t| t.name == "StormEvents").expect("StormEvents");
-        assert_eq!((storm.kind, storm.columns[0].name.as_str(), storm.columns[0].data_type.as_str()), (ObjectKind::Table, "StartTime", "datetime"));
-        let rs = s.execute("StormEvents | project State", 10).await.unwrap().remove(0);
+        let storm = schema[0]
+            .tables
+            .iter()
+            .find(|t| t.name == "StormEvents")
+            .expect("StormEvents");
+        assert_eq!(
+            (
+                storm.kind,
+                storm.columns[0].name.as_str(),
+                storm.columns[0].data_type.as_str()
+            ),
+            (ObjectKind::Table, "StartTime", "datetime")
+        );
+        let rs = s
+            .execute("StormEvents | project State", 10)
+            .await
+            .unwrap()
+            .remove(0);
         assert_eq!((rs.rows.len(), rs.truncated), (10, true));
         // Read-only: the server takes the flags.
         let mut cfg = cfg.clone();
         cfg.read_only = true;
         let mut s = KustoSession::connect(&cfg).await.unwrap();
-        assert_eq!(column(&s.execute("StormEvents | count", 10).await.unwrap()[0], "Count").len(), 1);
+        assert_eq!(
+            column(
+                &s.execute("StormEvents | count", 10).await.unwrap()[0],
+                "Count"
+            )
+            .len(),
+            1
+        );
     }
 
     #[tokio::test]
