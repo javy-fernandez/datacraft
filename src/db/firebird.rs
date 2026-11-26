@@ -355,6 +355,9 @@ impl Conn {
         {
             self.legacy_dates = false;
         }
+        // The client reads a TIME as a timestamp of today: as text it stays a time
+        // (`08:30:00.0000`, as isql shows it).
+        let _ = self.exec_immediate(&mut tr, "SET BIND OF TIME TO VARCHAR(13)");
         self.end_tx(&mut tr, true)
     }
 
@@ -1329,7 +1332,10 @@ mod tests {
         assert!(matches!(row[0], Some("12.50" | "12.5")), "{row:?}");
         assert_eq!(row[1], Some("2024-01-31"));
         assert_eq!(row[2], Some("2024-01-31 13:45:00"));
-        assert_eq!(row[3], Some("08:30:00"));
+        assert!(
+            matches!(row[3], Some("08:30:00" | "08:30:00.0000")),
+            "{row:?}"
+        );
         assert_eq!(row[4], Some("true"));
         assert_eq!(row[5], None);
         assert_eq!(row[6], Some("héllo"));
@@ -1401,7 +1407,7 @@ mod tests {
             &mut s,
             &format!(
                 "CREATE TABLE {table} (ID INTEGER NOT NULL PRIMARY KEY, NAME VARCHAR(50), \
-                 PRICE NUMERIC(10,2), CREATED TIMESTAMP, DAY DATE, NOTES BLOB SUB_TYPE TEXT, \
+                 PRICE NUMERIC(10,2), CREATED TIMESTAMP, DUE DATE, NOTES BLOB SUB_TYPE TEXT, \
                  DATA BLOB SUB_TYPE BINARY)"
             ),
             0,
@@ -1427,7 +1433,7 @@ mod tests {
         let rs = one(&mut s, &format!("SELECT * FROM {table} ORDER BY ID"), 10).await;
         assert_eq!(
             rs.columns,
-            ["ID", "NAME", "PRICE", "CREATED", "DAY", "NOTES", "DATA"]
+            ["ID", "NAME", "PRICE", "CREATED", "DUE", "NOTES", "DATA"]
         );
         let first = texts(&rs.rows[0]);
         assert_eq!(first[1], Some("one"));
@@ -1522,7 +1528,7 @@ mod tests {
                 ("NAME", "VARCHAR(50)", true, false),
                 ("PRICE", "NUMERIC(10,2)", true, false),
                 ("CREATED", "TIMESTAMP", true, false),
-                ("DAY", "DATE", true, false),
+                ("DUE", "DATE", true, false),
                 ("NOTES", "BLOB SUB_TYPE TEXT", true, false),
                 ("DATA", "BLOB SUB_TYPE BINARY", true, false),
             ]
