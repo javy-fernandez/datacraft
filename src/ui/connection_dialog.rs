@@ -1815,6 +1815,41 @@ mod tests {
         );
     }
 
+    /// The new engines: OpenEdge through ODBC (selected), Firebird, SAP HANA and CockroachDB.
+    #[test]
+    #[ignore]
+    fn render_new_engines_dialog() {
+        let mut openedge = ConnectionConfig::new(6, Driver::Odbc);
+        openedge.apply_preset(Preset::OpenEdge);
+        openedge.name = "sports2020@openedge".into();
+        openedge.user = "sysprogress".into();
+        let mut firebird = ConnectionConfig::new(7, Driver::Firebird);
+        firebird.name = "employee@firebird".into();
+        let mut hana = ConnectionConfig::new(8, Driver::Hana);
+        hana.name = "HXE@hana".into();
+        let mut crdb = ConnectionConfig::new(9, Driver::Postgres);
+        crdb.apply_preset(Preset::CockroachDb);
+        crdb.name = "defaultdb@cockroach".into();
+        render(
+            "new_engines_general",
+            true,
+            ConnectionDialog::edit(6, &[openedge, firebird, hana, crdb]),
+            |d| {
+                d.test = (6, TestState::Done(Ok(Some("OpenEdge 12.8".into()))));
+            },
+        );
+        let mut firebird = ConnectionConfig::new(7, Driver::Firebird);
+        firebird.name = "employee@firebird".into();
+        render(
+            "firebird_general",
+            true,
+            ConnectionDialog::edit(7, &[firebird]),
+            |d| {
+                d.test = (7, TestState::Done(Ok(Some("Firebird 5.0.1".into()))));
+            },
+        );
+    }
+
     /// DuckDB's General tab before its driver is downloaded (the tests' data folder is empty).
     #[test]
     #[ignore]
