@@ -385,11 +385,11 @@ Thank you to everyone who has contributed code, fixes and translations to DataCr
 
 | # | Contributor | Commits | Share | Lines changed | Share |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 109 | 48.4% | +45,696 / −3,620 | 25.0% |
-| 2 | [YoSiem](https://github.com/YoSiem) | 90 | 40.0% | +51,002 / −7,822 | 29.9% |
-| 3 | [Ivan Temchenko](https://github.com/35359595) | 8 | 3.6% | +55,057 / −12,978 | 34.5% |
-| 4 | [Claude](https://github.com/claude) | 8 | 3.6% | +6,399 / −41 | 3.3% |
-| 5 | [moein](https://github.com/mo1ein) | 7 | 3.1% | +10,476 / −856 | 5.8% |
+| 1 | [javy-fernandez](https://github.com/javy-fernandez) | 111 | 48.5% | +45,714 / −3,621 | 25.0% |
+| 2 | [YoSiem](https://github.com/YoSiem) | 90 | 39.3% | +51,002 / −7,822 | 29.8% |
+| 3 | [Ivan Temchenko](https://github.com/35359595) | 10 | 4.4% | +55,154 / −12,989 | 34.6% |
+| 4 | [Claude](https://github.com/claude) | 8 | 3.5% | +6,399 / −41 | 3.3% |
+| 5 | [moein](https://github.com/mo1ein) | 7 | 3.1% | +10,476 / −856 | 5.7% |
 | | 2 others | 3 | 1.3% | 3,116 | 1.6% |
 
 Counted from non-merge commits on `main`; merge commits, bots and `Cargo.lock` are excluded.
