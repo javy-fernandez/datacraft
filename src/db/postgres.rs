@@ -25,10 +25,15 @@ use super::tls::{self, TlsMode};
 use super::{ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::i18n::{tr, trf};
 
+/// CockroachDB's SQL port (its `Preset`).
+pub const COCKROACH_PORT: u16 = 26257;
+
 pub struct PgSession {
     client: Client,
     /// Also for the cancel requests, which go over a connection of their own.
     tls: PgTls,
+    /// The server is CockroachDB (PostgreSQL's protocol, a catalog of its own in places).
+    cockroach: bool,
 }
 
 /// The data source's TLS for tokio-postgres: its rustls client (none for Disable), checking the
@@ -135,6 +140,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream for PgTlsStream<S> {
 }
 
 /// Turns a tokio-postgres error into a readable message (message + detail + hint).
+/// `SELECT version()` of CockroachDB: "CockroachDB CCL v24.3.1 (aarch64-…)".
+fn is_cockroach_version(version: &str) -> bool {
+    version.starts_with("CockroachDB")
+}
+
+/// "CockroachDB v24.3.1" from CockroachDB's `version()`.
+fn cockroach_product(version: &str) -> Option<String> {
+    let v = version
+        .split_whitespace()
+        .find(|w| w.starts_with('v') && w[1..].starts_with(|c: char| c.is_ascii_digit()))?;
+    Some(format!("CockroachDB {v}"))
+}
+
 fn pg_error(e: tokio_postgres::Error) -> anyhow::Error {
     match e.as_db_error() {
         Some(db) => {
@@ -182,7 +200,31 @@ impl PgSession {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        Ok(Self { client, tls })
+        let cockroach = client
+            .query_one("SELECT version()", &[])
+            .await
+            .ok()
+            .and_then(|row| row.try_get::<_, String>(0).ok())
+            .is_some_and(|v| is_cockroach_version(&v));
+        Ok(Self {
+            client,
+            tls,
+            cockroach,
+        })
+    }
+
+    /// CockroachDB rather than PostgreSQL.
+    pub fn is_cockroach(&self) -> bool {
+        self.cockroach
+    }
+
+    /// CockroachDB's product and version ("CockroachDB v24.3.1"); None on PostgreSQL.
+    pub async fn cockroach_version(&mut self) -> Option<String> {
+        if !self.cockroach {
+            return None;
+        }
+        let row = self.client.query_one("SELECT version()", &[]).await.ok()?;
+        cockroach_product(&row.try_get::<_, String>(0).ok()?)
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
@@ -198,8 +240,13 @@ impl PgSession {
         let rows = self
             .client
             .query(
-                "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn \
-                 AND has_database_privilege(datname, 'CONNECT') ORDER BY lower(datname)",
+                if self.cockroach {
+                    // CockroachDB's `system` database is its own internal catalog.
+                    "SELECT datname FROM pg_database WHERE datname <> 'system' ORDER BY lower(datname)"
+                } else {
+                    "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn \
+                     AND has_database_privilege(datname, 'CONNECT') ORDER BY lower(datname)"
+                },
                 &[],
             )
             .await
@@ -409,7 +456,7 @@ impl PgSession {
                 WHERE tc.constraint_type = 'PRIMARY KEY'
             ) pk ON pk.table_schema = c.table_schema AND pk.table_name = c.table_name
                 AND pk.column_name = c.column_name
-            WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')
+            WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema', 'crdb_internal', 'pg_extension')
               AND t.table_schema NOT LIKE 'pg\_toast%'
               AND t.table_schema NOT LIKE 'pg\_temp%'
             ORDER BY t.table_schema, t.table_name, c.ordinal_position
@@ -494,6 +541,113 @@ mod tests {
         cfg.password = env("DATACRAFT_PG_PASSWORD", "");
         cfg.database = env("DATACRAFT_PG_DB", "postgres");
         Some(PgSession::connect(&cfg).await.expect("connection"))
+    }
+
+    #[test]
+    fn cockroach_is_told_apart_by_its_version() {
+        let v = "CockroachDB CCL v24.3.1 (aarch64-apple-darwin21.2, built 2024/12/05 11:48:31, go1.22.8 X:nocoverageredesign)";
+        assert!(is_cockroach_version(v));
+        assert_eq!(cockroach_product(v).as_deref(), Some("CockroachDB v24.3.1"));
+        assert!(!is_cockroach_version(
+            "PostgreSQL 16.4 on aarch64-apple-darwin, compiled by clang"
+        ));
+    }
+
+    /// The core flows on a real CockroachDB through this driver. `DATACRAFT_CRDB_HOST` (skipped
+    /// without it), `DATACRAFT_CRDB_PORT` (26257), user `root`, database `defaultdb`, insecure.
+    #[tokio::test]
+    #[ignore]
+    async fn cockroach_core_flows() {
+        let Ok(host) = std::env::var("DATACRAFT_CRDB_HOST") else {
+            eprintln!("DATACRAFT_CRDB_HOST not set: skipping the CockroachDB test");
+            return;
+        };
+        let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
+        cfg.apply_preset(crate::db::Preset::CockroachDb);
+        cfg.host = host;
+        cfg.port = env("DATACRAFT_CRDB_PORT", "26257").parse().expect("port");
+        cfg.tls.mode = TlsMode::Disable;
+        let version = crate::db::Session::test(&cfg).await.unwrap().unwrap();
+        assert!(version.starts_with("CockroachDB v"), "{version}");
+
+        let mut session = crate::db::Session::connect(&cfg).await.unwrap();
+        assert!(session.is_cockroach());
+        let dbs = session.list_databases().await.unwrap();
+        assert!(dbs.contains(&"defaultdb".to_string()), "{dbs:?}");
+        assert!(!dbs.contains(&"system".to_string()), "{dbs:?}");
+
+        session
+            .execute(
+                "DROP SCHEMA IF EXISTS dc_crdb CASCADE; CREATE SCHEMA dc_crdb; \
+                 CREATE TABLE dc_crdb.items (id INT PRIMARY KEY, name STRING NOT NULL, price DECIMAL(10,2), at TIMESTAMP); \
+                 CREATE VIEW dc_crdb.v AS SELECT id FROM dc_crdb.items; \
+                 INSERT INTO dc_crdb.items VALUES (1, 'a', 1.50, '2026-01-02 03:04:05'), (2, 'b', NULL, NULL)",
+                0,
+            )
+            .await
+            .unwrap();
+        let rs = session
+            .execute("SELECT * FROM dc_crdb.items ORDER BY id", 100)
+            .await
+            .unwrap();
+        assert_eq!(rs[0].rows.len(), 2);
+        assert_eq!(rs[0].rows[0][2].as_deref(), Some("1.50"));
+        assert_eq!(rs[0].rows[1][2], None);
+
+        let schemas = session.introspect().await.unwrap();
+        assert!(
+            schemas
+                .iter()
+                .all(|s| s.name != "crdb_internal" && s.name != "pg_extension")
+        );
+        let sch = schemas
+            .iter()
+            .find(|s| s.name == "dc_crdb")
+            .expect("schema");
+        let items = sch
+            .tables
+            .iter()
+            .find(|t| t.name == "items")
+            .expect("items");
+        assert!(items.columns[0].primary_key);
+        assert!(
+            sch.tables
+                .iter()
+                .any(|t| t.name == "v" && t.kind == ObjectKind::View)
+        );
+
+        let list = session
+            .object_list_info(Driver::Postgres, Some("dc_crdb"))
+            .await
+            .unwrap();
+        assert!(list.iter().any(|r| r.name == "items"), "{}", list.len());
+        let info = session
+            .object_info(Driver::Postgres, "dc_crdb", "items", true)
+            .await
+            .unwrap();
+        assert_eq!(info.rows, Some(2));
+
+        // The data editor's transaction and a console's Manual one.
+        let n = session
+            .apply_changes(&["UPDATE dc_crdb.items SET name = 'z' WHERE id = 1".into()])
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        session.begin().await.unwrap();
+        session
+            .execute("DELETE FROM dc_crdb.items WHERE id = 2", 0)
+            .await
+            .unwrap();
+        session.end_transaction(false).await.unwrap();
+        let rs = session
+            .execute("SELECT count(*) FROM dc_crdb.items", 1)
+            .await
+            .unwrap();
+        assert_eq!(rs[0].rows[0][0].as_deref(), Some("2"));
+        session
+            .execute("DROP SCHEMA dc_crdb CASCADE", 0)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

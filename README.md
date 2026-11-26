@@ -166,9 +166,12 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | Database | Connection and workspace |
 | --- | --- |
 | PostgreSQL | SQL console, data editor, schemas, views, roles and logical backups |
+| CockroachDB | Through the PostgreSQL driver (**+ → CockroachDB**: port 26257, `defaultdb`, `root`); the explorer, object information and Test Connection recognize it and skip its internal catalogs |
 | MySQL / MariaDB | SQL console, data editor, views, users and logical backups |
 | SQL Server | SQL console with <code>GO</code> batches, data editor, object management and native backups |
 | Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
+| SAP HANA | Pure Rust client (port 30015, a tenant database by name, HANA Cloud on 443 with TLS); SQL console with SQLScript blocks (`DO BEGIN … END`, procedures), data editor, transactions, schemas, tables, views, keys and statistics |
+| Firebird | Firebird 3+ over its own wire protocol in pure Rust (SRP login and wire encryption, no client library), port 3050 and a database path or alias; SQL console with `SET TERM` scripts, data editor and transactions. On Firebird 3, NUMERIC values and times arrive through the client as approximate numbers; Firebird 4+ sends them exactly |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
 | SQLite | Local database files, SQL console, data editor and online backups |
 | DuckDB | Embedded analytics engine: a `.duckdb` file or an in-memory database, SQL console, data editor, and direct queries over Parquet, CSV, JSON and Excel files (`SELECT * FROM 'sales.parquet'`). Its official library (DuckDB 2.0.0) is a downloadable add-on: the connection dialog's **Download driver** fetches it once from DuckDB's GitHub release and checks its SHA-256, so the app stays small for everyone else |
@@ -177,6 +180,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
 | InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
 | Kusto / Azure Data Explorer | REST API over HTTPS, signed in with the Azure CLI's account (`az login`), an Entra ID application (client ID and secret), or no authentication for the Kusto emulator; KQL console with control commands (requests separated by blank lines, as in Kusto Explorer), databases with their tables and materialized views, and read-only result grids filtered and sorted with KQL. Read-only connections are also enforced by the server |
+| ODBC / OpenEdge | Any database with an ODBC driver: a DSN or a connection string (**+ → OpenEdge** fills in Progress OpenEdge's). The driver manager (`odbc32.dll`, unixODBC or iODBC) is loaded at runtime and the database's ODBC driver is installed separately; SQL console, data editor, transactions and the explorer through the ODBC catalog functions |
 | Prometheus / VictoriaMetrics | Prometheus HTTP API (port 9090, HTTPS with "Use TLS"), also under a path prefix for VictoriaMetrics, Mimir or Grafana's proxy (paste `http://vmselect:8481/select/0/prometheus` as the host); no auth, basic auth, or a bearer token (a password without a user), and extra headers through `header.<Name>` driver properties (`header.X-Scope-OrgID`). PromQL console with requests separated by blank lines: instant queries by default, range queries with `# range: 6h step: 1m` or `# start: … end: …` comment lines. The explorer lists the metrics with samples in the last hour; the data editor filters them with label matchers and shows raw samples over a range (`5m`). Result grids are read-only |
 
 ### Feature matrix
@@ -185,10 +189,12 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 
 | Engine | View data | Edit data | Transactions | Cancel query | SSH tunnel | Copy table | Create databases |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| PostgreSQL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| PostgreSQL / CockroachDB⁴ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | MySQL / MariaDB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | SQL Server | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | Oracle¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| SAP HANA | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Firebird | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 | Snowflake | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | SQLite | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | DuckDB² | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
@@ -198,6 +204,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | InfluxDB 2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | Kusto / Azure Data Explorer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Prometheus / VictoriaMetrics | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| ODBC / OpenEdge⁵ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 - **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2, Kusto and Prometheus) use their own command language and have read-only result grids.
 - **Transactions:** manual Commit / Roll Back in the SQL console.
@@ -212,9 +219,13 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 
 ³ ClickHouse's data editor only adds rows: updates and deletes are asynchronous mutations, so run them from the console. Its table copies run without a transaction.
 
+⁴ CockroachDB connects through the PostgreSQL driver: add it with **+ → CockroachDB**, which fills in port 26257, `defaultdb` and `root`.
+
+⁵ The ODBC engine loads the system's driver manager at runtime (`odbc32.dll` on Windows, unixODBC or iODBC on macOS and Linux) and reaches any database with an ODBC driver, such as Progress OpenEdge (**+ → OpenEdge** fills in its connection string). The database's own ODBC driver is installed separately, as Oracle Instant Client is.
+
 ### SSH tunnels
 
-Every engine reached over TCP (all but SQLite, DuckDB, Snowflake and Kusto) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
+Every engine reached over TCP (all but SQLite, DuckDB, Snowflake, Kusto and ODBC, whose driver makes its own connection) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
 
 - The first time a bastion is reached, Test Connection shows its key fingerprint and asks before trusting it. Keys already in `~/.ssh/known_hosts` are trusted, others go to DataCraft's own `ssh_known_hosts`, and a bastion whose key changed is refused, naming both fingerprints.
 - The sessions of a data source share one SSH connection, with keepalives every 30 seconds. If it drops, the next query opens it again.

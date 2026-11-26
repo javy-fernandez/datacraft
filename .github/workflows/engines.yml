@@ -1,0 +1,77 @@
+# Live tests of the engines that have no server on the developers' machines: CockroachDB,
+# Firebird and ODBC (unixODBC with psqlODBC against PostgreSQL). Their tests return early without
+# their DATACRAFT_* variables, so `cargo test` elsewhere skips them.
+# Runs on demand and on pull requests that touch these drivers.
+name: Engine live tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [new-engines]
+  pull_request:
+    paths:
+      - .github/workflows/engines.yml
+      - src/db/firebird.rs
+      - src/db/odbc.rs
+      - src/db/postgres.rs
+
+jobs:
+  live:
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: datacraft
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATACRAFT_CRDB_HOST: 127.0.0.1
+      DATACRAFT_CRDB_PORT: '26257'
+      DATACRAFT_FB_HOST: 127.0.0.1
+      DATACRAFT_FB_PORT: '3050'
+      DATACRAFT_FB_DATABASE: /var/lib/firebird/data/datacraft.fdb
+      DATACRAFT_FB_USER: SYSDBA
+      DATACRAFT_FB_PASSWORD: masterkey
+      DATACRAFT_ODBC_CONN: DRIVER={PostgreSQL Unicode};SERVER=127.0.0.1;PORT=5432;DATABASE=postgres;UID=postgres;PWD=datacraft
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start CockroachDB and Firebird
+        run: |
+          docker run -d --name crdb -p 26257:26257 cockroachdb/cockroach:latest-v24.3 start-single-node --insecure
+          docker run -d --name firebird -p 3050:3050 \
+            -e FIREBIRD_ROOT_PASSWORD=masterkey -e FIREBIRD_DATABASE=datacraft.fdb \
+            firebirdsql/firebird:5
+
+      - name: Install build dependencies and unixODBC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libsqlite3-dev libdbus-1-dev \
+            unixodbc odbc-postgresql
+          odbcinst -q -d
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the tests
+        run: cargo test --locked --no-run
+
+      - name: Wait for the servers
+        run: |
+          for i in $(seq 1 60); do
+            nc -z 127.0.0.1 26257 && nc -z 127.0.0.1 3050 && exit 0
+            sleep 2
+          done
+          docker logs crdb; docker logs firebird; exit 1
+
+      - name: Live tests
+        run: |
+          sleep 5
+          cargo test --locked -- --include-ignored --test-threads=1 \
+            db::postgres::tests::cockroach db::firebird:: db::odbc::

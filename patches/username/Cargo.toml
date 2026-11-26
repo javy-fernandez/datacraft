@@ -1,0 +1,9 @@
+[package]
+name = "username"
+version = "0.2.0"
+edition = "2021"
+description = "Drop-in for username 0.2 without winapi 0.2 (which doesn't build on Windows ARM64); hdbconnect only sends the name as client information."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]

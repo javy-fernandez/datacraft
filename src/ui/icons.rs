@@ -641,5 +641,10 @@ pub fn driver_color(driver: Driver, p: &Palette) -> Color32 {
         Driver::DuckDb => Color32::from_rgb(0xFF, 0xC1, 0x07),
         // Prometheus' orange.
         Driver::Prometheus => Color32::from_rgb(0xE6, 0x52, 0x2C),
+        // Firebird's flame red.
+        Driver::Firebird => Color32::from_rgb(0xE0, 0x3C, 0x1F),
+        // SAP blue.
+        Driver::Hana => Color32::from_rgb(0x00, 0x8F, 0xD3),
+        Driver::Odbc => Color32::from_rgb(0x7A, 0x86, 0x99),
     }
 }

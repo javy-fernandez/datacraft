@@ -295,6 +295,12 @@ pub fn count_sql(driver: Driver, probe: &Probe) -> String {
             "SELECT COUNT(*) FROM {t} WHERE ({}) AND ROWNUM <= {n}",
             probe.filter
         ),
+        Driver::Firebird => format!(
+            "SELECT COUNT(*) FROM (SELECT 1 AS x FROM {t} WHERE {} FETCH FIRST {n} ROWS ONLY) q",
+            probe.filter
+        ),
+        // ODBC can't tell the dialect: a plain count.
+        Driver::Odbc => format!("SELECT COUNT(*) FROM {t} WHERE {}", probe.filter),
         _ => format!(
             "SELECT COUNT(*) FROM (SELECT 1 AS x FROM {t} WHERE {} LIMIT {n}) q",
             probe.filter
@@ -351,7 +357,9 @@ async fn on_session<T>(
 ) -> anyhow::Result<T> {
     anyhow::ensure!(supported(cfg.driver), tr("Not available for this engine"));
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), tr("Cancelled"));
-    if !matches!(cfg.driver, Driver::Sqlite | Driver::Oracle) {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if cfg.driver.has_databases() {
         cfg.database = db.into();
     }
     let mut session =

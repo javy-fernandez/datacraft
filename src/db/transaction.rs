@@ -106,7 +106,8 @@ pub fn control(driver: Driver, statement: &str) -> Option<Control> {
                 Driver::MySql | Driver::MariaDb => {
                     word(1) != Some("TEMPORARY") && word(0) != Some("COMMENT")
                 }
-                Driver::Oracle | Driver::Snowflake => true,
+                // HANA commits DDL by itself unless DDL autocommit is turned off.
+                Driver::Oracle | Driver::Snowflake | Driver::Hana => true,
                 _ => false,
             };
             implicit.then_some(Control::ImplicitCommit)

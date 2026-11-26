@@ -453,7 +453,38 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
     use Driver::*;
     match (kind, to) {
         // Never a copy target (the dialog isn't offered for it).
-        (_, Redis | MongoDb | InfluxDb | Kusto | Prometheus) => "string".into(),
+        (_, Redis | MongoDb | InfluxDb | Kusto | Prometheus | Odbc) => "string".into(),
+        // Firebird 3: NUMERIC up to 18 digits, no time zones.
+        (_, Firebird) => match kind {
+            Kind::SmallInt => "smallint".into(),
+            Kind::Int => "integer".into(),
+            Kind::BigInt => "bigint".into(),
+            Kind::Decimal(Some((p, s))) => format!("numeric({},{})", p.min(18), s.min(p.min(18))),
+            Kind::Decimal(None) => "numeric(18,6)".into(),
+            Kind::Float => "double precision".into(),
+            Kind::Bool => "boolean".into(),
+            Kind::Date => "date".into(),
+            Kind::Time => "time".into(),
+            Kind::Timestamp | Kind::TimestampTz => "timestamp".into(),
+            Kind::Binary => "blob".into(),
+            Kind::Varchar(n) if n <= 8191 => format!("varchar({n})"),
+            Kind::Varchar(_) | Kind::Text => "blob sub_type text".into(),
+        },
+        (_, Hana) => match kind {
+            Kind::SmallInt => "SMALLINT".into(),
+            Kind::Int => "INTEGER".into(),
+            Kind::BigInt => "BIGINT".into(),
+            Kind::Decimal(Some((p, s))) => format!("DECIMAL({},{})", p.min(38), s.min(p.min(38))),
+            Kind::Decimal(None) => "DECIMAL".into(),
+            Kind::Float => "DOUBLE".into(),
+            Kind::Bool => "BOOLEAN".into(),
+            Kind::Date => "DATE".into(),
+            Kind::Time => "TIME".into(),
+            Kind::Timestamp | Kind::TimestampTz => "TIMESTAMP".into(),
+            Kind::Binary => "BLOB".into(),
+            Kind::Varchar(n) if n <= 5000 => format!("NVARCHAR({n})"),
+            Kind::Varchar(_) | Kind::Text => "NCLOB".into(),
+        },
         (_, DuckDb) => match kind {
             Kind::SmallInt => "SMALLINT".into(),
             Kind::Int => "INTEGER".into(),
@@ -771,6 +802,9 @@ pub fn select_sql(
     match (driver, limit) {
         (Driver::MsSql, _) | (_, None) => sql,
         (Driver::Oracle, Some(n)) => format!("SELECT * FROM ({sql}) WHERE ROWNUM <= {n}"),
+        (Driver::Firebird, Some(n)) => format!("{sql} FETCH FIRST {n} ROWS ONLY"),
+        // ODBC can't tell the dialect (and isn't a copy source).
+        (Driver::Odbc, Some(_)) => sql,
         (_, Some(n)) => format!("{sql} LIMIT {n}"),
     }
 }
@@ -833,7 +867,12 @@ pub fn insert_sql(
         .map(|n| to.quote_ident(n))
         .collect::<Vec<_>>()
         .join(", ");
-    let batch = if to == Driver::Oracle { 1 } else { BATCH };
+    // No multi-row VALUES in Oracle, Firebird nor HANA.
+    let batch = if matches!(to, Driver::Oracle | Driver::Firebird | Driver::Hana) {
+        1
+    } else {
+        BATCH
+    };
     let mut out = Vec::new();
     let mut tuples = Vec::new();
     for row in rows {
@@ -862,7 +901,9 @@ pub fn insert_sql(
 
 /// Session for `db` on its own connection (Oracle keeps its service name).
 async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
-    if !matches!(cfg.driver, Driver::Oracle | Driver::Sqlite) && !db.is_empty() {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if cfg.driver.has_databases() && !db.is_empty() {
         cfg.database = db.to_string();
     }
     let mut s = Session::connect(&cfg).await?;

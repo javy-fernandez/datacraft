@@ -28,6 +28,26 @@ fn catalog_query(driver: Driver, schema: &str, table: &str) -> String {
     catalog_scope_query(driver, Some(schema), Some(table))
 }
 
+/// CockroachDB: PostgreSQL's catalog without its size functions (`pg_table_size`…); row counts
+/// come from the table statistics.
+fn cockroach_catalog_query(schema: Option<&str>, table: Option<&str>) -> String {
+    let lit = |s: &str| literal(Driver::Postgres, &Some(s.to_string()));
+    let mut sql = "SELECT n.nspname AS schema_name, c.relname AS object_name, \
+         (SELECT s.estimated_row_count FROM crdb_internal.table_row_statistics s WHERE s.table_id = c.oid::INT8) AS row_count, \
+         pg_catalog.obj_description(c.oid, 'pg_class') AS object_comment \
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ('r','v','m') \
+         AND n.nspname NOT IN ('pg_catalog','information_schema','crdb_internal','pg_extension')"
+        .to_string();
+    if let Some(schema) = schema {
+        sql.push_str(&format!(" AND n.nspname = {}", lit(schema)));
+    }
+    if let Some(table) = table {
+        sql.push_str(&format!(" AND c.relname = {}", lit(table)));
+    }
+    sql
+}
+
 fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>) -> String {
     let (base, schema_field, table_field, default_schema) = match driver {
         Driver::MySql | Driver::MariaDb => (
@@ -54,7 +74,22 @@ fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>
              LEFT JOIN all_tab_comments c ON c.owner = o.owner AND c.table_name = o.object_name WHERE o.object_type IN ('TABLE','VIEW') AND o.owner NOT IN ({excluded})"),
             "o.owner", "o.object_name", "")
         },
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => (String::new(), "", "", ""),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus | Driver::Odbc => (String::new(), "", "", ""),
+        // Firebird: descriptions only (no row counts nor sizes in its system tables).
+        // Firebird has no schemas: the one shown (the database) is echoed back, as for SQLite.
+        Driver::Firebird => (
+            format!("SELECT {} AS schema_name, TRIM(RDB$RELATION_NAME) AS object_name, CAST(RDB$DESCRIPTION AS VARCHAR(8191)) AS object_comment \
+             FROM RDB$RELATIONS WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0", literal(driver, &Some(schema.unwrap_or_default().to_string()))),
+            "", "TRIM(RDB$RELATION_NAME)", "",
+        ),
+        // HANA: record counts and sizes of column and row tables, and comments.
+        Driver::Hana => (
+            "SELECT t.SCHEMA_NAME AS schema_name, t.TABLE_NAME AS object_name, m.RECORD_COUNT AS row_count, m.TABLE_SIZE AS data_bytes, \
+             t.CREATE_TIME AS created, t.TABLE_TYPE AS engine, t.COMMENTS AS object_comment \
+             FROM SYS.TABLES t LEFT JOIN SYS.M_TABLES m ON m.SCHEMA_NAME = t.SCHEMA_NAME AND m.TABLE_NAME = t.TABLE_NAME \
+             WHERE t.IS_SYSTEM_TABLE = 'FALSE'".to_string(),
+            "t.SCHEMA_NAME", "t.TABLE_NAME", "",
+        ),
         Driver::Snowflake => (
             "SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, ROW_COUNT AS row_count, BYTES AS data_bytes, CREATED AS created, LAST_ALTERED AS modified, COMMENT AS object_comment \
              FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA'".to_string(), "TABLE_SCHEMA", "TABLE_NAME", ""
@@ -133,12 +168,15 @@ impl Session {
         driver: Driver,
         schema: Option<&str>,
     ) -> anyhow::Result<Vec<ObjectInfoRow>> {
-        if driver.is_nosql() {
+        if driver.is_nosql() || driver == Driver::Odbc {
             anyhow::bail!(tr("Object information is not available"));
         }
-        let results = self
-            .execute(&catalog_scope_query(driver, schema, None), 100_000)
-            .await?;
+        let sql = if self.is_cockroach() {
+            cockroach_catalog_query(schema, None)
+        } else {
+            catalog_scope_query(driver, schema, None)
+        };
+        let results = self.execute(&sql, 100_000).await?;
         let mut out = Vec::new();
         for rs in results {
             if rs.truncated {
@@ -177,12 +215,15 @@ impl Session {
         table: &str,
         count_rows: bool,
     ) -> anyhow::Result<ObjectInfo> {
-        if driver.is_nosql() {
+        if driver.is_nosql() || driver == Driver::Odbc {
             anyhow::bail!(tr("Object information is not available"));
         }
-        let results = self
-            .execute(&catalog_query(driver, schema, table), 1)
-            .await?;
+        let sql = if self.is_cockroach() {
+            cockroach_catalog_query(Some(schema), Some(table))
+        } else {
+            catalog_query(driver, schema, table)
+        };
+        let results = self.execute(&sql, 1).await?;
         let mut info = results
             .iter()
             .find_map(decode)
@@ -202,11 +243,7 @@ impl Session {
         table: &str,
         filter: &str,
     ) -> anyhow::Result<u64> {
-        let qualified = format!(
-            "{}.{}",
-            driver.quote_ident(schema),
-            driver.quote_ident(table)
-        );
+        let qualified = Session::quote_table(driver, schema, table);
         let count = if driver == Driver::MsSql {
             "COUNT_BIG(*)"
         } else {
@@ -241,7 +278,11 @@ mod tests {
 
     #[test]
     fn catalog_names_are_literals_and_never_trigger_full_counts() {
-        for driver in Driver::ALL.into_iter().filter(|d| !d.is_nosql()) {
+        // ODBC has no catalog query of its own.
+        for driver in Driver::ALL
+            .into_iter()
+            .filter(|d| !d.is_nosql() && *d != Driver::Odbc)
+        {
             let query = catalog_query(driver, "a'b", "x'; DROP TABLE users; --");
             assert!(query.contains("a''b") || driver == Driver::Sqlite);
             assert!(query.contains("x''; DROP TABLE users; --"));

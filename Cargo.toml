@@ -28,6 +28,11 @@ tiberius = { version = "0.13.0", default-features = false, features = ["tds73", 
 mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls"] }
 # Oracle: ODPI-C, loads the Oracle Instant Client at runtime (not needed to build).
 oracle = "0.6.3"
+# Firebird over its wire protocol in pure Rust (SRP auth, Arc4 wire encryption): no fbclient.
+rsfbclient-core = "0.29.0"
+rsfbclient-rust = "0.29.0"
+# Same version rsfbclient-core decodes with: lets the Firebird driver show OCTETS text as hex.
+encoding-next = "0.3.0"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 tokio-postgres = "0.7.18"
 tokio-util = { version = "0.7.20", features = ["compat"] }
@@ -57,6 +62,9 @@ rustls-platform-verifier = "0.7"
 # NoSQL: Redis / Valkey (async on tokio) and MongoDB's official driver (rustls).
 redis = { version = "1.8.0", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 mongodb = { version = "3.9.1", default-features = false, features = ["compat-3-0-0", "rustls-tls-aws-lc", "dns-resolver"] }
+# SAP HANA / HANA Cloud: pure Rust wire protocol on tokio. Its rustls has no provider feature of
+# its own, so it uses the process's aws-lc one like the rest (no ring).
+hdbconnect_async = { version = "0.33.0", default-features = false, features = ["tokio"] }
 
 # Keep the background scheduler's Keychain reads non-interactive.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -107,3 +115,7 @@ rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"
 [build-dependencies]
 # Native Windows icon resources, including MSVC and cross-compiled GNU/ARM64 builds.
 embed-resource = "3.0.12"
+
+[patch.crates-io]
+# hdbconnect needs `username` 0.2, whose winapi 0.2 does not build on Windows ARM64.
+username = { path = "patches/username" }

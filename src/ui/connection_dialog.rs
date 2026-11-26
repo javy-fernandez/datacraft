@@ -6,7 +6,9 @@ use crate::db::datagrip;
 use crate::db::ssh::{self, SshAuth};
 use crate::db::tls::{self, TlsMode};
 use crate::db::url::{apply_url, jdbc_url};
-use crate::db::{AuthMode, ConnectionConfig, Driver, Environment, is_secret_property, snowflake};
+use crate::db::{
+    AuthMode, ConnectionConfig, Driver, Environment, Preset, is_secret_property, snowflake,
+};
 use crate::i18n::{tr, trf};
 use crate::ui::icons::{self, Ico};
 use crate::ui::theme::{self, Palette, palette};
@@ -185,6 +187,13 @@ impl ConnectionDialog {
             Driver::Sqlite => Ok(()),
             // No file: an in-memory database.
             Driver::DuckDb => Ok(()),
+            Driver::Odbc if cfg.database.trim().is_empty() => {
+                Err(tr("Specify a DSN or a connection string").into())
+            }
+            Driver::Odbc if crate::db::odbc::has_password(cfg) => {
+                Err(tr("Put the user and password in their fields, not in the address").into())
+            }
+            Driver::Odbc => Ok(()),
             _ if cfg.host.trim().is_empty() => Err(tr("Host is required").into()),
             Driver::Snowflake => snowflake::credentials(cfg)
                 .map(|_| ())
@@ -416,7 +425,20 @@ impl ConnectionDialog {
                         ui.add(egui::Button::new(d.label()).frame(false))
                     });
                     if r.inner.clicked() {
-                        add = Some(d);
+                        add = Some((d, None));
+                    }
+                }
+                // Engines reached through another one's driver, with its settings filled in.
+                ui.separator();
+                for preset in Preset::ALL {
+                    let d = preset.driver();
+                    let r = ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                        icons::paint(ui.painter(), r, Ico::Driver(d), p.icon, p, true);
+                        ui.add(egui::Button::new(preset.label()).frame(false))
+                    });
+                    if r.inner.clicked() {
+                        add = Some((d, Some(preset)));
                     }
                 }
                 ui.separator();
@@ -424,9 +446,12 @@ impl ConnectionDialog {
                     self.open_import(datagrip::default_files());
                 }
             });
-            if let Some(d) = add {
+            if let Some((d, preset)) = add {
                 let id = self.next_id();
                 self.add(id, d);
+                if let (Some(preset), Some(item)) = (preset, self.items.last_mut()) {
+                    item.cfg.apply_preset(preset);
+                }
             }
             if theme::icon_button(ui, Ico::Minus, !self.items.is_empty(), tr("Remove")).clicked() {
                 let item = self.items.remove(self.selected);
@@ -563,7 +588,17 @@ impl ConnectionDialog {
                 driver_combo(ui, &mut item.cfg, p);
                 ui.end_row();
 
-                if matches!(item.cfg.driver, Driver::Sqlite | Driver::DuckDb) {
+                if item.cfg.driver == Driver::Odbc {
+                    // A DSN, or a whole connection string (`DRIVER={…};HOST=…`).
+                    ui.label(tr("Data source:"));
+                    text_field(
+                        ui,
+                        &mut item.cfg.database,
+                        "DSN=name  ·  DRIVER={…};HOST=…;PORT=…;DB=…",
+                    );
+                    ui.end_row();
+                    auth_rows(ui, &mut item.cfg);
+                } else if matches!(item.cfg.driver, Driver::Sqlite | Driver::DuckDb) {
                     ui.label(tr("File:"));
                     database_file(ui, &mut item.cfg, &mut self.error);
                     ui.end_row();
@@ -616,7 +651,7 @@ impl ConnectionDialog {
 
                 if !item.cfg.url_only {
                     match item.cfg.driver {
-                        Driver::Sqlite | Driver::DuckDb | Driver::Prometheus => {}
+                        Driver::Sqlite | Driver::DuckDb | Driver::Prometheus | Driver::Odbc => {}
                         Driver::Snowflake => {
                             for (label, value) in [
                                 (tr("Role:"), &mut item.cfg.role),
@@ -632,6 +667,8 @@ impl ConnectionDialog {
                         d => {
                             ui.label(match d {
                                 Driver::Oracle => tr("Service:"),
+                                // A tenant of a multitenant system; empty = the one on the port.
+                                Driver::Hana => tr("Tenant database:"),
                                 Driver::InfluxDb => tr("Bucket:"),
                                 _ => tr("Database:"),
                             });
@@ -716,6 +753,7 @@ impl ConnectionDialog {
                 | Driver::InfluxDb
                 | Driver::Kusto
                 | Driver::Prometheus
+                | Driver::Hana
         ) {
             ui.add_space(6.0);
             let kusto = cfg.driver == Driver::Kusto;
@@ -746,7 +784,7 @@ impl ConnectionDialog {
             if tls
                 && matches!(
                     cfg.driver,
-                    Driver::ClickHouse | Driver::InfluxDb | Driver::Prometheus
+                    Driver::ClickHouse | Driver::InfluxDb | Driver::Prometheus | Driver::Hana
                 )
             {
                 let mut insecure = cfg
@@ -1649,7 +1687,11 @@ mod tests {
                 ConnectionDialog::has_tab(d, Tab::Ssh),
                 !matches!(
                     d,
-                    Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto
+                    Driver::Sqlite
+                        | Driver::DuckDb
+                        | Driver::Snowflake
+                        | Driver::Kusto
+                        | Driver::Odbc
                 ),
                 "{d:?}"
             );
@@ -1769,6 +1811,41 @@ mod tests {
             ConnectionDialog::edit(5, &[prom]),
             |d| {
                 d.test = (5, TestState::Done(Ok(Some("Prometheus API 2.24.0".into()))));
+            },
+        );
+    }
+
+    /// The new engines: OpenEdge through ODBC (selected), Firebird, SAP HANA and CockroachDB.
+    #[test]
+    #[ignore]
+    fn render_new_engines_dialog() {
+        let mut openedge = ConnectionConfig::new(6, Driver::Odbc);
+        openedge.apply_preset(Preset::OpenEdge);
+        openedge.name = "sports2020@openedge".into();
+        openedge.user = "sysprogress".into();
+        let mut firebird = ConnectionConfig::new(7, Driver::Firebird);
+        firebird.name = "employee@firebird".into();
+        let mut hana = ConnectionConfig::new(8, Driver::Hana);
+        hana.name = "HXE@hana".into();
+        let mut crdb = ConnectionConfig::new(9, Driver::Postgres);
+        crdb.apply_preset(Preset::CockroachDb);
+        crdb.name = "defaultdb@cockroach".into();
+        render(
+            "new_engines_general",
+            true,
+            ConnectionDialog::edit(6, &[openedge, firebird, hana, crdb]),
+            |d| {
+                d.test = (6, TestState::Done(Ok(Some("OpenEdge 12.8".into()))));
+            },
+        );
+        let mut firebird = ConnectionConfig::new(7, Driver::Firebird);
+        firebird.name = "employee@firebird".into();
+        render(
+            "firebird_general",
+            true,
+            ConnectionDialog::edit(7, &[firebird]),
+            |d| {
+                d.test = (7, TestState::Done(Ok(Some("Firebird 5.0.1".into()))));
             },
         );
     }

@@ -47,7 +47,10 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
                 | Driver::Oracle
                 | Driver::Redis
                 | Driver::MongoDb
-                | Driver::InfluxDb => format!("'{escaped}'"),
+                | Driver::InfluxDb
+                | Driver::Firebird
+                | Driver::Hana
+                | Driver::Odbc => format!("'{escaped}'"),
                 // KQL escapes both the quote and the backslash with a backslash.
                 Driver::Kusto | Driver::Prometheus => {
                     format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'"))

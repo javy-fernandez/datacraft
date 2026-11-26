@@ -46,6 +46,15 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::Kusto => format!("{}{slash_db}{extra}", super::kusto::cluster_url(cfg)),
         // The API's base, as the server's own UI show it.
         Driver::Prometheus => format!("{}{extra}", super::prometheus::base_url(cfg)),
+        Driver::Firebird => format!("jdbc:firebirdsql://{authority}{slash_db}{extra}"),
+        Driver::Hana if db.is_empty() => format!("jdbc:sap://{authority}/{extra}"),
+        Driver::Hana => {
+            let extra = extra.trim_start_matches('?');
+            let more = if extra.is_empty() { "" } else { "&" };
+            format!("jdbc:sap://{authority}/?databaseName={db}{more}{extra}")
+        }
+        // The DSN, or the connection string when there is no DSN.
+        Driver::Odbc => format!("odbc:{}", super::odbc::connection_string(cfg)),
     }
 }
 
@@ -75,6 +84,9 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
             return true;
         }
         Driver::Snowflake => return snowflake::apply_jdbc_url(cfg, url),
+        Driver::Firebird => "jdbc:firebirdsql://",
+        Driver::Hana => "jdbc:sap://",
+        Driver::Odbc => return super::odbc::apply_url(cfg, url),
         Driver::Redis => "redis://",
         Driver::MongoDb => "mongodb://",
         Driver::ClickHouse => "clickhouse://",
@@ -185,6 +197,28 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
     let Some((host, port)) = parse_authority(authority, default_port) else {
         return false;
     };
+    // HANA: `jdbc:sap://host:port/?databaseName=TENANT&…`.
+    if cfg.driver == Driver::Hana && db.is_empty() {
+        let mut database = String::new();
+        let params: Vec<&str> = extra
+            .trim_start_matches('?')
+            .split('&')
+            .filter(|p| match p.split_once('=') {
+                Some((k, v)) if k.eq_ignore_ascii_case("databaseName") => {
+                    database = v.to_string();
+                    false
+                }
+                _ => !p.is_empty(),
+            })
+            .collect();
+        let extra = if params.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", params.join("&"))
+        };
+        (cfg.host, cfg.port, cfg.database, cfg.url_extra) = (host, port, database, extra);
+        return true;
+    }
     (cfg.host, cfg.port, cfg.database, cfg.url_extra) =
         (host, port, db.to_string(), extra.to_string());
     true
@@ -581,7 +615,10 @@ pub fn connection_url(cfg: &ConnectionConfig) -> String {
         | Driver::Snowflake
         | Driver::InfluxDb
         | Driver::Kusto
-        | Driver::Prometheus => jdbc_url(cfg),
+        | Driver::Prometheus
+        | Driver::Firebird
+        | Driver::Hana
+        | Driver::Odbc => jdbc_url(cfg),
     }
 }
 
@@ -890,6 +927,9 @@ mod tests {
                             | Driver::InfluxDb
                             | Driver::Kusto
                             | Driver::Prometheus
+                            | Driver::Firebird
+                            | Driver::Hana
+                            | Driver::Odbc
                     ),
                 "{url}"
             );

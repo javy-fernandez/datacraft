@@ -52,6 +52,45 @@ pub enum CreateResult {
 /// Usual types per engine, offered in each column's type menu.
 pub(crate) fn common_types(driver: Driver) -> &'static [&'static str] {
     match driver {
+        Driver::Firebird => &[
+            "integer",
+            "bigint",
+            "smallint",
+            "numeric(10,2)",
+            "double precision",
+            "boolean",
+            "varchar(255)",
+            "blob sub_type text",
+            "date",
+            "time",
+            "timestamp",
+            "blob",
+        ],
+        Driver::Hana => &[
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "DECIMAL(10,2)",
+            "DOUBLE",
+            "BOOLEAN",
+            "NVARCHAR(255)",
+            "NCLOB",
+            "DATE",
+            "TIME",
+            "TIMESTAMP",
+            "VARBINARY(255)",
+        ],
+        Driver::Odbc => &[
+            "integer",
+            "bigint",
+            "smallint",
+            "decimal(10,2)",
+            "double precision",
+            "varchar(255)",
+            "date",
+            "time",
+            "timestamp",
+        ],
         Driver::Postgres => &[
             "integer",
             "bigint",
@@ -193,6 +232,10 @@ pub fn default_schema(driver: Driver) -> &'static str {
         Driver::MsSql => "dbo",
         Driver::Sqlite | Driver::DuckDb => "main",
         Driver::Snowflake => "PUBLIC",
+        // Firebird has no schemas: one, named after the database, is shown.
+        Driver::Firebird => "",
+        // HANA: the user's own schema (filled in by the caller); ODBC: the driver's default.
+        Driver::Hana | Driver::Odbc => "",
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
             ""
         }
@@ -212,6 +255,8 @@ fn id_column(driver: Driver) -> NewColumn {
         Driver::Oracle => "number(10)",
         Driver::Snowflake => "number(38,0)",
         Driver::ClickHouse => "UInt64",
+        Driver::Firebird | Driver::Odbc => "integer",
+        Driver::Hana => "INTEGER",
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
             "string"
         }
@@ -232,11 +277,13 @@ pub fn create_table_sql(
     columns: &[NewColumn],
 ) -> String {
     let q = |s: &str| quote_ident_if_needed(driver, s.trim());
-    let qualified = if driver == Driver::Sqlite || schema.trim().is_empty() {
-        q(table)
-    } else {
-        format!("{}.{}", q(schema), q(table))
-    };
+    // Firebird has no schemas: the one shown is the database.
+    let qualified =
+        if matches!(driver, Driver::Sqlite | Driver::Firebird) || schema.trim().is_empty() {
+            q(table)
+        } else {
+            format!("{}.{}", q(schema), q(table))
+        };
     let mut lines: Vec<String> = columns
         .iter()
         .map(|c| {

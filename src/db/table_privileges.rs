@@ -89,7 +89,9 @@ async fn cancellable<T>(
 }
 
 async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
-    if cfg.driver != Driver::Oracle {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if cfg.driver.has_databases() {
         cfg.database = db.into();
     }
     let mut session = Box::pin(Session::connect(&cfg)).await?;

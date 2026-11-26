@@ -119,6 +119,9 @@ fn search_sql(
                 | Driver::Prometheus => column.clone(),
                 Driver::Postgres | Driver::Sqlite => format!("CAST({column} AS TEXT)"),
                 Driver::DuckDb => format!("CAST({column} AS VARCHAR)"),
+                Driver::Firebird => format!("CAST({column} AS VARCHAR(8191))"),
+                Driver::Hana => format!("TO_NVARCHAR({column})"),
+                Driver::Odbc => format!("CAST({column} AS VARCHAR(4000))"),
                 // toString keeps NULL (a CAST to String fails on it) and takes any type.
                 Driver::ClickHouse => format!("toString({column})"),
             };
@@ -154,6 +157,11 @@ fn search_sql(
         Driver::Oracle => {
             format!("SELECT * FROM {name} WHERE ({predicate}) AND ROWNUM <= {PREVIEW_ROWS}")
         }
+        Driver::Firebird => {
+            format!("SELECT * FROM {name} WHERE {predicate} FETCH FIRST {PREVIEW_ROWS} ROWS ONLY")
+        }
+        // ODBC can't tell the dialect: the driver stops reading at the preview's rows.
+        Driver::Odbc => format!("SELECT * FROM {name} WHERE {predicate}"),
         _ => format!("SELECT * FROM {name} WHERE {predicate} LIMIT {PREVIEW_ROWS}"),
     })
 }

@@ -300,7 +300,10 @@ pub fn list_sql(driver: Driver, nonce: &str) -> Option<String> {
         | Driver::MongoDb
         | Driver::InfluxDb
         | Driver::Kusto
-        | Driver::Prometheus => return None,
+        | Driver::Prometheus
+        | Driver::Firebird
+        | Driver::Hana
+        | Driver::Odbc => return None,
     };
     Some(sql)
 }

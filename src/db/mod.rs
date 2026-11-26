@@ -10,7 +10,9 @@ pub mod copy;
 pub mod create_db;
 pub mod datagrip;
 pub mod duckdb;
+pub mod firebird;
 pub mod fk_nav;
+pub mod hana;
 pub mod indexes;
 pub mod influx;
 pub mod kusto;
@@ -18,6 +20,7 @@ pub mod mongo;
 pub mod mssql;
 pub mod mysql;
 pub mod object_info;
+pub mod odbc;
 pub mod oracle;
 pub mod plan;
 pub mod postgres;
@@ -72,15 +75,24 @@ pub enum Driver {
     DuckDb,
     /// The Prometheus HTTP API: Prometheus, VictoriaMetrics, Mimir, Thanos... (PromQL).
     Prometheus,
+    /// Firebird 3+ (its wire protocol in pure Rust: no client library).
+    Firebird,
+    /// SAP HANA and HANA Cloud (pure Rust client).
+    Hana,
+    /// Any database with an ODBC driver (OpenEdge, Informix, DB2…), through the system's
+    /// driver manager loaded at runtime.
+    Odbc,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 14] = [
+    pub const ALL: [Driver; 17] = [
         Driver::Postgres,
         Driver::MySql,
         Driver::MariaDb,
         Driver::MsSql,
         Driver::Oracle,
+        Driver::Hana,
+        Driver::Firebird,
         Driver::Snowflake,
         Driver::ClickHouse,
         Driver::Sqlite,
@@ -90,6 +102,7 @@ impl Driver {
         Driver::InfluxDb,
         Driver::Kusto,
         Driver::Prometheus,
+        Driver::Odbc,
     ];
 
     /// Redis, MongoDB, InfluxDB and Kusto: no SQL. Their consoles take the engine's own
@@ -114,6 +127,9 @@ impl Driver {
                 | Driver::Oracle
                 | Driver::Snowflake
                 | Driver::DuckDb
+                | Driver::Firebird
+                | Driver::Hana
+                | Driver::Odbc
         )
     }
 
@@ -137,7 +153,7 @@ impl Driver {
     pub fn can_copy(self) -> bool {
         !matches!(
             self,
-            Driver::Redis | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus
+            Driver::Redis | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus | Driver::Odbc
         )
     }
 
@@ -146,7 +162,7 @@ impl Driver {
     pub fn supports_ssh(self) -> bool {
         !matches!(
             self,
-            Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto
+            Driver::Sqlite | Driver::DuckDb | Driver::Snowflake | Driver::Kusto | Driver::Odbc
         )
     }
 
@@ -166,6 +182,9 @@ impl Driver {
             Driver::Kusto => "Kusto / Azure Data Explorer",
             Driver::DuckDb => "DuckDB",
             Driver::Prometheus => "Prometheus / VictoriaMetrics",
+            Driver::Firebird => "Firebird",
+            Driver::Hana => "SAP HANA",
+            Driver::Odbc => "ODBC",
         }
     }
 
@@ -183,6 +202,10 @@ impl Driver {
             Driver::Kusto => 443,
             Driver::Sqlite | Driver::DuckDb => 0,
             Driver::Prometheus => prometheus::DEFAULT_PORT,
+            Driver::Firebird => 3050,
+            Driver::Hana => 30015,
+            // The DSN or the connection string says where the server is.
+            Driver::Odbc => 0,
         }
     }
 
@@ -200,6 +223,7 @@ impl Driver {
                 | Driver::InfluxDb
                 | Driver::Kusto
                 | Driver::Prometheus
+                | Driver::Firebird
         )
     }
 
@@ -207,7 +231,13 @@ impl Driver {
     pub fn has_databases(self) -> bool {
         !matches!(
             self,
-            Driver::Sqlite | Driver::Oracle | Driver::DuckDb | Driver::Prometheus
+            Driver::Sqlite
+                | Driver::Oracle
+                | Driver::DuckDb
+                | Driver::Prometheus
+                | Driver::Firebird
+                | Driver::Hana
+                | Driver::Odbc
         )
     }
 
@@ -238,9 +268,40 @@ impl Driver {
             | Driver::Oracle
             | Driver::Snowflake
             | Driver::Redis
-            | Driver::MongoDb => {
+            | Driver::MongoDb
+            | Driver::Firebird
+            | Driver::Hana
+            | Driver::Odbc => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
+        }
+    }
+}
+
+/// Engines reached through another engine's driver: the Add menu creates a data source of that
+/// driver with these settings filled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    /// CockroachDB speaks PostgreSQL's protocol (the session adapts its catalog queries).
+    CockroachDb,
+    /// Progress OpenEdge, through its ODBC driver.
+    OpenEdge,
+}
+
+impl Preset {
+    pub const ALL: [Preset; 2] = [Preset::CockroachDb, Preset::OpenEdge];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Preset::CockroachDb => "CockroachDB",
+            Preset::OpenEdge => "OpenEdge",
+        }
+    }
+
+    pub fn driver(self) -> Driver {
+        match self {
+            Preset::CockroachDb => Driver::Postgres,
+            Preset::OpenEdge => Driver::Odbc,
         }
     }
 }
@@ -391,6 +452,10 @@ impl ConnectionConfig {
                 Driver::MongoDb => "test".into(),
                 Driver::Redis => "0".into(),
                 Driver::ClickHouse => "default".into(),
+                // Firebird: the database file on the server, or its alias.
+                Driver::Firebird => "employee".into(),
+                // ODBC: the DSN.
+                Driver::Hana | Driver::Odbc => String::new(),
                 // InfluxDB: the bucket; Kusto: the database. Empty = the first one.
                 Driver::Sqlite
                 | Driver::DuckDb
@@ -407,6 +472,9 @@ impl ConnectionConfig {
                 Driver::MySql | Driver::MariaDb => "root".into(),
                 Driver::Oracle => "system".into(),
                 Driver::ClickHouse => "default".into(),
+                Driver::Firebird => "SYSDBA".into(),
+                Driver::Hana => "SYSTEM".into(),
+                Driver::Odbc => String::new(),
                 // InfluxDB: the organization; empty = the token's only one. Kusto: an
                 // application's client ID.
                 Driver::Sqlite
@@ -542,6 +610,19 @@ impl ConnectionConfig {
 
     /// Upgrades a config saved by an older version: the key file of the old "Key pair"
     /// authentication becomes the `private_key_file` property of "Authenticator".
+    /// Fills in a preset's settings on a new data source of its driver.
+    pub fn apply_preset(&mut self, preset: Preset) {
+        self.name = preset.label().to_string();
+        match preset {
+            Preset::CockroachDb => {
+                self.port = postgres::COCKROACH_PORT;
+                self.database = "defaultdb".into();
+                self.user = "root".into();
+            }
+            Preset::OpenEdge => self.database = odbc::OPENEDGE_TEMPLATE.into(),
+        }
+    }
+
     pub fn migrate(&mut self) {
         let key = std::mem::take(&mut self.private_key_file);
         if !key.trim().is_empty() && self.property("private_key_file").is_none() {
@@ -761,6 +842,11 @@ impl Session {
             Driver::Prometheus => {
                 Engine::Prometheus(Box::new(prometheus::PromSession::connect(cfg).await?))
             }
+            Driver::Firebird => {
+                Engine::Firebird(Box::new(firebird::FbSession::connect(cfg).await?))
+            }
+            Driver::Hana => Engine::Hana(Box::new(hana::HanaSession::connect(cfg).await?)),
+            Driver::Odbc => Engine::Odbc(Box::new(odbc::OdbcSession::connect(cfg).await?)),
         };
         // Read-only data sources are also enforced by the server where the engine allows it
         // (SQLite opens the file read-only; SQL Server and Oracle rely on the app's checks).
@@ -780,11 +866,16 @@ impl Session {
     /// Qualified name quoted for the dialect, e.g. `"public"."users"` or `[dbo].[users]`.
     pub fn quote_table(driver: Driver, schema: &str, table: &str) -> String {
         match driver {
-            Driver::Postgres | Driver::Snowflake | Driver::DuckDb => format!(
-                "\"{}\".\"{}\"",
-                schema.replace('"', "\"\""),
-                table.replace('"', "\"\"")
-            ),
+            // Firebird has no schemas; an ODBC source may not have them either.
+            Driver::Firebird => driver.quote_ident(table),
+            Driver::Odbc if schema.is_empty() => driver.quote_ident(table),
+            Driver::Postgres | Driver::Snowflake | Driver::DuckDb | Driver::Hana | Driver::Odbc => {
+                format!(
+                    "\"{}\".\"{}\"",
+                    schema.replace('"', "\"\""),
+                    table.replace('"', "\"\"")
+                )
+            }
             // No qualified names: a collection, a key pattern or a measurement, as is.
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
             // Kusto: the table of the request's database.
@@ -851,6 +942,9 @@ pub enum Engine {
     Kusto(Box<kusto::KustoSession>),
     DuckDb(duckdb::DuckSession),
     Prometheus(Box<prometheus::PromSession>),
+    Firebird(Box<firebird::FbSession>),
+    Hana(Box<hana::HanaSession>),
+    Odbc(Box<odbc::OdbcSession>),
 }
 
 impl Engine {
@@ -872,6 +966,9 @@ impl Engine {
             Engine::Kusto(s) => s.execute(sql, max_rows).await,
             Engine::DuckDb(s) => s.execute(sql, max_rows).await,
             Engine::Prometheus(s) => s.execute(sql, max_rows).await,
+            Engine::Firebird(s) => s.execute(sql, max_rows).await,
+            Engine::Hana(s) => s.execute(sql, max_rows).await,
+            Engine::Odbc(s) => s.execute(sql, max_rows).await,
         }
     }
 
@@ -893,6 +990,9 @@ impl Engine {
             Engine::Oracle(s) => s.execute_bound(sql, parameters, max_rows).await,
             Engine::Snowflake(s) => s.execute_bound(sql, parameters, max_rows).await,
             Engine::DuckDb(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::Firebird(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::Hana(s) => s.execute_bound(sql, parameters, max_rows).await,
+            Engine::Odbc(s) => s.execute_bound(sql, parameters, max_rows).await,
             _ => anyhow::bail!(crate::i18n::tr("Not available for this engine")),
         }
     }
@@ -913,6 +1013,9 @@ impl Engine {
             Engine::Kusto(s) => s.current_database().await,
             Engine::DuckDb(s) => s.current_database().await,
             Engine::Prometheus(s) => s.current_database().await,
+            Engine::Firebird(s) => s.current_database().await,
+            Engine::Hana(s) => s.current_database().await,
+            Engine::Odbc(s) => s.current_database().await,
         }
     }
 
@@ -933,6 +1036,9 @@ impl Engine {
             // The database the connection opened (its file, or the in-memory one).
             Engine::DuckDb(s) => Ok(vec![s.current_database().await?]),
             Engine::Prometheus(s) => s.list_databases().await,
+            Engine::Firebird(s) => s.list_databases().await,
+            Engine::Hana(s) => s.list_databases().await,
+            Engine::Odbc(s) => s.list_databases().await,
         }
     }
 
@@ -970,6 +1076,9 @@ impl Engine {
             Engine::Oracle(s) => s.apply_changes(statements).await,
             Engine::Snowflake(s) => s.apply_changes(statements).await,
             Engine::DuckDb(s) => s.apply_changes(statements).await,
+            Engine::Firebird(s) => s.apply_changes(statements).await,
+            Engine::Hana(s) => s.apply_changes(statements).await,
+            Engine::Odbc(s) => s.apply_changes(statements).await,
             // ClickHouse: only the editor's INSERTs (see `ChSession::apply_changes`).
             Engine::ClickHouse(s) => s.apply_changes(statements).await,
             // Their commands (not SQL) come from `redis_db::change_commands` / `mongo::change_command`.
@@ -1033,6 +1142,12 @@ impl Engine {
         if let Engine::Oracle(s) = self {
             return s.run_transaction(statements).await;
         }
+        match self {
+            Engine::Firebird(s) => return s.run_transaction(statements).await,
+            Engine::Hana(s) => return s.run_transaction(statements).await,
+            Engine::Odbc(s) => return s.run_transaction(statements).await,
+            _ => {}
+        }
         let (begin, commit, rollback) = match self {
             Engine::MsSql(_) => (
                 "BEGIN TRANSACTION",
@@ -1073,6 +1188,11 @@ impl Engine {
             Engine::Postgres(_) | Engine::Sqlite(_) | Engine::Snowflake(_) | Engine::DuckDb(_) => {
                 "BEGIN"
             }
+            // Their sessions run statements in an explicit transaction of their own while
+            // Manual (see `manual_session`): the BEGIN is just a marker.
+            Engine::Firebird(s) => return s.begin().await,
+            Engine::Hana(s) => return s.begin().await,
+            Engine::Odbc(s) => return s.begin().await,
             _ => anyhow::bail!(crate::i18n::tr(
                 "Manual transactions are not available for this engine"
             )),
@@ -1090,6 +1210,9 @@ impl Engine {
                 Ok(())
             }
             Engine::MySql(_) => self.execute("SET autocommit = 0", 0).await.map(|_| ()),
+            Engine::Firebird(s) => s.begin().await,
+            Engine::Hana(s) => s.begin().await,
+            Engine::Odbc(s) => s.begin().await,
             Engine::Snowflake(s) => {
                 s.keep_session();
                 self.execute("ALTER SESSION SET AUTOCOMMIT = FALSE", 0)
@@ -1102,6 +1225,12 @@ impl Engine {
 
     /// Commits or rolls back a console's Manual transaction.
     pub async fn end_transaction(&mut self, commit: bool) -> anyhow::Result<()> {
+        match self {
+            Engine::Firebird(s) => return s.end_transaction(commit).await,
+            Engine::Hana(s) => return s.end_transaction(commit).await,
+            Engine::Odbc(s) => return s.end_transaction(commit).await,
+            _ => {}
+        }
         let sql = match (&*self, commit) {
             (Engine::MsSql(_), true) => "WHILE @@TRANCOUNT > 0 COMMIT TRANSACTION",
             (Engine::MsSql(_), false) => "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION",
@@ -1129,6 +1258,11 @@ impl Engine {
         }
     }
 
+    /// The PostgreSQL session is talking to CockroachDB.
+    pub fn is_cockroach(&self) -> bool {
+        matches!(self, Engine::Postgres(s) if s.is_cockroach())
+    }
+
     /// true if the connection has been lost (socket closed, protocol error...).
     pub fn is_closed(&self) -> bool {
         match self {
@@ -1142,6 +1276,9 @@ impl Engine {
             Engine::Redis(s) => s.is_closed(),
             Engine::MongoDb(s) => s.is_closed(),
             Engine::InfluxDb(_) | Engine::Kusto(_) | Engine::Prometheus(_) => false,
+            Engine::Firebird(s) => s.is_closed(),
+            Engine::Hana(s) => s.is_closed(),
+            Engine::Odbc(s) => s.is_closed(),
         }
     }
 
@@ -1161,6 +1298,9 @@ impl Engine {
             Engine::Kusto(s) => s.introspect().await,
             Engine::DuckDb(s) => s.introspect().await,
             Engine::Prometheus(s) => s.introspect().await,
+            Engine::Firebird(s) => s.introspect().await,
+            Engine::Hana(s) => s.introspect().await,
+            Engine::Odbc(s) => s.introspect().await,
         }
     }
 
@@ -1173,6 +1313,10 @@ impl Engine {
             Engine::InfluxDb(s) => return s.server_version().await,
             Engine::Kusto(s) => return s.server_version().await,
             Engine::Prometheus(s) => return s.server_version().await,
+            Engine::Firebird(s) => return s.server_version().await,
+            Engine::Hana(s) => return s.server_version().await,
+            Engine::Odbc(s) => return s.server_version().await,
+            Engine::Postgres(s) if s.is_cockroach() => return s.cockroach_version().await,
             _ => {}
         }
         let sql = match driver {
@@ -1186,7 +1330,7 @@ impl Engine {
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
             Driver::ClickHouse | Driver::DuckDb => "SELECT version()",
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
-            Driver::Prometheus => return None,
+            Driver::Prometheus | Driver::Firebird | Driver::Hana | Driver::Odbc => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
         let v = rs
@@ -1230,7 +1374,7 @@ mod feature_matrix_tests {
             .collect();
         let mut seen = Vec::new();
         for row in &rows {
-            let engine = row[0].trim_end_matches(['¹', '²', '³']);
+            let engine = row[0].trim_end_matches(['¹', '²', '³', '⁴', '⁵']);
             let drivers: Vec<Driver> = Driver::ALL
                 .iter()
                 .copied()
