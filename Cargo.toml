@@ -57,6 +57,9 @@ rustls-platform-verifier = "0.7"
 # NoSQL: Redis / Valkey (async on tokio) and MongoDB's official driver (rustls).
 redis = { version = "1.8.0", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 mongodb = { version = "3.9.1", default-features = false, features = ["compat-3-0-0", "rustls-tls-aws-lc", "dns-resolver"] }
+# SAP HANA / HANA Cloud: pure Rust wire protocol on tokio. Its rustls has no provider feature of
+# its own, so it uses the process's aws-lc one like the rest (no ring).
+hdbconnect_async = { version = "0.33.0", default-features = false, features = ["tokio"] }
 
 # Keep the background scheduler's Keychain reads non-interactive.
 [target.'cfg(target_os = "macos")'.dependencies]
