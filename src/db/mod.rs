@@ -1258,6 +1258,11 @@ impl Engine {
         }
     }
 
+    /// The PostgreSQL session is talking to CockroachDB.
+    pub fn is_cockroach(&self) -> bool {
+        matches!(self, Engine::Postgres(s) if s.is_cockroach())
+    }
+
     /// true if the connection has been lost (socket closed, protocol error...).
     pub fn is_closed(&self) -> bool {
         match self {
@@ -1311,6 +1316,7 @@ impl Engine {
             Engine::Firebird(s) => return s.server_version().await,
             Engine::Hana(s) => return s.server_version().await,
             Engine::Odbc(s) => return s.server_version().await,
+            Engine::Postgres(s) if s.is_cockroach() => return s.cockroach_version().await,
             _ => {}
         }
         let sql = match driver {

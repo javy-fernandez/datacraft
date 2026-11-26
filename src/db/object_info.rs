@@ -28,6 +28,26 @@ fn catalog_query(driver: Driver, schema: &str, table: &str) -> String {
     catalog_scope_query(driver, Some(schema), Some(table))
 }
 
+/// CockroachDB: PostgreSQL's catalog without its size functions (`pg_table_size`…); row counts
+/// come from the table statistics.
+fn cockroach_catalog_query(schema: Option<&str>, table: Option<&str>) -> String {
+    let lit = |s: &str| literal(Driver::Postgres, &Some(s.to_string()));
+    let mut sql = "SELECT n.nspname AS schema_name, c.relname AS object_name, \
+         (SELECT s.estimated_row_count FROM crdb_internal.table_row_statistics s WHERE s.table_id = c.oid::INT8) AS row_count, \
+         pg_catalog.obj_description(c.oid, 'pg_class') AS object_comment \
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ('r','v','m') \
+         AND n.nspname NOT IN ('pg_catalog','information_schema','crdb_internal','pg_extension')"
+        .to_string();
+    if let Some(schema) = schema {
+        sql.push_str(&format!(" AND n.nspname = {}", lit(schema)));
+    }
+    if let Some(table) = table {
+        sql.push_str(&format!(" AND c.relname = {}", lit(table)));
+    }
+    sql
+}
+
 fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>) -> String {
     let (base, schema_field, table_field, default_schema) = match driver {
         Driver::MySql | Driver::MariaDb => (
@@ -151,9 +171,12 @@ impl Session {
         if driver.is_nosql() {
             anyhow::bail!(tr("Object information is not available"));
         }
-        let results = self
-            .execute(&catalog_scope_query(driver, schema, None), 100_000)
-            .await?;
+        let sql = if self.is_cockroach() {
+            cockroach_catalog_query(schema, None)
+        } else {
+            catalog_scope_query(driver, schema, None)
+        };
+        let results = self.execute(&sql, 100_000).await?;
         let mut out = Vec::new();
         for rs in results {
             if rs.truncated {
@@ -195,9 +218,12 @@ impl Session {
         if driver.is_nosql() {
             anyhow::bail!(tr("Object information is not available"));
         }
-        let results = self
-            .execute(&catalog_query(driver, schema, table), 1)
-            .await?;
+        let sql = if self.is_cockroach() {
+            cockroach_catalog_query(Some(schema), Some(table))
+        } else {
+            catalog_query(driver, schema, table)
+        };
+        let results = self.execute(&sql, 1).await?;
         let mut info = results
             .iter()
             .find_map(decode)
@@ -217,11 +243,7 @@ impl Session {
         table: &str,
         filter: &str,
     ) -> anyhow::Result<u64> {
-        let qualified = format!(
-            "{}.{}",
-            driver.quote_ident(schema),
-            driver.quote_ident(table)
-        );
+        let qualified = Session::quote_table(driver, schema, table);
         let count = if driver == Driver::MsSql {
             "COUNT_BIG(*)"
         } else {
