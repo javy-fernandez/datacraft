@@ -185,10 +185,12 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 
 | Engine | View data | Edit data | Transactions | Cancel query | SSH tunnel | Copy table | Create databases |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| PostgreSQL | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| PostgreSQL / CockroachDB⁴ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | MySQL / MariaDB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | SQL Server | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
 | Oracle¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| SAP HANA | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Firebird | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 | Snowflake | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | SQLite | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
 | DuckDB² | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
@@ -198,6 +200,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | InfluxDB 2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | Kusto / Azure Data Explorer | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Prometheus / VictoriaMetrics | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| ODBC / OpenEdge⁵ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 - **View data / Edit data:** NoSQL engines (Redis / Valkey, MongoDB, InfluxDB 2, Kusto and Prometheus) use their own command language and have read-only result grids.
 - **Transactions:** manual Commit / Roll Back in the SQL console.
@@ -211,6 +214,10 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 ² DuckDB 2.0.0 is a downloadable add-on: the connection dialog's **Download driver** fetches it once and checks its SHA-256.
 
 ³ ClickHouse's data editor only adds rows: updates and deletes are asynchronous mutations, so run them from the console. Its table copies run without a transaction.
+
+⁴ CockroachDB connects through the PostgreSQL driver: add it with **+ → CockroachDB**, which fills in port 26257, `defaultdb` and `root`.
+
+⁵ The ODBC engine loads the system's driver manager at runtime (`odbc32.dll` on Windows, unixODBC or iODBC on macOS and Linux) and reaches any database with an ODBC driver, such as Progress OpenEdge (**+ → OpenEdge** fills in its connection string). The database's own ODBC driver is installed separately, as Oracle Instant Client is.
 
 ### SSH tunnels
 

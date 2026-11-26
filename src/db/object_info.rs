@@ -54,7 +54,22 @@ fn catalog_scope_query(driver: Driver, schema: Option<&str>, table: Option<&str>
              LEFT JOIN all_tab_comments c ON c.owner = o.owner AND c.table_name = o.object_name WHERE o.object_type IN ('TABLE','VIEW') AND o.owner NOT IN ({excluded})"),
             "o.owner", "o.object_name", "")
         },
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => (String::new(), "", "", ""),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus | Driver::Odbc => (String::new(), "", "", ""),
+        // Firebird: descriptions only (no row counts nor sizes in its system tables).
+        // Firebird has no schemas: the one shown (the database) is echoed back, as for SQLite.
+        Driver::Firebird => (
+            format!("SELECT {} AS schema_name, TRIM(RDB$RELATION_NAME) AS object_name, CAST(RDB$DESCRIPTION AS VARCHAR(8191)) AS object_comment \
+             FROM RDB$RELATIONS WHERE COALESCE(RDB$SYSTEM_FLAG, 0) = 0", literal(driver, &Some(schema.unwrap_or_default().to_string()))),
+            "", "TRIM(RDB$RELATION_NAME)", "",
+        ),
+        // HANA: record counts and sizes of column and row tables, and comments.
+        Driver::Hana => (
+            "SELECT t.SCHEMA_NAME AS schema_name, t.TABLE_NAME AS object_name, m.RECORD_COUNT AS row_count, m.TABLE_SIZE AS data_bytes, \
+             t.CREATE_TIME AS created, t.TABLE_TYPE AS engine, t.COMMENTS AS object_comment \
+             FROM SYS.TABLES t LEFT JOIN SYS.M_TABLES m ON m.SCHEMA_NAME = t.SCHEMA_NAME AND m.TABLE_NAME = t.TABLE_NAME \
+             WHERE t.IS_SYSTEM_TABLE = 'FALSE'".to_string(),
+            "t.SCHEMA_NAME", "t.TABLE_NAME", "",
+        ),
         Driver::Snowflake => (
             "SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, ROW_COUNT AS row_count, BYTES AS data_bytes, CREATED AS created, LAST_ALTERED AS modified, COMMENT AS object_comment \
              FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA'".to_string(), "TABLE_SCHEMA", "TABLE_NAME", ""
@@ -241,7 +256,11 @@ mod tests {
 
     #[test]
     fn catalog_names_are_literals_and_never_trigger_full_counts() {
-        for driver in Driver::ALL.into_iter().filter(|d| !d.is_nosql()) {
+        // ODBC has no catalog query of its own.
+        for driver in Driver::ALL
+            .into_iter()
+            .filter(|d| !d.is_nosql() && *d != Driver::Odbc)
+        {
             let query = catalog_query(driver, "a'b", "x'; DROP TABLE users; --");
             assert!(query.contains("a''b") || driver == Driver::Sqlite);
             assert!(query.contains("x''; DROP TABLE users; --"));

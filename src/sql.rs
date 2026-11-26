@@ -121,6 +121,7 @@ fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -
     let dialect = Dialect::for_driver(driver);
     let oracle = driver == Driver::Oracle;
     let mysql = matches!(driver, Driver::MySql | Driver::MariaDb);
+    let firebird = driver == Driver::Firebird;
     let sqlite = driver == Driver::Sqlite;
     let track = oracle || mysql || sqlite;
     // Start of every `/` line (Oracle), to know whether a block has one ahead.
@@ -146,6 +147,31 @@ fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -
             continue;
         }
         let text = &script[tok.start..tok.end];
+        // Firebird's `SET TERM ^ ;` (isql): `^` ends the statements until `SET TERM ; ^`.
+        if firebird
+            && cur.range.is_none()
+            && tok.kind == Kind::Word
+            && text.eq_ignore_ascii_case("set")
+            && script[..tok.start]
+                .rsplit('\n')
+                .next()
+                .is_some_and(|l| l.trim().is_empty())
+        {
+            let line_end = script[tok.end..]
+                .find('\n')
+                .map_or(script.len(), |i| tok.end + i);
+            let mut words = script[tok.end..line_end].split_whitespace();
+            if words.next().is_some_and(|w| w.eq_ignore_ascii_case("term"))
+                && let Some(new) = words.next()
+            {
+                let new = new.trim_end_matches(';');
+                if !new.is_empty() {
+                    delimiter = (new != ";").then(|| new.to_string());
+                    lx.pos = line_end;
+                    continue;
+                }
+            }
+        }
         if mysql
             && cur.range.is_none()
             && tok.kind == Kind::Word
@@ -472,7 +498,11 @@ pub fn split_batches(script: &str, driver: Driver) -> Vec<Statement> {
         | Driver::MongoDb
         | Driver::InfluxDb
         | Driver::Kusto
-        | Driver::Prometheus => split_statements(script, driver),
+        | Driver::Prometheus
+        | Driver::Hana
+        | Driver::Odbc
+        // `SET TERM` changes the terminator around procedure and trigger bodies.
+        | Driver::Firebird => split_statements(script, driver),
         Driver::MsSql | Driver::Sqlite => {
             let dialect = Dialect::for_driver(driver);
             let mut out = Vec::new();
@@ -913,6 +943,17 @@ pub fn explain_statements(stmt: &str, driver: Driver) -> Vec<String> {
         | Driver::ClickHouse => vec![format!("EXPLAIN {s}")],
         Driver::Sqlite => vec![format!("EXPLAIN QUERY PLAN {s}")],
         Driver::Snowflake => vec![format!("EXPLAIN USING TEXT {s}")],
+        // HANA: the plan goes to EXPLAIN_PLAN_TABLE under a name of its own.
+        Driver::Hana => vec![
+            "DELETE FROM EXPLAIN_PLAN_TABLE WHERE STATEMENT_NAME = 'datacraft'".into(),
+            format!("EXPLAIN PLAN SET STATEMENT_NAME = 'datacraft' FOR {s}"),
+            "SELECT OPERATOR_NAME, OPERATOR_DETAILS, TABLE_NAME, ESTIMATED_CARDINALITY, ESTIMATED_COST \
+             FROM EXPLAIN_PLAN_TABLE WHERE STATEMENT_NAME = 'datacraft' ORDER BY OPERATOR_ID"
+                .into(),
+        ],
+        // Firebird returns its plan with the statement's metadata, not as rows; ODBC can't tell
+        // which engine it talks to.
+        Driver::Firebird | Driver::Odbc => Vec::new(),
         Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
             Vec::new()
         }
@@ -1650,6 +1691,21 @@ impl Dialect {
                 go_separator: false,
                 hash_comments: true,
                 backslash_escapes: true,
+                q_quotes: false,
+                slash_separator: false,
+                single_quote_backslash: false,
+                slash_comments: false,
+            },
+            // Standard SQL: `'…'` strings, `"…"` identifiers, `--` and `/* */` comments.
+            Driver::Firebird | Driver::Hana | Driver::Odbc => Dialect {
+                brackets: false,
+                backticks: false,
+                dollar_quotes: false,
+                nested_comments: false,
+                tsql_names: false,
+                go_separator: false,
+                hash_comments: false,
+                backslash_escapes: false,
                 q_quotes: false,
                 slash_separator: false,
                 single_quote_backslash: false,

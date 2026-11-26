@@ -47,7 +47,10 @@ impl UserModel {
             | Driver::MongoDb
             | Driver::InfluxDb
             | Driver::Kusto
-            | Driver::Prometheus => None,
+            | Driver::Prometheus
+            | Driver::Firebird
+            | Driver::Hana
+            | Driver::Odbc => None,
         }
     }
 }

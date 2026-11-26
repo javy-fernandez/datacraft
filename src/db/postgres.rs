@@ -25,6 +25,9 @@ use super::tls::{self, TlsMode};
 use super::{ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::i18n::{tr, trf};
 
+/// CockroachDB's SQL port (its `Preset`).
+pub const COCKROACH_PORT: u16 = 26257;
+
 pub struct PgSession {
     client: Client,
     /// Also for the cancel requests, which go over a connection of their own.

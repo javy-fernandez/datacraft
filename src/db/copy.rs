@@ -453,7 +453,38 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
     use Driver::*;
     match (kind, to) {
         // Never a copy target (the dialog isn't offered for it).
-        (_, Redis | MongoDb | InfluxDb | Kusto | Prometheus) => "string".into(),
+        (_, Redis | MongoDb | InfluxDb | Kusto | Prometheus | Odbc) => "string".into(),
+        // Firebird 3: NUMERIC up to 18 digits, no time zones.
+        (_, Firebird) => match kind {
+            Kind::SmallInt => "smallint".into(),
+            Kind::Int => "integer".into(),
+            Kind::BigInt => "bigint".into(),
+            Kind::Decimal(Some((p, s))) => format!("numeric({},{})", p.min(18), s.min(p.min(18))),
+            Kind::Decimal(None) => "numeric(18,6)".into(),
+            Kind::Float => "double precision".into(),
+            Kind::Bool => "boolean".into(),
+            Kind::Date => "date".into(),
+            Kind::Time => "time".into(),
+            Kind::Timestamp | Kind::TimestampTz => "timestamp".into(),
+            Kind::Binary => "blob".into(),
+            Kind::Varchar(n) if n <= 8191 => format!("varchar({n})"),
+            Kind::Varchar(_) | Kind::Text => "blob sub_type text".into(),
+        },
+        (_, Hana) => match kind {
+            Kind::SmallInt => "SMALLINT".into(),
+            Kind::Int => "INTEGER".into(),
+            Kind::BigInt => "BIGINT".into(),
+            Kind::Decimal(Some((p, s))) => format!("DECIMAL({},{})", p.min(38), s.min(p.min(38))),
+            Kind::Decimal(None) => "DECIMAL".into(),
+            Kind::Float => "DOUBLE".into(),
+            Kind::Bool => "BOOLEAN".into(),
+            Kind::Date => "DATE".into(),
+            Kind::Time => "TIME".into(),
+            Kind::Timestamp | Kind::TimestampTz => "TIMESTAMP".into(),
+            Kind::Binary => "BLOB".into(),
+            Kind::Varchar(n) if n <= 5000 => format!("NVARCHAR({n})"),
+            Kind::Varchar(_) | Kind::Text => "NCLOB".into(),
+        },
         (_, DuckDb) => match kind {
             Kind::SmallInt => "SMALLINT".into(),
             Kind::Int => "INTEGER".into(),
@@ -771,6 +802,7 @@ pub fn select_sql(
     match (driver, limit) {
         (Driver::MsSql, _) | (_, None) => sql,
         (Driver::Oracle, Some(n)) => format!("SELECT * FROM ({sql}) WHERE ROWNUM <= {n}"),
+        (Driver::Firebird | Driver::Odbc, Some(n)) => format!("{sql} FETCH FIRST {n} ROWS ONLY"),
         (_, Some(n)) => format!("{sql} LIMIT {n}"),
     }
 }

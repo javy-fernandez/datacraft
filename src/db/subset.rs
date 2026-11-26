@@ -86,6 +86,26 @@ pub fn fk_sql(driver: Driver, db: &str, schema: &str) -> String {
         // ClickHouse declares FOREIGN KEY constraints but never enforces them: subsets
         // have no graph to walk.
         Driver::ClickHouse => String::new(),
+        // Firebird: the key's index segments, matched by position with the referenced key's.
+        Driver::Firebird => format!(
+            "SELECT TRIM(rc.RDB$CONSTRAINT_NAME), '{s}', TRIM(rc.RDB$RELATION_NAME), TRIM(s.RDB$FIELD_NAME), '{s}', \
+             TRIM(uq.RDB$RELATION_NAME), TRIM(us.RDB$FIELD_NAME), s.RDB$FIELD_POSITION + 1 \
+             FROM RDB$RELATION_CONSTRAINTS rc \
+             JOIN RDB$REF_CONSTRAINTS ref ON ref.RDB$CONSTRAINT_NAME = rc.RDB$CONSTRAINT_NAME \
+             JOIN RDB$RELATION_CONSTRAINTS uq ON uq.RDB$CONSTRAINT_NAME = ref.RDB$CONST_NAME_UQ \
+             JOIN RDB$INDEX_SEGMENTS s ON s.RDB$INDEX_NAME = rc.RDB$INDEX_NAME \
+             JOIN RDB$INDEX_SEGMENTS us ON us.RDB$INDEX_NAME = uq.RDB$INDEX_NAME AND us.RDB$FIELD_POSITION = s.RDB$FIELD_POSITION \
+             WHERE rc.RDB$CONSTRAINT_TYPE = 'FOREIGN KEY'",
+            s = quote_lit(schema)
+        ),
+        Driver::Hana => format!(
+            "SELECT CONSTRAINT_NAME, SCHEMA_NAME, TABLE_NAME, COLUMN_NAME, REFERENCED_SCHEMA_NAME, \
+             REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME, POSITION \
+             FROM SYS.REFERENTIAL_CONSTRAINTS WHERE SCHEMA_NAME = '{}'",
+            quote_lit(schema)
+        ),
+        // The ODBC catalog functions aren't reachable through SQL.
+        Driver::Odbc => String::new(),
     }
 }
 

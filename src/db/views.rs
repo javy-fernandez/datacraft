@@ -350,9 +350,21 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             lit(schema),
             lit(view)
         ),
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto | Driver::Prometheus => {
-            String::new()
-        }
+        Driver::Firebird => format!(
+            "SELECT CAST(RDB$VIEW_SOURCE AS VARCHAR(32000)) FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = {}",
+            lit(view)
+        ),
+        Driver::Hana => format!(
+            "SELECT DEFINITION FROM SYS.VIEWS WHERE SCHEMA_NAME = {} AND VIEW_NAME = {}",
+            lit(schema),
+            lit(view)
+        ),
+        Driver::Redis
+        | Driver::MongoDb
+        | Driver::InfluxDb
+        | Driver::Kusto
+        | Driver::Prometheus
+        | Driver::Odbc => String::new(),
     }
 }
 

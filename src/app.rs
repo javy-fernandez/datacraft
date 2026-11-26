@@ -6424,6 +6424,8 @@ pub fn table_query(
         Driver::MsSql => sql,
         // ROWNUM instead of FETCH FIRST so it also works before 12c.
         Driver::Oracle => format!("SELECT * FROM ({sql}) WHERE ROWNUM <= {max_rows}"),
+        // Standard SQL: no LIMIT in Firebird, and the safest choice through ODBC.
+        Driver::Firebird | Driver::Odbc => format!("{sql} FETCH FIRST {max_rows} ROWS ONLY"),
         _ => format!("{sql} LIMIT {max_rows}"),
     }
 }
@@ -6441,7 +6443,10 @@ fn table_query_page(
     if offset == 0 || driver.is_nosql() {
         return table_query(driver, schema, table, w, o, limit);
     }
-    if !matches!(driver, Driver::MsSql | Driver::Oracle) {
+    if !matches!(
+        driver,
+        Driver::MsSql | Driver::Oracle | Driver::Firebird | Driver::Odbc
+    ) {
         return format!(
             "{} OFFSET {offset}",
             table_query(driver, schema, table, w, o, limit)

@@ -295,6 +295,10 @@ pub fn count_sql(driver: Driver, probe: &Probe) -> String {
             "SELECT COUNT(*) FROM {t} WHERE ({}) AND ROWNUM <= {n}",
             probe.filter
         ),
+        Driver::Firebird | Driver::Odbc => format!(
+            "SELECT COUNT(*) FROM (SELECT 1 AS x FROM {t} WHERE {} FETCH FIRST {n} ROWS ONLY) q",
+            probe.filter
+        ),
         _ => format!(
             "SELECT COUNT(*) FROM (SELECT 1 AS x FROM {t} WHERE {} LIMIT {n}) q",
             probe.filter
