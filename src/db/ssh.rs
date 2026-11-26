@@ -127,6 +127,12 @@ fn destination(cfg: &ConnectionConfig) -> anyhow::Result<(String, u16)> {
         cfg.port
     };
     if cfg.driver == Driver::Prometheus {
+        // The tunnel's local address leaves them out, so they would be dropped without a word.
+        if bare_host(&cfg.host).contains('@') {
+            bail!(tr(
+                "Put the user and password in their fields, not in the address"
+            ));
+        }
         return Ok(host_port(&cfg.host, port));
     }
     Ok((bare_host(&cfg.host).to_string(), port))
@@ -137,11 +143,24 @@ fn destination(cfg: &ConnectionConfig) -> anyhow::Result<(String, u16)> {
 /// field's, as in `prometheus::base_url`.
 pub fn host_port(host: &str, port: u16) -> (String, u16) {
     let authority = bare_host(host);
-    // A bare IPv6 address has colons and no port.
-    let bare_ipv6 = !authority.starts_with('[') && authority.matches(':').count() > 1;
+    // A bare IPv6 address has colons and no port (`user:password@host:9090` has two too).
+    let bare_ipv6 = !authority.starts_with('[')
+        && !authority.contains('@')
+        && authority.matches(':').count() > 1;
     super::url::parse_authority(authority, port)
         .filter(|_| !bare_ipv6)
         .unwrap_or_else(|| (authority.to_string(), port))
+}
+
+/// Whether a host is an IP address (`10.0.0.5`, `[fd00::12]`) rather than a name. Through a
+/// tunnel, an HTTPS driver resolves the server's name to the listener
+/// (`reqwest::ClientBuilder::resolve`); that only overrides names, so a URL with an IP address
+/// would connect to it directly, around the tunnel.
+pub fn is_ip_address(host: &str) -> bool {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .is_ok()
 }
 
 /// The host name of the host field, without a scheme or path (`https://influx.example/` →
@@ -680,6 +699,49 @@ mod tests {
         let mut mongo = ConnectionConfig::new(2, Driver::MongoDb);
         mongo.host = "cluster0.abcde.mongodb.net".into();
         assert!(destination(&mongo).is_err());
+    }
+
+    /// A user and password typed in a Prometheus address are refused before the tunnel opens:
+    /// the tunnel's local address leaves them out, so they would be dropped without a word.
+    #[test]
+    fn credentials_in_a_prometheus_address() {
+        let mut cfg = ConnectionConfig::new(1, Driver::Prometheus);
+        for host in [
+            "admin:secret@vmselect:8481",
+            "http://token@vmselect/select/0/prometheus",
+        ] {
+            cfg.host = host.into();
+            assert_eq!(
+                destination(&cfg).unwrap_err().to_string(),
+                "Put the user and password in their fields, not in the address",
+                "{host}"
+            );
+        }
+        // A user and password make a second colon, but not an IPv6 address.
+        assert_eq!(
+            host_port("admin:secret@vmselect:8481", 9090),
+            ("admin:secret@vmselect".to_string(), 8481)
+        );
+        // An `@` in the path isn't in the address.
+        cfg.host = "http://vmselect:8481/select/0/prometheus/@x".into();
+        assert_eq!(destination(&cfg).unwrap(), ("vmselect".to_string(), 8481));
+    }
+
+    /// Only names are resolved to a tunnel's listener (`ClientBuilder::resolve`).
+    #[test]
+    fn ip_addresses_and_names() {
+        for host in ["10.0.0.5", "127.0.0.1", "fd00::12", "[fd00::12]", "[::1]"] {
+            assert!(is_ip_address(host), "{host}");
+        }
+        for host in [
+            "influx.example.com",
+            "localhost",
+            "vmselect",
+            "10.0.0.5.nip.io",
+            "",
+        ] {
+            assert!(!is_ip_address(host), "{host}");
+        }
     }
 
     /// A Prometheus API's host field takes a URL with a port: the tunnel goes to that port, and

@@ -201,12 +201,7 @@ impl PromSession {
             .tunnel_host
             .as_deref()
             .filter(|_| base.starts_with("https://"))
-            .filter(|name| {
-                name.trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<IpAddr>()
-                    .is_err()
-            })
+            .filter(|name| !super::ssh::is_ip_address(name))
         {
             base = base.replacen("127.0.0.1", name, 1);
             builder = builder.resolve(name, SocketAddr::from(([127, 0, 0, 1], cfg.port)));
@@ -583,8 +578,11 @@ pub fn base_url(cfg: &ConnectionConfig) -> String {
     } else {
         cfg.port
     };
-    // A bare IPv6 address (`fd00::12`) has colons and no port, as in `ssh::host_port`.
-    let bare_ipv6 = !authority.starts_with('[') && authority.matches(':').count() > 1;
+    // A bare IPv6 address (`fd00::12`) has colons and no port, as in `ssh::host_port`;
+    // `user:password@host:9090` has two too, and is refused by `connect`.
+    let bare_ipv6 = !authority.starts_with('[')
+        && !authority.contains('@')
+        && authority.matches(':').count() > 1;
     let (mut host, port) = if bare_ipv6 {
         (format!("[{authority}]"), field_port)
     } else {
@@ -1145,6 +1143,29 @@ mod tests {
         assert!(!has_credentials(
             "https://prom.example.com/select/0/prometheus"
         ));
+    }
+
+    /// A user and password in the host field, with or without a port and a scheme, are refused
+    /// with the message that names the fields, before anything is sent.
+    #[tokio::test]
+    async fn credentials_in_the_address_are_refused() {
+        for host in [
+            "admin:secret@prom.example.com",
+            "admin@prom.example.com:9090",
+            "admin:secret@prom.example.com:9090",
+            "http://admin:secret@prom.example.com:9090/select/0/prometheus",
+            "https://token@prom.example.com",
+        ] {
+            assert!(has_credentials(&base_url(&cfg(host, 9090))), "{host}");
+            let Err(err) = PromSession::connect(&cfg(host, 9090)).await else {
+                panic!("{host} connected");
+            };
+            assert_eq!(
+                err.to_string(),
+                "Put the user and password in their fields, not in the address",
+                "{host}"
+            );
+        }
     }
 
     #[test]
