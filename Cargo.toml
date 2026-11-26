@@ -115,3 +115,7 @@ rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs"
 [build-dependencies]
 # Native Windows icon resources, including MSVC and cross-compiled GNU/ARM64 builds.
 embed-resource = "3.0.12"
+
+[patch.crates-io]
+# hdbconnect needs `username` 0.2, whose winapi 0.2 does not build on Windows ARM64.
+username = { path = "patches/username" }
