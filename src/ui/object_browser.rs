@@ -11,6 +11,7 @@ use crate::ui::theme::{self, pal};
 use egui::{FontId, Key, Rect, RichText, Sense, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +27,165 @@ pub enum ObjectLayout {
     #[default]
     List,
     Grid,
+}
+
+/// Column the object list is sorted by (header click); `Name` until another is chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ObjectColumn {
+    #[default]
+    Name,
+    Rows,
+    Size,
+    Engine,
+    Created,
+    Modified,
+    Collation,
+    Comment,
+}
+
+impl ObjectColumn {
+    const ALL: [Self; 8] = [
+        Self::Name,
+        Self::Rows,
+        Self::Size,
+        Self::Engine,
+        Self::Created,
+        Self::Modified,
+        Self::Collation,
+        Self::Comment,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Rows => "Rows",
+            Self::Size => "Data length",
+            Self::Engine => "Engine",
+            Self::Created => "Created date",
+            Self::Modified => "Modified date",
+            Self::Collation => "Collation",
+            Self::Comment => "Comment",
+        }
+    }
+}
+
+/// A table's value in the sort column: numbers for counts and sizes, text otherwise (dates
+/// come as `YYYY-MM-DD hh:mm:ss`, so they sort chronologically as text).
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum SortValue {
+    Number(u64),
+    Text(String),
+}
+
+fn sort_value(info: Option<&ObjectInfo>, column: ObjectColumn) -> Option<SortValue> {
+    let info = info?;
+    let text = |value: &Option<String>, fold: bool| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                SortValue::Text(if fold {
+                    v.to_lowercase()
+                } else {
+                    v.to_string()
+                })
+            })
+    };
+    match column {
+        ObjectColumn::Name => None,
+        ObjectColumn::Rows => info.rows.map(SortValue::Number),
+        ObjectColumn::Size => info.data_bytes.map(SortValue::Number),
+        ObjectColumn::Engine => text(&info.engine, true),
+        ObjectColumn::Created => text(&info.created, false),
+        ObjectColumn::Modified => text(&info.modified, false),
+        ObjectColumn::Collation => text(&info.collation, true),
+        ObjectColumn::Comment => text(&info.comment, true),
+    }
+}
+
+/// Orders two optional values with the empty ones last in either direction.
+fn compare_present<T: Ord>(a: Option<T>, b: Option<T>, descending: bool) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) if descending => b.cmp(&a),
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Sorts tables already ordered by name by `column`; ties keep the name order.
+fn sort_entries(
+    entries: &mut [Entry<'_>],
+    catalog: &BTreeMap<(String, String), ObjectInfo>,
+    column: ObjectColumn,
+    descending: bool,
+) {
+    if column == ObjectColumn::Name {
+        if descending {
+            entries.reverse();
+        }
+        return;
+    }
+    let info =
+        |e: &Entry<'_>| catalog.get(&(e.reference.schema.clone(), e.reference.table.clone()));
+    entries.sort_by(|a, b| {
+        compare_present(
+            sort_value(info(a), column),
+            sort_value(info(b), column),
+            descending,
+        )
+    });
+}
+
+/// Paints a header cell: the label, and an arrow on the column the list is sorted by
+/// (`Some(true)` = descending). Returns whether it was clicked. It senses drags too, like the
+/// rows, so the list's background (click and drag, for the selection rectangle) doesn't take
+/// the click.
+fn sort_header(ui: &mut Ui, label: &str, sorted: Option<bool>) -> bool {
+    let p = pal(ui);
+    let cell = ui.max_rect();
+    let response = ui
+        .interact(
+            cell,
+            ui.id().with(("sort_header", label)),
+            Sense::click_and_drag(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    let arrow = if sorted.is_some() { 17.0 } else { 0.0 };
+    let galley = egui::WidgetText::from(RichText::new(label).strong()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (cell.width() - arrow).max(0.0),
+        egui::TextStyle::Body,
+    );
+    let text_pos = pos2(cell.left(), cell.center().y - galley.size().y / 2.0);
+    let text_right = text_pos.x + galley.size().x;
+    ui.painter().galley(text_pos, galley, p.text);
+    if let Some(descending) = sorted {
+        let rect = Rect::from_min_size(
+            pos2(text_right + 4.0, cell.center().y - 6.5),
+            vec2(13.0, 13.0),
+        );
+        let ico = if descending {
+            Ico::SortDesc
+        } else {
+            Ico::SortAsc
+        };
+        icons::paint(ui.painter(), rect, ico, p.accent, &p, true);
+    }
+    response.clicked()
+}
+
+/// Header click: the same column flips its direction, another starts ascending.
+fn toggle_sort<T: PartialEq>(current: &mut (T, bool), column: T) {
+    if current.0 == column {
+        current.1 = !current.1;
+    } else {
+        *current = (column, false);
+    }
 }
 
 #[derive(Default)]
@@ -54,6 +214,10 @@ pub struct ObjectBrowser {
     pub catalog_loading: bool,
     pub catalog_request_id: u64,
     pub catalog_error: Option<String>,
+    /// Column and direction (`true` = descending) of the object list.
+    sort: (ObjectColumn, bool),
+    /// Column index (name, parameters, returns) and direction of the routine list.
+    routine_sort: (usize, bool),
 }
 
 pub enum BrowserAction {
@@ -237,6 +401,7 @@ impl ObjectBrowser {
                 .then_with(|| a.reference.schema.cmp(&b.reference.schema))
                 .then_with(|| a.reference.table.cmp(&b.reference.table))
         });
+        sort_entries(&mut entries, &self.catalog, self.sort.0, self.sort.1);
         entries
     }
 
@@ -627,6 +792,8 @@ impl ObjectBrowser {
         };
         let organization = &self.organizations[org_index];
         let mut responses = Vec::new();
+        let mut sort_clicked = None;
+        let mut header = Rect::NOTHING;
         match self.layout {
             ObjectLayout::List => {
                 egui::ScrollArea::horizontal()
@@ -651,19 +818,15 @@ impl ObjectBrowser {
                             .column(Column::initial(155.0).clip(true))
                             .column(Column::initial(170.0).clip(true))
                             .column(Column::remainder().at_least(140.0).clip(true))
-                            .header(23.0, |mut header| {
-                                for label in [
-                                    tr("Name"),
-                                    tr("Rows"),
-                                    tr("Data length"),
-                                    tr("Engine"),
-                                    tr("Created date"),
-                                    tr("Modified date"),
-                                    tr("Collation"),
-                                    tr("Comment"),
-                                ] {
-                                    header.col(|ui| {
-                                        ui.label(RichText::new(label).strong().color(p.text));
+                            .header(23.0, |mut row| {
+                                for column in ObjectColumn::ALL {
+                                    let label = tr(column.label());
+                                    let sorted = (self.sort.0 == column).then_some(self.sort.1);
+                                    row.col(|ui| {
+                                        header |= ui.max_rect();
+                                        if sort_header(ui, label, sorted) {
+                                            sort_clicked = Some(column);
+                                        }
                                     });
                                 }
                             })
@@ -841,10 +1004,15 @@ impl ObjectBrowser {
                 });
             }
         }
+        if let Some(column) = sort_clicked {
+            toggle_sort(&mut self.sort, column);
+        }
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        let over_object = responses
-            .iter()
-            .any(|(_, r)| pointer.is_some_and(|p| r.rect.contains(p)));
+        // The header's sort buttons are kept out of the background's clicks too.
+        let over_object = pointer.is_some_and(|p| header.contains(p))
+            || responses
+                .iter()
+                .any(|(_, r)| pointer.is_some_and(|p| r.rect.contains(p)));
         let rects: Vec<_> = responses
             .iter()
             .map(|(item, r)| (item.key.clone(), r.rect.intersect(background)))
@@ -1124,6 +1292,28 @@ impl ObjectBrowser {
             })
             .collect();
         items.sort_by_key(|r| (r.name.to_lowercase(), &r.schema, &r.signature));
+        let (column, descending) = self.routine_sort;
+        if column > 0 {
+            let values: Vec<_> = items
+                .iter()
+                .map(|r| {
+                    if column == 1 {
+                        &r.arguments
+                    } else {
+                        &r.returns
+                    }
+                })
+                .map(|t| (!t.trim().is_empty()).then(|| t.trim().to_lowercase()))
+                .collect();
+            let mut order: Vec<usize> = (0..items.len()).collect();
+            order.sort_by(|&a, &b| {
+                compare_present(values[a].as_ref(), values[b].as_ref(), descending)
+            });
+            items = order.into_iter().map(|i| items[i]).collect();
+        } else if descending {
+            items.reverse();
+        }
+        let mut sort_clicked = None;
         let mut responses = Vec::new();
         if self.layout == ObjectLayout::List {
             TableBuilder::new(ui)
@@ -1134,9 +1324,14 @@ impl ObjectBrowser {
                 .column(Column::initial(240.0))
                 .column(Column::remainder().at_least(120.0))
                 .header(26.0, |mut header| {
-                    for label in [tr("Name"), tr("Parameters"), tr("Returns")] {
+                    for (index, label) in ["Name", "Parameters", "Returns"].into_iter().enumerate()
+                    {
+                        let label = tr(label);
+                        let sorted = (self.routine_sort.0 == index).then_some(descending);
                         header.col(|ui| {
-                            ui.strong(label);
+                            if sort_header(ui, label, sorted) {
+                                sort_clicked = Some(index);
+                            }
                         });
                     }
                 })
@@ -1229,6 +1424,9 @@ impl ObjectBrowser {
                         responses.push((*routine, reference, response));
                     }
                 });
+        }
+        if let Some(column) = sort_clicked {
+            toggle_sort(&mut self.routine_sort, column);
         }
         for (routine, reference, response) in responses {
             if response.clicked() || response.secondary_clicked() {
@@ -1907,6 +2105,21 @@ mod tests {
     }
 
     #[test]
+    fn routine_headers_sort_too() {
+        let mut h = routine_harness(ObjectLayout::List);
+        h.get_by_label("Parameters").click();
+        h.run_steps(2);
+        assert_eq!(h.state().browser.routine_sort, (1, false));
+        h.get_by_label("Parameters").click();
+        h.run_steps(2);
+        assert_eq!(h.state().browser.routine_sort, (1, true));
+        assert!(h.query_by_label("archive()").is_some());
+        h.get_by_label("Name").click();
+        h.run_steps(2);
+        assert_eq!(h.state().browser.routine_sort, (0, false));
+    }
+
+    #[test]
     fn routine_scope_displays_only_matching_routines() {
         for layout in [ObjectLayout::List, ObjectLayout::Grid] {
             let mut h = routine_harness(layout);
@@ -1990,6 +2203,56 @@ mod tests {
                     .unwrap();
             }
         }
+    }
+
+    fn listed(h: &egui_kittest::Harness<'static, State>) -> Vec<String> {
+        let state = h.state();
+        state
+            .browser
+            .entries(&state.connections)
+            .iter()
+            .map(|e| e.reference.table.clone())
+            .collect()
+    }
+
+    /// Header clicks sort the list by that column and flip the direction on a second click;
+    /// numbers sort as numbers and tables without a value stay last both ways.
+    #[test]
+    fn clicking_a_header_sorts_the_objects() {
+        let mut h = harness(ObjectLayout::List, false);
+        h.state_mut().browser.scope.as_mut().unwrap().schema = None;
+        for (table, rows, created) in [
+            ("customers", Some(9), Some("2024-03-01 10:00:00")),
+            ("orders", Some(120), None),
+            ("events", None, Some("2023-12-31 23:59:59")),
+        ] {
+            let schema = if table == "events" { "audit" } else { "public" };
+            h.state_mut().browser.catalog.insert(
+                (schema.into(), table.into()),
+                ObjectInfo {
+                    rows,
+                    created: created.map(Into::into),
+                    ..Default::default()
+                },
+            );
+        }
+        h.run_steps(2);
+        assert_eq!(listed(&h), ["customers", "events", "orders"]);
+        h.get_by_label("Rows").click();
+        h.run_steps(2);
+        assert_eq!(listed(&h), ["customers", "orders", "events"]);
+        h.get_by_label("Rows").click();
+        h.run_steps(2);
+        assert_eq!(listed(&h), ["orders", "customers", "events"]);
+        h.get_by_label("Created date").click();
+        h.run_steps(2);
+        assert_eq!(listed(&h), ["events", "customers", "orders"]);
+        h.get_by_label("Name").click();
+        h.run_steps(2);
+        assert_eq!(listed(&h), ["customers", "events", "orders"]);
+        h.get_by_label("Name").click();
+        h.run_steps(2);
+        assert_eq!(listed(&h), ["orders", "events", "customers"]);
     }
 
     #[test]
@@ -2475,11 +2738,11 @@ mod tests {
                         columns: columns.clone(),
                     });
                 }
-                for table in &schema.tables {
+                for (index, table) in schema.tables.iter().enumerate() {
                     state.browser.catalog.insert(
                         (schema.name.clone(), table.name.clone()),
                         ObjectInfo {
-                            rows: Some(42),
+                            rows: Some(index as u64 * 7919 % 1009),
                             data_bytes: Some(16384),
                             engine: Some("InnoDB".into()),
                             created: Some("2026-01-01 12:00:00".into()),
@@ -2505,6 +2768,23 @@ mod tests {
                 ("table_04", "Pink"),
             ] {
                 color_item(&mut h, label, color);
+            }
+            if layout == ObjectLayout::List {
+                for _ in 0..2 {
+                    h.get_all_by_label("Rows")
+                        .find(|n| n.accesskit_node().role() == egui::accesskit::Role::Button)
+                        .unwrap()
+                        .click();
+                    h.run_steps(3);
+                }
+                h.get_by_label("Archive").hover();
+                h.run_steps(3);
+                h.render()
+                    .unwrap()
+                    .save(directory.join("list-sorted.png"))
+                    .unwrap();
+                h.state_mut().browser.sort = (ObjectColumn::Name, false);
+                h.run_steps(3);
             }
             h.get_all_by_label("table_05").last().unwrap().click();
             h.run_steps(3);
