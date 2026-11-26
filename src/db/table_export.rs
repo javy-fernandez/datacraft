@@ -140,7 +140,7 @@ pub async fn export(
                 tr("The export destination is the source database")
             );
         }
-    } else if cfg.driver != Driver::Oracle && !db.is_empty() {
+    } else if cfg.driver.has_databases() && !db.is_empty() {
         cfg.database = db.to_owned();
     }
     ensure!(

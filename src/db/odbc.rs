@@ -148,10 +148,11 @@ impl OdbcSession {
     /// Commits or rolls back the Manual transaction and goes back to autocommit.
     pub async fn end_transaction(&mut self, commit: bool) -> anyhow::Result<()> {
         self.with_conn(move |c| {
-            let ended = c.end_tran(commit);
+            // A failed commit keeps the transaction open (turning autocommit back on would
+            // commit it implicitly): the user can still roll it back.
+            c.end_tran(commit)?;
             c.manual = false;
-            let restored = c.set_autocommit(true);
-            ended.and(restored)
+            c.set_autocommit(true)
         })
         .await
     }
@@ -174,6 +175,16 @@ pub fn connection_string(cfg: &ConnectionConfig) -> String {
             .into_iter()
             .filter(|(k, _)| !is_key(k, &["PWD", "PASSWORD"])),
     )
+}
+
+/// The data source field carries a password (`PWD=…`), which would be saved in the clear: it
+/// belongs in the password field, which goes to the keychain.
+pub fn has_password(cfg: &ConnectionConfig) -> bool {
+    let source = cfg.database.trim();
+    source.contains('=')
+        && attributes(source)
+            .iter()
+            .any(|(k, _)| is_key(k, &["PWD", "PASSWORD"]))
 }
 
 /// `odbc:<DSN or connection string>`, as `connection_string` writes it. False when the URL isn't
@@ -208,7 +219,7 @@ fn full_connection_string(cfg: &ConnectionConfig) -> String {
             attrs.push(("UID".into(), escape_value(user)));
         }
         if !password.is_empty() {
-            attrs.retain(|(k, _)| !is_key(k, &["PWD"]));
+            attrs.retain(|(k, _)| !is_key(k, &["PWD", "PASSWORD"]));
             attrs.push(("PWD".into(), escape_value(password)));
         }
     }

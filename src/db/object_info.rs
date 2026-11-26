@@ -168,7 +168,7 @@ impl Session {
         driver: Driver,
         schema: Option<&str>,
     ) -> anyhow::Result<Vec<ObjectInfoRow>> {
-        if driver.is_nosql() {
+        if driver.is_nosql() || driver == Driver::Odbc {
             anyhow::bail!(tr("Object information is not available"));
         }
         let sql = if self.is_cockroach() {
@@ -215,7 +215,7 @@ impl Session {
         table: &str,
         count_rows: bool,
     ) -> anyhow::Result<ObjectInfo> {
-        if driver.is_nosql() {
+        if driver.is_nosql() || driver == Driver::Odbc {
             anyhow::bail!(tr("Object information is not available"));
         }
         let sql = if self.is_cockroach() {

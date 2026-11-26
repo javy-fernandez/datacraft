@@ -86,7 +86,8 @@ pub fn object_sql(
 ) -> String {
     let q = |s: &str| quote_ident_if_needed(driver, s);
     let object = |s: &str, n: &str| {
-        if driver == Driver::Sqlite || s.is_empty() {
+        // Firebird has no schemas: the one shown is the database.
+        if matches!(driver, Driver::Sqlite | Driver::Firebird) || s.is_empty() {
             q(n)
         } else {
             format!("{}.{}", q(s), q(n))
@@ -96,8 +97,8 @@ pub fn object_sql(
         DropKind::Database => format!("drop database {}", q(name)),
         DropKind::Table => format!("drop table {}", object(schema, name)),
         DropKind::View => format!("drop view {}", object(schema, name)),
-        // SQLite has no TRUNCATE.
-        DropKind::Truncate if driver == Driver::Sqlite => {
+        // SQLite and Firebird have no TRUNCATE.
+        DropKind::Truncate if matches!(driver, Driver::Sqlite | Driver::Firebird) => {
             format!("delete from {}", object(schema, name))
         }
         DropKind::Truncate => format!("truncate table {}", object(schema, name)),
@@ -121,6 +122,8 @@ pub fn object_sql(
                     let old = format!("{}.{}", q(schema), q(name)).replace('\'', "''");
                     format!("exec sp_rename '{old}', '{}'", new_name.replace('\'', "''"))
                 }
+                // HANA: RENAME TABLE, the new name unqualified.
+                Driver::Hana => format!("rename table {} to {}", object(schema, name), q(new_name)),
                 Driver::MySql | Driver::MariaDb | Driver::ClickHouse => format!(
                     "rename table {} to {}",
                     object(schema, name),

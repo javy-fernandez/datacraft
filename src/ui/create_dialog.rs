@@ -277,11 +277,13 @@ pub fn create_table_sql(
     columns: &[NewColumn],
 ) -> String {
     let q = |s: &str| quote_ident_if_needed(driver, s.trim());
-    let qualified = if driver == Driver::Sqlite || schema.trim().is_empty() {
-        q(table)
-    } else {
-        format!("{}.{}", q(schema), q(table))
-    };
+    // Firebird has no schemas: the one shown is the database.
+    let qualified =
+        if matches!(driver, Driver::Sqlite | Driver::Firebird) || schema.trim().is_empty() {
+            q(table)
+        } else {
+            format!("{}.{}", q(schema), q(table))
+        };
     let mut lines: Vec<String> = columns
         .iter()
         .map(|c| {

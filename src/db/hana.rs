@@ -707,7 +707,12 @@ impl HanaSession {
         statements: &[String],
         single_row: bool,
     ) -> anyhow::Result<u64> {
-        if !self.manual {
+        // Inside the console's Manual transaction: a savepoint, so a failure undoes only these
+        // statements and nothing of the user's open work is committed here.
+        let manual = self.manual;
+        if manual {
+            self.run("SAVEPOINT DATACRAFT_TX", None, 0).await?;
+        } else {
             self.conn.set_auto_commit(false).await;
             self.connection_id = self.conn.id().await;
         }
@@ -728,6 +733,17 @@ impl HanaSession {
                     break;
                 }
             }
+        }
+        if manual {
+            if !self.broken {
+                let undo = if result.is_ok() {
+                    "RELEASE SAVEPOINT DATACRAFT_TX"
+                } else {
+                    "ROLLBACK TO SAVEPOINT DATACRAFT_TX"
+                };
+                let _ = self.run(undo, None, 0).await;
+            }
+            return result.map(|()| total);
         }
         if result.is_ok()
             && let Err(e) = self.conn.commit().await

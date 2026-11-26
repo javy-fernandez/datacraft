@@ -215,7 +215,9 @@ fn retarget_option(sql: &str, driver: Driver, schema: &str, source: &str, target
 }
 
 async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
-    if !matches!(cfg.driver, Driver::Sqlite | Driver::Oracle) {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if cfg.driver.has_databases() {
         cfg.database = db.into();
     }
     let mut session =

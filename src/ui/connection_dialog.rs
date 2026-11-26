@@ -190,6 +190,9 @@ impl ConnectionDialog {
             Driver::Odbc if cfg.database.trim().is_empty() => {
                 Err(tr("Specify a DSN or a connection string").into())
             }
+            Driver::Odbc if crate::db::odbc::has_password(cfg) => {
+                Err(tr("Put the user and password in their fields, not in the address").into())
+            }
             Driver::Odbc => Ok(()),
             _ if cfg.host.trim().is_empty() => Err(tr("Host is required").into()),
             Driver::Snowflake => snowflake::credentials(cfg)

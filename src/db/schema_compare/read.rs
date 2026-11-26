@@ -580,7 +580,9 @@ pub async fn load(
 /// every catalog text names its schema (and can be moved to the other one).
 async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
     let driver = cfg.driver;
-    if !matches!(driver, Driver::Sqlite | Driver::Oracle) && !db.is_empty() {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if driver.has_databases() && !db.is_empty() {
         cfg.database = db.into();
     }
     let mut s = tokio::time::timeout(Duration::from_secs(30), Session::connect(&cfg))

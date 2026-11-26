@@ -802,7 +802,9 @@ pub fn select_sql(
     match (driver, limit) {
         (Driver::MsSql, _) | (_, None) => sql,
         (Driver::Oracle, Some(n)) => format!("SELECT * FROM ({sql}) WHERE ROWNUM <= {n}"),
-        (Driver::Firebird | Driver::Odbc, Some(n)) => format!("{sql} FETCH FIRST {n} ROWS ONLY"),
+        (Driver::Firebird, Some(n)) => format!("{sql} FETCH FIRST {n} ROWS ONLY"),
+        // ODBC can't tell the dialect (and isn't a copy source).
+        (Driver::Odbc, Some(_)) => sql,
         (_, Some(n)) => format!("{sql} LIMIT {n}"),
     }
 }
@@ -865,7 +867,12 @@ pub fn insert_sql(
         .map(|n| to.quote_ident(n))
         .collect::<Vec<_>>()
         .join(", ");
-    let batch = if to == Driver::Oracle { 1 } else { BATCH };
+    // No multi-row VALUES in Oracle, Firebird nor HANA.
+    let batch = if matches!(to, Driver::Oracle | Driver::Firebird | Driver::Hana) {
+        1
+    } else {
+        BATCH
+    };
     let mut out = Vec::new();
     let mut tuples = Vec::new();
     for row in rows {
@@ -894,7 +901,9 @@ pub fn insert_sql(
 
 /// Session for `db` on its own connection (Oracle keeps its service name).
 async fn open(mut cfg: ConnectionConfig, db: &str) -> anyhow::Result<Session> {
-    if !matches!(cfg.driver, Driver::Oracle | Driver::Sqlite) && !db.is_empty() {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if cfg.driver.has_databases() && !db.is_empty() {
         cfg.database = db.to_string();
     }
     let mut s = Session::connect(&cfg).await?;

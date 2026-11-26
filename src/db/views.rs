@@ -46,7 +46,7 @@ pub struct ViewStatements {
 /// Label of the "replace an existing view" option of new views (SQLite drops it first).
 pub fn replace_label(driver: Driver) -> &'static str {
     match driver {
-        Driver::MsSql => "OR ALTER",
+        Driver::MsSql | Driver::Firebird => "OR ALTER",
         Driver::Sqlite => "DROP VIEW IF EXISTS",
         _ => "OR REPLACE",
     }
@@ -55,7 +55,10 @@ pub fn replace_label(driver: Driver) -> &'static str {
 fn qualified(driver: Driver, schema: &str, name: &str) -> String {
     let q = |s: &str| quote_ident_if_needed(driver, s.trim());
     let schema = schema.trim();
-    if schema.is_empty() || (driver == Driver::Sqlite && schema == "main") {
+    if schema.is_empty()
+        || (driver == Driver::Sqlite && schema == "main")
+        || driver == Driver::Firebird
+    {
         q(name)
     } else {
         format!("{}.{}", q(schema), q(name))
@@ -73,7 +76,8 @@ pub fn create_view_sql(driver: Driver, spec: &ViewSpec, name: &str, replace: boo
     let mut head = String::from("create");
     if replace {
         match driver {
-            Driver::MsSql => head.push_str(" or alter"),
+            // Firebird: CREATE OR ALTER VIEW.
+            Driver::MsSql | Driver::Firebird => head.push_str(" or alter"),
             Driver::Sqlite => {}
             _ => head.push_str(" or replace"),
         }
@@ -351,7 +355,7 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             lit(view)
         ),
         Driver::Firebird => format!(
-            "SELECT CAST(RDB$VIEW_SOURCE AS VARCHAR(32000)) FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = {}",
+            "SELECT CAST(RDB$VIEW_SOURCE AS VARCHAR(8191)) FROM RDB$RELATIONS WHERE RDB$RELATION_NAME = {}",
             lit(view)
         ),
         Driver::Hana => format!(

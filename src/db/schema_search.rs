@@ -157,9 +157,11 @@ fn search_sql(
         Driver::Oracle => {
             format!("SELECT * FROM {name} WHERE ({predicate}) AND ROWNUM <= {PREVIEW_ROWS}")
         }
-        Driver::Firebird | Driver::Odbc => {
+        Driver::Firebird => {
             format!("SELECT * FROM {name} WHERE {predicate} FETCH FIRST {PREVIEW_ROWS} ROWS ONLY")
         }
+        // ODBC can't tell the dialect: the driver stops reading at the preview's rows.
+        Driver::Odbc => format!("SELECT * FROM {name} WHERE {predicate}"),
         _ => format!("SELECT * FROM {name} WHERE {predicate} LIMIT {PREVIEW_ROWS}"),
     })
 }

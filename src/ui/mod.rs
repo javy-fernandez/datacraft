@@ -96,9 +96,10 @@ pub fn quote_ident_if_needed(driver: Driver, name: &str) -> String {
     let simple = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && (driver != Driver::Postgres || !name.chars().any(|c| c.is_ascii_uppercase()))
-        // Oracle folds unquoted names to uppercase and they must start with a letter; Snowflake
-        // also folds them to uppercase.
-        && (driver != Driver::Oracle || (!name.chars().any(|c| c.is_ascii_lowercase()) && !name.starts_with('_')))
+        // Oracle, Firebird and HANA fold unquoted names to uppercase and they must start with a
+        // letter (ODBC: the safe choice); Snowflake also folds them to uppercase.
+        && (!matches!(driver, Driver::Oracle | Driver::Firebird | Driver::Hana | Driver::Odbc)
+            || (!name.chars().any(|c| c.is_ascii_lowercase()) && !name.starts_with('_')))
         && (driver != Driver::Snowflake || !name.chars().any(|c| c.is_ascii_lowercase()))
         && !crate::sql::KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(name));
     if simple {

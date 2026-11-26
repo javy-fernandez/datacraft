@@ -188,6 +188,11 @@ impl FbSession {
             };
             let op = if commit { TrOp::Commit } else { TrOp::Rollback };
             let done = c.client.transaction_operation(&mut tr, op);
+            // A commit the server refused (a lock conflict, a deferred check) leaves the
+            // transaction open: keep it, so a Roll Back can still end it.
+            if done.is_err() && !c.lost {
+                c.manual = Some(tr);
+            }
             c.check(done)
         })
         .await
@@ -659,7 +664,9 @@ fn transaction_config(read_only: bool) -> TransactionConfiguration {
             TrDataAccessMode::ReadWrite
         },
         isolation: TrIsolationLevel::ReadCommited(TrRecordVersion::RecordVersion),
-        lock_resolution: TrLockResolution::Wait(None),
+        // A statement blocked by another transaction's lock gives up after a minute: there is
+        // no cancel, and an abandoned one would otherwise wait forever.
+        lock_resolution: TrLockResolution::Wait(Some(60)),
     }
 }
 

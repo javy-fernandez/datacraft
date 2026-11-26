@@ -326,7 +326,9 @@ pub async fn read(
     anyhow::ensure!(supported(cfg.driver), tr("Not available for this engine"));
     anyhow::ensure!(!cancel.load(Ordering::Relaxed), tr("Cancelled"));
     let driver = cfg.driver;
-    if !matches!(driver, super::Driver::Sqlite | super::Driver::Oracle) {
+    // Only engines with several databases are reopened on another one (Oracle keeps its
+    // service, Firebird its file, HANA its tenant and ODBC its data source).
+    if driver.has_databases() {
         cfg.database = db.into();
     }
     let mut session =

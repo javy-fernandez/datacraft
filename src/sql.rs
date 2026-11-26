@@ -123,7 +123,10 @@ fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -
     let mysql = matches!(driver, Driver::MySql | Driver::MariaDb);
     let firebird = driver == Driver::Firebird;
     let sqlite = driver == Driver::Sqlite;
-    let track = oracle || mysql || sqlite;
+    // HANA's SQLScript blocks (`CREATE PROCEDURE … BEGIN … END`, `DO BEGIN … END`) nest like
+    // MySQL's.
+    let hana = driver == Driver::Hana;
+    let track = oracle || mysql || sqlite || hana;
     // Start of every `/` line (Oracle), to know whether a block has one ahead.
     let slashes: Vec<usize> = if dialect.slash_separator {
         Lexer::new(script, dialect)
@@ -164,12 +167,16 @@ fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -
             if words.next().is_some_and(|w| w.eq_ignore_ascii_case("term"))
                 && let Some(new) = words.next()
             {
-                let new = new.trim_end_matches(';');
-                if !new.is_empty() {
-                    delimiter = (new != ";").then(|| new.to_string());
-                    lx.pos = line_end;
-                    continue;
-                }
+                // The line ends with the current terminator, maybe glued to the new one
+                // (`SET TERM ^;`, `SET TERM ;^`).
+                let old = delimiter.as_deref().unwrap_or(";");
+                let new = match new.strip_suffix(old) {
+                    Some(rest) if !rest.is_empty() => rest,
+                    _ => new,
+                };
+                delimiter = (new != ";").then(|| new.to_string());
+                lx.pos = line_end;
+                continue;
             }
         }
         if mysql
@@ -233,7 +240,7 @@ fn split_statements_inner(script: &str, driver: Driver, recover_trigger: bool) -
                 continue;
             }
             if let Some((start, _)) = cur.range
-                && (oracle || mysql)
+                && (oracle || mysql || hana)
                 && is_block_statement(&cur.head, oracle)
             {
                 cur.blocks.token(";", false, oracle);
@@ -411,6 +418,8 @@ fn is_block_statement(head: &[String], oracle: bool) -> bool {
     match words.as_slice() {
         ["BEGIN" | "DECLARE", ..] if oracle => true,
         ["BEGIN", "NOT", "ATOMIC", ..] => !oracle,
+        // HANA's anonymous block (in MySQL, `DO expr` has no BEGIN, so nothing nests).
+        ["DO", "BEGIN", ..] => !oracle,
         ["CREATE", rest @ ..] => {
             let mut definer = false;
             for w in rest {
@@ -3155,6 +3164,36 @@ mod tests {
         assert_eq!(texts("SELECT a,\ndelimiter x FROM t; SELECT 2", d).len(), 2);
         // Only on MySQL.
         assert_eq!(texts("DELIMITER $$\nSELECT 1$$", Driver::Postgres).len(), 1);
+    }
+
+    #[test]
+    fn hana_blocks_stay_whole() {
+        let d = Driver::Hana;
+        let s = "CREATE PROCEDURE p AS BEGIN\n  INSERT INTO t VALUES (1);\n  IF 1 = 1 THEN\n    INSERT INTO t VALUES (2);\n  END IF;\nEND;\nDO BEGIN\n  DECLARE n INT = 1;\n  SELECT :n FROM DUMMY;\nEND;\nSELECT 1 FROM DUMMY;";
+        let t = texts(s, d);
+        assert_eq!(t.len(), 3, "{t:?}");
+        assert!(t[0].ends_with("END IF;\nEND"), "{t:?}");
+        assert!(
+            t[1].starts_with("DO BEGIN") && t[1].ends_with("END"),
+            "{t:?}"
+        );
+    }
+
+    #[test]
+    fn firebird_set_term() {
+        let d = Driver::Firebird;
+        let s = "SET TERM ^ ;\nCREATE PROCEDURE p AS BEGIN\n  INSERT INTO t VALUES (1);\nEND^\nSET TERM ; ^\nSELECT 1 FROM RDB$DATABASE;\nSELECT 2 FROM RDB$DATABASE;";
+        assert_eq!(
+            texts(s, d),
+            [
+                "CREATE PROCEDURE p AS BEGIN\n  INSERT INTO t VALUES (1);\nEND",
+                "SELECT 1 FROM RDB$DATABASE",
+                "SELECT 2 FROM RDB$DATABASE"
+            ]
+        );
+        // Terminators glued together.
+        let s = "SET TERM !!;\nSELECT 1 FROM RDB$DATABASE!!\nSET TERM ;!!\nSELECT 2 FROM RDB$DATABASE; SELECT 3 FROM RDB$DATABASE";
+        assert_eq!(texts(s, d).len(), 3, "{:?}", texts(s, d));
     }
 
     #[test]
