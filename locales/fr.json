@@ -293,6 +293,7 @@
     "Database:": "Base de données :",
     "Service:": "Service :",
     "Data source:": "Source de données :",
+    "Normal": "Normal",
     "Tenant database:": "Base de données du tenant :",
     "Specify a DSN or a connection string": "Indiquez un DSN ou une chaîne de connexion",
     "Read-only": "Lecture seule",

@@ -674,6 +674,9 @@ impl ConnectionDialog {
                             });
                             text_field(ui, &mut item.cfg.database, "");
                             ui.end_row();
+                            if d == Driver::Oracle && item.cfg.auth != AuthMode::NoAuth {
+                                oracle_role_row(ui, &mut item.cfg);
+                            }
                         }
                     }
                     // DataGrip leaves a gap above the URL.
@@ -1553,6 +1556,38 @@ fn auth_rows(ui: &mut Ui, cfg: &mut ConnectionConfig) {
     }
 }
 
+/// Oracle's administrative privilege (SYS has to connect as SYSDBA or SYSOPER). "sys as sysdba"
+/// in the User field or `internal_logon=` in the URL set it too, and the combo shows it.
+fn oracle_role_row(ui: &mut Ui, cfg: &mut ConnectionConfig) {
+    use crate::db::oracle::{PRIVILEGES, privilege_name};
+    let current = privilege_name(cfg);
+    let label = |p: Option<&str>| p.map_or_else(|| tr("Normal").to_string(), str::to_uppercase);
+    ui.label(tr("Role:"));
+    egui::ComboBox::from_id_salt("ds_oracle_role")
+        .icon(chevron)
+        .selected_text(label(current.as_deref()))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for choice in std::iter::once(None).chain(PRIVILEGES.iter().copied().map(Some)) {
+                if ui
+                    .selectable_label(current.as_deref() == choice, label(choice))
+                    .clicked()
+                {
+                    cfg.set_property("internal_logon", "");
+                    let rest = privilege_name(cfg);
+                    // Empty when the URL or the user already say the same; "normal" overrides them.
+                    let value = match choice {
+                        _ if rest.as_deref() == choice => "",
+                        None => "normal",
+                        Some(p) => p,
+                    };
+                    cfg.set_property("internal_logon", value);
+                }
+            }
+        });
+    ui.end_row();
+}
+
 /// The URL field, synced both ways with the fields above it.
 fn url_row(ui: &mut Ui, cfg: &mut ConnectionConfig, url: &mut String, p: &Palette) {
     ui.label("URL:");
@@ -2073,6 +2108,38 @@ mod tests {
             );
         h.run_steps(3);
         h
+    }
+
+    /// Oracle's Role dropdown (issue #79): it shows "sys as sysdba" typed in the User field and
+    /// sets the privilege; Normal overrides the typed one.
+    #[test]
+    fn oracle_role_sets_the_privilege() {
+        use crate::db::oracle::privilege_name;
+        let mut cfg = ConnectionConfig::new(4, Driver::Oracle);
+        cfg.name = "ora".into();
+        cfg.user = "sys as sysdba".into();
+        let mut h = harness(ConnectionDialog::edit(4, &[cfg]));
+        let cfg = |h: &egui_kittest::Harness<'_, ConnectionDialog>| h.state().items[0].cfg.clone();
+        assert!(h.query_by_label("Role:").is_some());
+        // Driver, Connection type is segmented, Authentication, then Role.
+        let role_combo = |h: &egui_kittest::Harness<'_, ConnectionDialog>| {
+            h.get_all_by_role(egui::accesskit::Role::ComboBox)
+                .nth(2)
+                .unwrap()
+                .click()
+        };
+        assert_eq!(privilege_name(&cfg(&h)).as_deref(), Some("sysdba"));
+        role_combo(&h);
+        h.run_steps(3);
+        h.get_by_label("SYSOPER").click();
+        h.run_steps(3);
+        assert_eq!(privilege_name(&cfg(&h)).as_deref(), Some("sysoper"));
+        role_combo(&h);
+        h.run_steps(3);
+        h.get_by_label("Normal").click();
+        h.run_steps(3);
+        assert_eq!(privilege_name(&cfg(&h)), None);
+        assert_eq!(cfg(&h).property("internal_logon"), Some("normal"));
     }
 
     /// Drives the real widgets: the Authentication dropdown shows and hides its fields, the URL

@@ -293,6 +293,7 @@
     "Database:": "Datenbank:",
     "Service:": "Dienst:",
     "Data source:": "Datenquelle:",
+    "Normal": "Normal",
     "Tenant database:": "Tenant-Datenbank:",
     "Specify a DSN or a connection string": "Geben Sie einen DSN oder eine Verbindungszeichenfolge an",
     "Read-only": "Schreibgeschützt",

@@ -293,6 +293,7 @@
     "Database:": "Baza danych:",
     "Service:": "Usługa:",
     "Data source:": "Źródło danych:",
+    "Normal": "Normalny",
     "Tenant database:": "Baza danych tenanta:",
     "Specify a DSN or a connection string": "Podaj DSN lub ciąg połączenia",
     "Read-only": "Tylko do odczytu",

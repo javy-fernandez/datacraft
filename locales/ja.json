@@ -293,6 +293,7 @@
     "Database:": "データベース:",
     "Service:": "サービス:",
     "Data source:": "データソース:",
+    "Normal": "通常",
     "Tenant database:": "テナントデータベース:",
     "Specify a DSN or a connection string": "DSN または接続文字列を指定してください",
     "Read-only": "読み取り専用",

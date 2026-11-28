@@ -293,6 +293,7 @@
     "Database:": "数据库：",
     "Service:": "服务：",
     "Data source:": "数据源：",
+    "Normal": "普通",
     "Tenant database:": "租户数据库：",
     "Specify a DSN or a connection string": "请指定 DSN 或连接字符串",
     "Read-only": "只读",

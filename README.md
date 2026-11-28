@@ -169,7 +169,7 @@ Engine support differs for each action. SQLite and NoSQL engines don't offer tab
 | CockroachDB | Through the PostgreSQL driver (**+ → CockroachDB**: port 26257, `defaultdb`, `root`); the explorer, object information and Test Connection recognize it and skip its internal catalogs |
 | MySQL / MariaDB | SQL console, data editor, views, users and logical backups |
 | SQL Server | SQL console with <code>GO</code> batches, data editor, object management and native backups |
-| Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
+| Oracle | SQL console, data editor, object management and Data Pump exports, SYSDBA and SYSOPER logins (**Role**); requires Oracle Instant Client |
 | SAP HANA | Pure Rust client (port 30015, a tenant database by name, HANA Cloud on 443 with TLS); SQL console with SQLScript blocks (`DO BEGIN … END`, procedures), data editor, transactions, schemas, tables, views, keys and statistics |
 | Firebird | Firebird 3+ over its own wire protocol in pure Rust (SRP login and wire encryption, no client library), port 3050 and a database path or alias; SQL console with `SET TERM` scripts, data editor and transactions. On Firebird 3, NUMERIC values and times arrive through the client as approximate numbers; Firebird 4+ sends them exactly |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |

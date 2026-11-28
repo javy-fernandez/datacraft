@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use oracle::sql_type::OracleType;
-use oracle::{Connection, Connector, InitParams, Row};
+use oracle::{Connection, Connector, InitParams, Privilege, Row};
 
 use super::{Cell, ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::db::sqlite::hex_preview;
@@ -51,9 +51,11 @@ impl OraSession {
             cfg.port
         };
         let connect_string = connect_string(&host, port, &cfg.database);
-        let (user, password) = (cfg.user.clone(), cfg.password.clone());
+        let (user, privilege) = logon(cfg);
+        let password = cfg.password.clone();
 
-        let task = tokio::task::spawn_blocking(move || open(&user, &password, &connect_string));
+        let task =
+            tokio::task::spawn_blocking(move || open(&user, &password, privilege, &connect_string));
         let conn = tokio::time::timeout(CONNECT_TIMEOUT, task)
             .await
             .map_err(|_| {
@@ -215,11 +217,20 @@ impl OraSession {
 
 /// Opens the connection; if the Instant Client can't be loaded from the default locations,
 /// tries the usual places where people unpack it before giving up.
-fn open(user: &str, password: &str, connect_string: &str) -> Result<Connection, oracle::Error> {
+fn open(
+    user: &str,
+    password: &str,
+    privilege: Option<Privilege>,
+    connect_string: &str,
+) -> Result<Connection, oracle::Error> {
     let connect = || -> Result<Connection, oracle::Error> {
         // Auto-commit stays off: `run` commits each console statement itself and
         // `apply_changes` commits (or rolls back) its whole transaction.
-        let conn = Connector::new(user, password, connect_string).connect()?;
+        let mut connector = Connector::new(user, password, connect_string);
+        if let Some(privilege) = privilege {
+            connector.privilege(privilege);
+        }
+        let conn = connector.connect()?;
         let _ = conn.set_module("DataCraft");
         // Dates and numbers as text in the same format the grid shows, so edited values,
         // cloned rows and imports can be written back as plain literals.
@@ -249,6 +260,84 @@ fn open(user: &str, password: &str, connect_string: &str) -> Result<Connection, 
         }
         other => other,
     }
+}
+
+/// The administrative privileges a session can be opened with (SYS needs SYSDBA or SYSOPER), as
+/// the JDBC driver's `internal_logon` property names them.
+pub const PRIVILEGES: [&str; 7] = [
+    "sysdba",
+    "sysoper",
+    "sysasm",
+    "sysbackup",
+    "sysdg",
+    "syskm",
+    "sysrac",
+];
+
+/// The privilege named `name` (`SYSDBA`, `sysoper`…); `None` for a normal session or an unknown
+/// name.
+fn privilege(name: &str) -> Option<Privilege> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "sysdba" => Privilege::Sysdba,
+        "sysoper" => Privilege::Sysoper,
+        "sysasm" => Privilege::Sysasm,
+        "sysbackup" => Privilege::Sysbackup,
+        "sysdg" => Privilege::Sysdg,
+        "syskm" => Privilege::Syskm,
+        "sysrac" => Privilege::Sysrac,
+        _ => return None,
+    })
+}
+
+/// The privilege set for this connection: the Role field (`internal_logon` property), an
+/// `internal_logon=` parameter in the URL, or `sys as sysdba` typed in the User field as
+/// SQL*Plus and DataGrip take it. Empty or `normal` is a normal session.
+pub fn privilege_name(cfg: &ConnectionConfig) -> Option<String> {
+    if let Some(v) = cfg.property("internal_logon") {
+        return privilege(v).map(|_| v.to_ascii_lowercase());
+    }
+    let from_url = cfg
+        .url_extra
+        .trim_start_matches(['?', ';', '&'])
+        .split(['&', ';'])
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case("internal_logon"))
+        .map(|(_, v)| v.trim().to_string());
+    if let Some(v) = from_url {
+        return privilege(&v).map(|_| v.to_ascii_lowercase());
+    }
+    split_as(&cfg.user).1.map(str::to_ascii_lowercase)
+}
+
+/// `sys as sysdba` → (`sys`, `sysdba`); a user without a known ` as <privilege>` stays whole.
+fn split_as(user: &str) -> (&str, Option<&str>) {
+    let trimmed = user.trim();
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if let [.., kw, name] = words.as_slice()
+        && words.len() >= 3
+        && kw.eq_ignore_ascii_case("as")
+        && privilege(name).is_some()
+    {
+        let end = trimmed.len() - name.len();
+        let user = trimmed[..end].trim_end();
+        let user = user[..user.len() - kw.len()].trim_end();
+        return (user, Some(name));
+    }
+    (trimmed, None)
+}
+
+/// The user and privilege to open the session with.
+fn logon(cfg: &ConnectionConfig) -> (String, Option<Privilege>) {
+    let (user, _) = split_as(&cfg.user);
+    let user = if privilege_name(cfg).is_some() {
+        user
+    } else {
+        cfg.user.as_str()
+    };
+    (
+        user.to_string(),
+        privilege_name(cfg).as_deref().and_then(privilege),
+    )
 }
 
 /// EZConnect string `//host:port/service`. IPv6 addresses go in brackets.
@@ -938,6 +1027,41 @@ mod tests {
         assert_eq!(
             leading_words("/* a */ -- b\n create  or replace(", 4),
             ["CREATE", "OR", "REPLACE"]
+        );
+    }
+
+    #[test]
+    fn privileges_from_the_role_url_or_user() {
+        let mut cfg = ConnectionConfig::new(1, crate::db::Driver::Oracle);
+        cfg.user = "scott".into();
+        assert_eq!(privilege_name(&cfg), None);
+        assert_eq!(logon(&cfg).0, "scott");
+        assert!(logon(&cfg).1.is_none());
+
+        cfg.user = "  SYS   AS  SYSDBA ".into();
+        assert_eq!(privilege_name(&cfg).as_deref(), Some("sysdba"));
+        assert_eq!(logon(&cfg).0, "SYS");
+        assert_eq!(logon(&cfg).1, Some(Privilege::Sysdba));
+
+        // A user that just ends in "as" something else stays as typed.
+        cfg.user = "sys as admin".into();
+        assert_eq!(privilege_name(&cfg), None);
+        assert_eq!(logon(&cfg).0, "sys as admin");
+
+        cfg.user = "sys".into();
+        cfg.url_extra = "?foo=1&internal_logon=SYSOPER".into();
+        assert_eq!(privilege_name(&cfg).as_deref(), Some("sysoper"));
+        assert_eq!(logon(&cfg).1, Some(Privilege::Sysoper));
+
+        // The Role field wins; "normal" turns the privilege off.
+        cfg.set_property("internal_logon", "sysbackup");
+        assert_eq!(logon(&cfg).1, Some(Privilege::Sysbackup));
+        cfg.set_property("internal_logon", "normal");
+        assert_eq!(privilege_name(&cfg), None);
+        assert!(logon(&cfg).1.is_none());
+        assert_eq!(
+            PRIVILEGES.iter().filter(|p| privilege(p).is_some()).count(),
+            7
         );
     }
 
